@@ -1,9 +1,9 @@
 import type { PgBoss } from "pg-boss";
 import { AUTH_EMAIL_QUEUE } from "@/server/jobs/queues";
-import type { AuthEmailJob } from "./email-job";
+import type { EmailQueueJob } from "./email-job";
 
 export interface EmailQueue {
-  enqueue(job: AuthEmailJob): Promise<string>;
+  enqueue(job: EmailQueueJob): Promise<string>;
 }
 
 export function createEmailQueue(boss: Pick<PgBoss, "send">): EmailQueue {

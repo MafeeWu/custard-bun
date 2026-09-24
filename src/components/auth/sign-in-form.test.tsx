@@ -50,7 +50,11 @@ test("shows verification guidance for a 403 response", async () => {
   vi.mocked(useRouter).mockReturnValue({ push: vi.fn() } as never);
   vi.mocked(authClient.signIn.email).mockResolvedValue({
     data: null,
-    error: { status: 403, message: "Email not verified" },
+    error: {
+      status: 403,
+      code: "EMAIL_NOT_VERIFIED",
+      message: "Email not verified",
+    },
   } as never);
 
   const user = userEvent.setup();
@@ -87,7 +91,9 @@ test("shows an alert instead of a success status for credential errors", async (
   );
   await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-  expect(screen.getByRole("alert")).toHaveTextContent(/invalid email or password/i);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    /invalid email or password/i,
+  );
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
@@ -112,4 +118,26 @@ test("restores the button when sign-in throws", async () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled(),
   );
   expect(screen.getByRole("alert")).toHaveTextContent(/unable to sign in/i);
+});
+
+test.each([
+  [429, "RATE_LIMIT", /too many attempts/i],
+  [403, "BANNED_USER", /sign-in is unavailable/i],
+  [403, "FORBIDDEN", /sign-in is unavailable/i],
+])("provides safe typed guidance for %s %s", async (status, code, expected) => {
+  vi.mocked(useRouter).mockReturnValue({ push: vi.fn() } as never);
+  vi.mocked(authClient.signIn.email).mockResolvedValue({
+    data: null,
+    error: { status, code, message: "private account exists" },
+  } as never);
+  const user = userEvent.setup();
+  render(<SignInForm />);
+  await user.type(screen.getByLabelText("Email"), "person@example.com");
+  await user.type(
+    screen.getByLabelText("Password"),
+    "correct horse battery staple",
+  );
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(expected);
+  expect(screen.getByRole("alert")).not.toHaveTextContent(/private|verify/i);
 });

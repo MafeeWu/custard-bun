@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/server/auth/auth-client";
+import { authErrorMessage } from "./error-message";
 
 const resetLinkSentMessage =
   "If an account exists for that email, a reset link has been sent.";
@@ -26,7 +27,12 @@ export function ForgotPasswordForm() {
       });
 
       if (result.error) {
-        setErrorMessage("Unable to send a reset link. Please try again.");
+        setErrorMessage(
+          authErrorMessage(
+            result.error,
+            "Unable to send a reset link. Please try again.",
+          ),
+        );
         return;
       }
 

@@ -27,7 +27,7 @@ ENV SMTP_SECURE=false
 ENV SMTP_USER=build-only
 ENV SMTP_PASSWORD=build-only
 ENV SMTP_FROM="Build Only <build@example.com>"
-RUN pnpm build
+RUN pnpm build && rm -rf .next/cache
 
 FROM base AS runner
 ENV NODE_ENV=production
@@ -38,6 +38,7 @@ COPY --from=build /app/public ./public
 COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/src ./src
 COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/pnpm-lock.yaml ./pnpm-lock.yaml
 COPY --from=build /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=build /app/app.config.yml ./app.config.yml
 COPY --from=build /app/drizzle ./drizzle

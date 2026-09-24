@@ -1,12 +1,17 @@
 import { z } from "zod";
 
 const publicPath = z.string().startsWith("/");
-const absoluteOrMailtoUrl = z
-  .string()
-  .refine(
-    (value) => value.startsWith("https://") || value.startsWith("mailto:"),
-    "must use https:// or mailto:",
-  );
+const absoluteOrMailtoUrl = z.string().refine((value) => {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" && !!url.hostname) ||
+      (url.protocol === "mailto:" && z.email().safeParse(url.pathname).success)
+    );
+  } catch {
+    return false;
+  }
+}, "must be a valid https:// or mailto: URL");
 
 export const publicAppConfigSchema = z
   .object({
@@ -44,7 +49,7 @@ export const secretConfigSchema = z
     NODE_ENV: z.enum(["development", "test", "production"]),
     DATABASE_URL: z.string().url().startsWith("postgresql://"),
     BETTER_AUTH_SECRET: z.string().min(32),
-    BETTER_AUTH_URL: z.string().url(),
+    BETTER_AUTH_URL: z.url({ protocol: /^https?$/ }),
     SMTP_HOST: z.string().min(1),
     SMTP_PORT: z.coerce.number().int().min(1).max(65535),
     SMTP_SECURE: booleanString,

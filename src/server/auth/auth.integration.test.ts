@@ -1,7 +1,15 @@
 // @vitest-environment node
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from "vitest";
 import type { PgBoss } from "pg-boss";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { RuntimeConfig } from "@/server/config/schema";
 import { createDatabase } from "@/server/db/client";
 import { account, user } from "@/server/db/auth-schema";
@@ -9,10 +17,10 @@ import { createEmailQueue, type EmailQueue } from "@/server/email/email-queue";
 import { createBoss } from "@/server/jobs/boss";
 import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
 import { createAuth } from "./create-auth";
+import { testDatabaseUrl } from "@/test/database-target";
+import { inspect } from "node:util";
 
-const databaseUrl =
-  process.env.DATABASE_URL ??
-  "postgresql://companion:companion@127.0.0.1:55432/companion_test";
+const databaseUrl = testDatabaseUrl();
 
 const database = createDatabase(databaseUrl);
 const boss = createBoss(databaseUrl);
@@ -58,6 +66,7 @@ const signUpBody = {
   email: "person@example.com",
   password: "correct horse battery staple",
 };
+const leakedToken = "private-session-token-SQL-credential";
 
 function post(path: string, body: object, ip = "192.0.2.10") {
   return new Request(`${baseUrl}/api/auth${path}`, {
@@ -65,6 +74,7 @@ function post(path: string, body: object, ip = "192.0.2.10") {
     headers: {
       "content-type": "application/json",
       "x-forwarded-for": ip,
+      "x-companion-client-ip": ip,
     },
     body: JSON.stringify(body),
   });
@@ -133,7 +143,7 @@ async function createTestAuth(options: {
       options.emailQueue ??
       ({
         async enqueue(job) {
-          jobs.push(job);
+          if (job.kind !== "noop") jobs.push(job);
           return `test-job-${jobs.length}`;
         },
       } satisfies EmailQueue),
@@ -154,6 +164,8 @@ describe("createAuth", () => {
   });
 
   afterAll(async () => {
+    await boss.offWork(AUTH_EMAIL_QUEUE);
+    await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
     await boss.stop({ graceful: false });
     await database.$client.end();
   });
@@ -182,6 +194,21 @@ describe("createAuth", () => {
     );
 
     expect(response.status).toBe(403);
+  });
+
+  test("rate limits use boundary identity, never caller forwarding identity", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const request = post(
+        "/sign-up/email",
+        signUpBody,
+        `192.0.2.${attempt + 1}`,
+      );
+      request.headers.set("x-companion-client-ip", "203.0.113.10");
+      statuses.push((await auth.handler(request)).status);
+    }
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 429]);
   });
 
   test("duplicate sign-up has the same public response after normalizing generated fields", async () => {
@@ -232,12 +259,145 @@ describe("createAuth", () => {
     });
 
     const response = await auth.handler(post("/sign-up/email", signUpBody));
-
     expect(response.status).toBe(500);
     await expect(countPersistedAuthRecords()).resolves.toEqual({
       userCount: 0,
       credentialAccountCount: 0,
     });
+  });
+
+  test("queue failure is indistinguishable for new and duplicate signup", async () => {
+    const existing = await createTestAuth({ registrationOpen: true });
+    await existing.auth.handler(post("/sign-up/email", signUpBody));
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue() {
+          throw new Error(leakedToken);
+        },
+      },
+    });
+    const duplicate = await auth.handler(post("/sign-up/email", signUpBody));
+    const fresh = await auth.handler(
+      post("/sign-up/email", {
+        ...signUpBody,
+        email: "fresh@example.com",
+      }),
+    );
+    expect(duplicate.status).toBe(500);
+    expect(fresh.status).toBe(500);
+    expect(await duplicate.text()).toBe(await fresh.text());
+    await expect(countPersistedAuthRecords()).resolves.toEqual({
+      userCount: 1,
+      credentialAccountCount: 1,
+    });
+  });
+
+  test("reset acceptance failures are identical for known and unknown accounts", async () => {
+    const existing = await createTestAuth({ registrationOpen: true });
+    await existing.auth.handler(post("/sign-up/email", signUpBody));
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue() {
+          throw new Error(leakedToken);
+        },
+      },
+    });
+    const responses = await Promise.all(
+      [signUpBody.email, "unknown@example.com"].map((email) =>
+        auth.handler(post("/request-password-reset", { email })),
+      ),
+    );
+    expect(responses.map((response) => response.status)).toEqual([500, 500]);
+    const bodies = await Promise.all(
+      responses.map((response) => response.text()),
+    );
+    expect(bodies[0]).toBe(bodies[1]);
+    expect(bodies.join()).not.toContain(leakedToken);
+  });
+
+  async function signInVerified(auth: ReturnType<typeof createAuth>) {
+    await auth.handler(post("/sign-up/email", signUpBody));
+    await database
+      .update(user)
+      .set({ emailVerified: true })
+      .where(eq(user.email, signUpBody.email));
+    const signedIn = await auth.handler(post("/sign-in/email", signUpBody));
+    expect(signedIn.status).toBe(200);
+    return signedIn.headers
+      .getSetCookie()
+      .map((cookie) => cookie.split(";")[0])
+      .join("; ");
+  }
+
+  test("authenticated deletion does not claim dispatch when enqueue fails", async () => {
+    const existing = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(existing.auth);
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue() {
+          throw new Error(leakedToken);
+        },
+      },
+    });
+    const request = post("/delete-user", { callbackURL: "/goodbye" });
+    request.headers.set("cookie", cookie);
+    const response = await auth.handler(request);
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).not.toMatch(/sent|private-session/);
+    expect((await countPersistedAuthRecords()).userCount).toBe(1);
+  });
+
+  test("password recovery invalidates a retained authenticated session", async () => {
+    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    const session = () =>
+      auth.api.getSession({ headers: new Headers({ cookie }) });
+    expect(await session()).not.toBeNull();
+    await auth.handler(
+      post("/request-password-reset", { email: signUpBody.email }),
+    );
+    const job = jobs.find((job) => job.kind === "reset-password");
+    const token = new URL(job!.actionUrl).pathname.split("/").pop();
+    const response = await auth.handler(
+      post("/reset-password", {
+        token,
+        newPassword: "new correct horse battery staple",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await session()).toBeNull();
+  });
+
+  test("direct and background Better Auth errors never log token-bearing exceptions", async () => {
+    const output = [
+      vi.spyOn(console, "error").mockImplementation(() => {}),
+      vi.spyOn(console, "warn").mockImplementation(() => {}),
+      vi.spyOn(console, "log").mockImplementation(() => {}),
+    ];
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue() {
+          throw new Error(leakedToken);
+        },
+      },
+    });
+    await auth.handler(post("/sign-up/email", signUpBody));
+    const context = await auth.$context;
+    await context.runInBackgroundOrAwait(
+      Promise.reject(new TypeError(leakedToken)),
+    );
+    const logs = inspect(
+      output.flatMap((spy) => spy.mock.calls),
+      { depth: 6 },
+    );
+    expect(logs).not.toContain(leakedToken);
+    expect(logs).toContain("TypeError");
+    expect(logs).toContain("auth");
   });
 
   test("SMTP worker failures keep the created account and retryable job", async () => {

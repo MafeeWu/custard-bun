@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/server/auth/auth-client";
+import { authErrorMessage } from "./error-message";
 
 export function ResetPasswordForm() {
   const searchParams = useSearchParams();
@@ -33,7 +34,12 @@ export function ResetPasswordForm() {
       });
 
       if (result.error) {
-        setErrorMessage("This reset link is invalid or has expired.");
+        setErrorMessage(
+          authErrorMessage(
+            result.error,
+            "This reset link is invalid or has expired.",
+          ),
+        );
         return;
       }
 

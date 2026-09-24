@@ -5,20 +5,13 @@ import { expect, test } from "vitest";
 import { createBoss } from "../jobs/boss";
 import { buildPostgresUrl } from "../config/postgres-url";
 import { createDatabase } from "./client";
+import { testDatabaseUrl } from "@/test/database-target";
 
-const adminUrl =
-  process.env.DATABASE_URL ??
-  buildPostgresUrl({
-    username: "companion",
-    password: "companion",
-    host: "127.0.0.1",
-    port: 55432,
-    database: "companion_test",
-  });
+const adminUrl = testDatabaseUrl();
 
 test("pg and pg-boss connect to a temporary delimiter-rich database name", async () => {
   const admin = new Client({ connectionString: adminUrl });
-  const databaseName = `companion /?#@ %2F ${randomUUID()}`;
+  const databaseName = `companion /?#@ %2F $ ${randomUUID()}_test`;
   const databaseUrl = buildPostgresUrl({
     username: "companion",
     password: "companion",

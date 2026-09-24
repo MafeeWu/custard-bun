@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/server/auth/auth-client";
+import { signInErrorMessage } from "./error-message";
 
 export function SignInForm() {
   const router = useRouter();
@@ -24,11 +25,7 @@ export function SignInForm() {
       });
 
       if (result.error) {
-        setErrorMessage(
-          result.error.status === 403
-            ? "Verify your email before signing in."
-            : "Invalid email or password.",
-        );
+        setErrorMessage(signInErrorMessage(result.error));
         return;
       }
 

@@ -14,3 +14,12 @@ button,
 input {
   font: inherit;
 }
+
+.brand-primary {
+  display: inline-block;
+  background-color: var(--brand-primary);
+  color: #111;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+}

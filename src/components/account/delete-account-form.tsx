@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/server/auth/auth-client";
+import { authErrorMessage } from "../auth/error-message";
 
 interface DeleteAccountFormProps {
   email: string;
@@ -32,7 +33,12 @@ export function DeleteAccountForm({ email }: DeleteAccountFormProps) {
       });
 
       if (result.error) {
-        setErrorMessage("Unable to request account deletion. Try again.");
+        setErrorMessage(
+          authErrorMessage(
+            result.error,
+            "Unable to request account deletion. Try again.",
+          ),
+        );
         return;
       }
 

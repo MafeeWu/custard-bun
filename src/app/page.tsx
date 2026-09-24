@@ -7,13 +7,15 @@ export const dynamic = "force-dynamic";
 const config = await getPublicConfig();
 
 export default function HomePage() {
-
   return (
     <main>
       <BrandMark branding={config.branding} />
       <h1>{config.branding.name}</h1>
       <p>{config.branding.description}</p>
-      <Link href={config.registration.open ? "/auth/sign-up" : "/auth/sign-in"}>
+      <Link
+        className="brand-primary"
+        href={config.registration.open ? "/auth/sign-up" : "/auth/sign-in"}
+      >
         Get started
       </Link>
     </main>

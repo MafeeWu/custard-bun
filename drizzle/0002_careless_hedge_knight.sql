@@ -1,0 +1,2 @@
+ALTER TABLE "worker_heartbeat" ADD COLUMN "delivery_healthy" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "worker_heartbeat" ADD COLUMN "delivery_updated_at" timestamp with time zone;

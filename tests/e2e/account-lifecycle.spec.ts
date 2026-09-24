@@ -3,6 +3,7 @@ import { clearMailbox, waitForActionUrl } from "./helpers/mailbox";
 
 test("registers, verifies, signs in, resets password, and deletes the account", async ({
   page,
+  browser,
 }) => {
   await clearMailbox();
   const email = `person-${Date.now()}@example.com`;
@@ -24,19 +25,31 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/app$/);
 
-  await page.goto("/auth/forgot-password");
-  await page.getByLabel("Email").fill(email);
-  await page.getByRole("button", { name: "Send reset link" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    /if an account exists/i,
-  );
-  const resetUrl = await waitForActionUrl(email, "Reset your");
-  await page.goto(resetUrl);
-  await page.getByLabel("New password").fill(secondPassword);
-  await page.getByRole("button", { name: "Reset password" }).click();
-  await expect(page.getByRole("status")).toContainText(/has been reset/i);
+  const retained = await browser.newContext({
+    storageState: await page.context().storageState(),
+  });
+  const retainedPage = await retained.newPage();
+  try {
+    await retainedPage.goto("http://127.0.0.1:3000/account");
+    await expect(retainedPage).toHaveURL(/\/account$/);
 
-  await page.context().clearCookies();
+    await page.goto("/auth/forgot-password");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("button", { name: "Send reset link" }).click();
+    await expect(page.getByRole("status")).toContainText(
+      /if an account exists/i,
+    );
+    const resetUrl = await waitForActionUrl(email, "Reset your");
+    await page.goto(resetUrl);
+    await page.getByLabel("New password").fill(secondPassword);
+    await page.getByRole("button", { name: "Reset password" }).click();
+    await expect(page.getByRole("status")).toContainText(/has been reset/i);
+    await retainedPage.goto("http://127.0.0.1:3000/account");
+    await expect(retainedPage).toHaveURL(/\/auth\/sign-in$/);
+  } finally {
+    await retained.close();
+  }
+
   await page.goto("/auth/sign-in");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(firstPassword);

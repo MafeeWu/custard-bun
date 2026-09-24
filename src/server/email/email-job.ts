@@ -14,3 +14,6 @@ export type AuthEmailJob =
       to: string;
       actionUrl: string;
     };
+
+// Accepted through the same durable queue, but never delivered to SMTP.
+export type EmailQueueJob = AuthEmailJob | { kind: "noop" };

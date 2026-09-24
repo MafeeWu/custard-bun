@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { eq } from "drizzle-orm";
-import { loadDatabaseUrl } from "../../../src/server/config/database-url";
+import { testDatabaseUrl } from "../../../src/test/database-target";
 import { createDatabase } from "../../../src/server/db/client";
 import { workerHeartbeat } from "../../../src/server/db/system-schema";
 import { requireRecentWorkerHeartbeat } from "../../../src/server/health/worker-heartbeat";
@@ -11,7 +11,7 @@ import {
 } from "./worker-harness-lifecycle";
 
 async function main(): Promise<void> {
-  const databaseUrl = loadDatabaseUrl();
+  const databaseUrl = testDatabaseUrl();
   type ProbeDatabase = ReturnType<typeof createDatabase>;
 
   await startWorkerHarness({
@@ -35,15 +35,11 @@ async function main(): Promise<void> {
       } satisfies HarnessProbeDatabase & { database: ProbeDatabase };
     },
     spawnWorker() {
-      return spawn(
-        process.execPath,
-        ["--import", "tsx", "src/worker.ts"],
-        {
-          cwd: process.cwd(),
-          env: process.env,
-          stdio: "inherit",
-        },
-      );
+      return spawn(process.execPath, ["--import", "tsx", "src/worker.ts"], {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: "inherit",
+      });
     },
     waitForWorkerSpawn(worker) {
       const child = worker as ReturnType<typeof spawn>;
@@ -62,10 +58,7 @@ async function main(): Promise<void> {
     },
     createReadinessServer(worker, database) {
       return createServer(async (_request, response) => {
-        if (
-          worker.exitCode !== null ||
-          worker.signalCode !== null
-        ) {
+        if (worker.exitCode !== null || worker.signalCode !== null) {
           response.writeHead(503).end();
           return;
         }

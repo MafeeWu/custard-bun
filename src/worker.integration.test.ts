@@ -3,17 +3,21 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import type { PgBoss } from "pg-boss";
 import { createBoss } from "@/server/jobs/boss";
 import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
+import { testDatabaseUrl } from "@/test/database-target";
 
-const databaseUrl = "postgresql://companion:companion@127.0.0.1:55432/companion_test";
+const databaseUrl = testDatabaseUrl();
 let boss: PgBoss;
 
 beforeAll(async () => {
   boss = createBoss(databaseUrl);
   await boss.start();
   await ensureQueues(boss, { authEmailRetryDelay: 60 });
+  await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
 });
 
 afterAll(async () => {
+  await boss.offWork(AUTH_EMAIL_QUEUE);
+  await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
   await boss.stop({ graceful: false });
 });
 

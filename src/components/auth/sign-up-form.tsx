@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/server/auth/auth-client";
+import { authErrorMessage } from "./error-message";
 
 interface SignUpFormProps {
   registrationOpen: boolean;
@@ -34,7 +35,10 @@ export function SignUpForm({ registrationOpen }: SignUpFormProps) {
 
       if (result.error) {
         setErrorMessage(
-          "Unable to create the account. Check your details and try again.",
+          authErrorMessage(
+            result.error,
+            "Unable to create the account. Check your details and try again.",
+          ),
         );
         return;
       }

@@ -25,7 +25,10 @@ export async function requireRecentWorkerHeartbeat(
   newerThan: Date,
 ): Promise<void> {
   const [row] = await database
-    .select({ worker: workerHeartbeat.worker })
+    .select({
+      worker: workerHeartbeat.worker,
+      deliveryHealthy: workerHeartbeat.deliveryHealthy,
+    })
     .from(workerHeartbeat)
     .where(
       and(
@@ -38,6 +41,28 @@ export async function requireRecentWorkerHeartbeat(
   if (!row) {
     throw new Error("worker heartbeat is stale");
   }
+  if (!row.deliveryHealthy) {
+    throw new Error("worker email delivery is unhealthy");
+  }
+}
+
+export async function recordDeliveryHealth(
+  database: HeartbeatDatabase,
+  healthy: boolean,
+): Promise<void> {
+  const now = new Date();
+  await database
+    .insert(workerHeartbeat)
+    .values({
+      worker: "auth-email-worker",
+      updatedAt: now,
+      deliveryHealthy: healthy,
+      deliveryUpdatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: workerHeartbeat.worker,
+      set: { deliveryHealthy: healthy, deliveryUpdatedAt: now },
+    });
 }
 
 interface HeartbeatLogger {
@@ -51,10 +76,7 @@ export interface WorkerHeartbeatController {
 interface StartWorkerHeartbeatOptions {
   recordHeartbeat?: typeof recordWorkerHeartbeat;
   logger?: HeartbeatLogger;
-  setIntervalFn?: (
-    callback: () => void,
-    delay: number,
-  ) => NodeJS.Timeout;
+  setIntervalFn?: (callback: () => void, delay: number) => NodeJS.Timeout;
   clearIntervalFn?: (timer: NodeJS.Timeout) => void;
 }
 

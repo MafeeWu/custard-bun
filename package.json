@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node --env-file-if-exists=.env --import tsx src/server/start.ts",
     "worker": "node --env-file-if-exists=.env --import tsx src/worker.ts",
     "health:worker": "node --env-file-if-exists=.env --import tsx src/server/health/check-worker.ts",
     "lint": "eslint .",

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse } from "yaml";
+import { ConfigurationError } from "./configuration-error";
 import {
   publicAppConfigSchema,
   secretConfigSchema,
@@ -14,13 +15,13 @@ export interface LoadRuntimeConfigInput {
 
 function formatIssues(
   label: string,
-  issues: Array<{ path: PropertyKey[]; message: string }>,
+  issues: Array<{ path: PropertyKey[]; message: string; code: string }>,
 ) {
   return issues
     .map((issue) => {
       const field =
         issue.path.length > 0 ? issue.path.map(String).join(".") : "<root>";
-      return `${label}.${field}: ${issue.message}`;
+      return `${label}.${field}: ${issue.code === "unrecognized_keys" ? "unknown configuration key" : issue.message}`;
     })
     .join("; ");
 }
@@ -37,22 +38,24 @@ export async function loadRuntimeConfig(
   const source = await readFile(
     /* turbopackIgnore: true */ configPath,
     "utf8",
-  ).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read app config at ${configPath}: ${message}`);
+  ).catch(() => {
+    throw new ConfigurationError(
+      "app.config.yml.<root>: Unable to read configuration file",
+    );
   });
 
   let rawYaml: unknown;
   try {
     rawYaml = parse(source);
-  } catch (error: unknown) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`app.config.yml.<root>: Invalid YAML syntax: ${reason}`);
+  } catch {
+    throw new ConfigurationError("app.config.yml.<root>: Invalid YAML syntax");
   }
 
   const publicResult = publicAppConfigSchema.safeParse(rawYaml);
   if (!publicResult.success) {
-    throw new Error(formatIssues("app.config.yml", publicResult.error.issues));
+    throw new ConfigurationError(
+      formatIssues("app.config.yml", publicResult.error.issues),
+    );
   }
 
   const secretResult = secretConfigSchema.safeParse({
@@ -68,7 +71,9 @@ export async function loadRuntimeConfig(
     SMTP_FROM: env.SMTP_FROM,
   });
   if (!secretResult.success) {
-    throw new Error(formatIssues("environment", secretResult.error.issues));
+    throw new ConfigurationError(
+      formatIssues("environment", secretResult.error.issues),
+    );
   }
 
   const secret = secretResult.data;
