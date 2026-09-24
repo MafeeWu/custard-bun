@@ -1,6 +1,6 @@
-import { loadRuntimeConfig } from "@/server/config/runtime-config-core";
-import { createDatabase } from "@/server/db/client";
-import type { EmailQueue } from "@/server/email/email-queue";
+import { loadRuntimeConfig } from "../config/runtime-config-core";
+import { createDatabase } from "../db/client";
+import type { EmailQueue } from "../email/email-queue";
 import { createAuth } from "./create-auth";
 
 const config = await loadRuntimeConfig();

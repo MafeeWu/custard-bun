@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "auth:generate": "pnpm dlx @better-auth/cli@1.4.21 generate --config src/server/auth/auth-cli.ts --output src/server/db/auth-schema.ts --yes",
+    "auth:generate": "auth generate --config src/server/auth/auth-cli.ts --output src/server/db/auth-schema.ts --yes",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/server/db/migrate.ts",
     "db:test:up": "docker compose -f compose.test.yml up -d --wait",
@@ -38,6 +38,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
+    "auth": "1.7.5",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",

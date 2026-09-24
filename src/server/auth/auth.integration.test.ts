@@ -1,8 +1,13 @@
 // @vitest-environment node
-import { beforeAll, beforeEach, afterAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { PgBoss } from "pg-boss";
 import { sql } from "drizzle-orm";
 import type { RuntimeConfig } from "@/server/config/schema";
 import { createDatabase } from "@/server/db/client";
+import { account, user } from "@/server/db/auth-schema";
+import { createEmailQueue, type EmailQueue } from "@/server/email/email-queue";
+import { createBoss } from "@/server/jobs/boss";
+import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
 import { createAuth } from "./create-auth";
 
 const databaseUrl =
@@ -10,6 +15,8 @@ const databaseUrl =
   "postgresql://companion:companion@127.0.0.1:55432/companion_test";
 
 const database = createDatabase(databaseUrl);
+const boss = createBoss(databaseUrl);
+const baseUrl = "http://localhost:3000";
 
 const baseConfig: RuntimeConfig = {
   public: {
@@ -34,7 +41,7 @@ const baseConfig: RuntimeConfig = {
     nodeEnv: "test",
     databaseUrl,
     betterAuthSecret: "test-secret-that-is-at-least-32-characters",
-    betterAuthUrl: "http://localhost:3000",
+    betterAuthUrl: baseUrl,
     smtp: {
       host: "127.0.0.1",
       port: 1025,
@@ -53,7 +60,7 @@ const signUpBody = {
 };
 
 function post(path: string, body: object, ip = "192.0.2.10") {
-  return new Request(`http://localhost/api/auth${path}`, {
+  return new Request(`${baseUrl}/api/auth${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -63,14 +70,53 @@ function post(path: string, body: object, ip = "192.0.2.10") {
   });
 }
 
-async function truncateAuthTables() {
+async function truncateTestState() {
   await database.execute(sql`
-    TRUNCATE TABLE "session", "account", "verification", "rate_limit", "user"
+    TRUNCATE TABLE
+      "session",
+      "account",
+      "verification",
+      "rate_limit",
+      "user",
+      job.job,
+      job.job_dependency
     RESTART IDENTITY CASCADE
   `);
 }
 
-async function createTestAuth(options: { registrationOpen: boolean }) {
+async function countPersistedAuthRecords() {
+  const [persistedUsers, persistedAccounts] = await Promise.all([
+    database.select().from(user),
+    database.select().from(account),
+  ]);
+
+  return {
+    userCount: persistedUsers.length,
+    credentialAccountCount: persistedAccounts.length,
+  };
+}
+
+function normalizeSignUpResponse(body: Record<string, unknown>) {
+  const publicUser = body.user;
+  if (!publicUser || typeof publicUser !== "object") {
+    return body;
+  }
+
+  return {
+    ...body,
+    user: {
+      ...publicUser,
+      id: "<generated-id>",
+      createdAt: "<generated-timestamp>",
+      updatedAt: "<generated-timestamp>",
+    },
+  };
+}
+
+async function createTestAuth(options: {
+  registrationOpen: boolean;
+  emailQueue?: EmailQueue;
+}) {
   const config = structuredClone(baseConfig);
   config.public.registration.open = options.registrationOpen;
 
@@ -83,12 +129,14 @@ async function createTestAuth(options: { registrationOpen: boolean }) {
   const auth = createAuth({
     database,
     config,
-    emailQueue: {
-      async enqueue(job) {
-        jobs.push(job);
-        return `test-job-${jobs.length}`;
-      },
-    },
+    emailQueue:
+      options.emailQueue ??
+      ({
+        async enqueue(job) {
+          jobs.push(job);
+          return `test-job-${jobs.length}`;
+        },
+      } satisfies EmailQueue),
   });
 
   return { auth, jobs };
@@ -96,14 +144,17 @@ async function createTestAuth(options: { registrationOpen: boolean }) {
 
 describe("createAuth", () => {
   beforeAll(async () => {
-    await truncateAuthTables();
+    await boss.start();
+    await ensureQueues(boss, { authEmailRetryDelay: 60 });
+    await truncateTestState();
   });
 
   beforeEach(async () => {
-    await truncateAuthTables();
+    await truncateTestState();
   });
 
   afterAll(async () => {
+    await boss.stop({ graceful: false });
     await database.$client.end();
   });
 
@@ -133,7 +184,7 @@ describe("createAuth", () => {
     expect(response.status).toBe(403);
   });
 
-  test("duplicate sign-up has the same public response shape", async () => {
+  test("duplicate sign-up has the same public response after normalizing generated fields", async () => {
     const { auth } = await createTestAuth({ registrationOpen: true });
 
     const first = await auth.handler(post("/sign-up/email", signUpBody));
@@ -142,8 +193,8 @@ describe("createAuth", () => {
     const duplicateBody = (await duplicate.json()) as Record<string, unknown>;
 
     expect(duplicate.status).toBe(first.status);
-    expect(Object.keys(duplicateBody).sort()).toEqual(
-      Object.keys(firstBody).sort(),
+    expect(normalizeSignUpResponse(duplicateBody)).toEqual(
+      normalizeSignUpResponse(firstBody),
     );
   });
 
@@ -154,21 +205,93 @@ describe("createAuth", () => {
     const known = await auth.handler(
       post("/request-password-reset", {
         email: signUpBody.email,
-        redirectTo: "http://localhost/auth/reset-password",
+        redirectTo: `${baseUrl}/auth/reset-password`,
       }),
     );
     const unknown = await auth.handler(
       post("/request-password-reset", {
         email: "unknown@example.com",
-        redirectTo: "http://localhost/auth/reset-password",
+        redirectTo: `${baseUrl}/auth/reset-password`,
       }),
     );
     const knownBody = (await known.json()) as Record<string, unknown>;
     const unknownBody = (await unknown.json()) as Record<string, unknown>;
 
     expect(unknown.status).toBe(known.status);
-    expect(Object.keys(unknownBody).sort()).toEqual(
-      Object.keys(knownBody).sort(),
-    );
+    expect(unknownBody).toEqual(knownBody);
+  });
+
+  test("failed verification email enqueue rolls signup back completely", async () => {
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue() {
+          throw new Error("queue rejected");
+        },
+      },
+    });
+
+    const response = await auth.handler(post("/sign-up/email", signUpBody));
+
+    expect(response.status).toBe(500);
+    await expect(countPersistedAuthRecords()).resolves.toEqual({
+      userCount: 0,
+      credentialAccountCount: 0,
+    });
+  });
+
+  test("SMTP worker failures keep the created account and retryable job", async () => {
+    const queuedJobIds: string[] = [];
+    const durableEmailQueue = createEmailQueue(boss as Pick<PgBoss, "send">);
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      emailQueue: {
+        async enqueue(job) {
+          const jobId = await durableEmailQueue.enqueue(job);
+          queuedJobIds.push(jobId);
+          return jobId;
+        },
+      },
+    });
+
+    const response = await auth.handler(post("/sign-up/email", signUpBody));
+
+    expect(response.status).toBe(200);
+    expect(queuedJobIds).toHaveLength(1);
+    await expect(countPersistedAuthRecords()).resolves.toEqual({
+      userCount: 1,
+      credentialAccountCount: 1,
+    });
+
+    let attempts = 0;
+
+    try {
+      await boss.work(AUTH_EMAIL_QUEUE, async () => {
+        attempts += 1;
+        throw new Error("temporary SMTP failure");
+      });
+
+      await expect.poll(() => attempts, { timeout: 5_000 }).toBe(1);
+      await expect
+        .poll(
+          async () =>
+            (await boss.getJobById(AUTH_EMAIL_QUEUE, queuedJobIds[0]))?.state,
+          {
+            timeout: 5_000,
+          },
+        )
+        .toBe("retry");
+
+      const job = await boss.getJobById(AUTH_EMAIL_QUEUE, queuedJobIds[0]);
+      expect(job?.output).toEqual(
+        expect.objectContaining({ message: "temporary SMTP failure" }),
+      );
+      await expect(countPersistedAuthRecords()).resolves.toEqual({
+        userCount: 1,
+        credentialAccountCount: 1,
+      });
+    } finally {
+      await boss.offWork(AUTH_EMAIL_QUEUE);
+    }
   });
 });

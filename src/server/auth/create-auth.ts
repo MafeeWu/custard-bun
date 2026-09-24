@@ -3,10 +3,10 @@ import { betterAuth } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { admin } from "better-auth/plugins";
-import type { RuntimeConfig } from "@/server/config/schema";
-import { createDatabase } from "@/server/db/client";
-import * as schema from "@/server/db/schema";
-import type { EmailQueue } from "@/server/email/email-queue";
+import type { RuntimeConfig } from "../config/schema";
+import { createDatabase } from "../db/client";
+import * as schema from "../db/schema";
+import type { EmailQueue } from "../email/email-queue";
 import { assertRegistrationOpen } from "./registration-policy";
 
 export interface AuthDependencies {
@@ -27,6 +27,7 @@ export function createAuth({
     database: drizzleAdapter(database, {
       provider: "pg",
       schema,
+      transaction: true,
     }),
     emailAndPassword: {
       enabled: true,
@@ -97,6 +98,7 @@ export function createAuth({
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path === "/sign-up/email") {
+          ctx.context.runInBackgroundOrAwait = async (promise) => promise;
           assertRegistrationOpen(config.public.registration.open);
         }
       }),
