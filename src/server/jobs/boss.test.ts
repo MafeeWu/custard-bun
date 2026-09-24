@@ -1,5 +1,14 @@
 // @vitest-environment node
 import { beforeEach, expect, test, vi } from "vitest";
+import { buildPostgresUrl } from "../config/postgres-url";
+
+const TEST_DATABASE_URL = buildPostgresUrl({
+  username: "db",
+  password: "private",
+  host: "db",
+  port: 5432,
+  database: "app",
+});
 
 const mocks = vi.hoisted(() => ({
   instances: [] as Array<{
@@ -7,11 +16,13 @@ const mocks = vi.hoisted(() => ({
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
   }>,
+  constructorOptions: [] as unknown[],
   startImplementations: [] as Array<() => Promise<void>>,
 }));
 
 vi.mock("pg-boss", () => ({
-  PgBoss: vi.fn(function MockPgBoss() {
+  PgBoss: vi.fn(function MockPgBoss(options: unknown) {
+    mocks.constructorOptions.push(options);
     const instance = {
       on: vi.fn(),
       start: vi.fn(
@@ -28,6 +39,7 @@ vi.mock("pg-boss", () => ({
 beforeEach(() => {
   vi.resetModules();
   mocks.instances.length = 0;
+  mocks.constructorOptions.length = 0;
   mocks.startImplementations.length = 0;
   delete (
     globalThis as typeof globalThis & {
@@ -39,7 +51,7 @@ beforeEach(() => {
 test("pg-boss error logs contain only the error name", async () => {
   const logger = { error: vi.fn() };
   const { createBoss } = await import("./boss");
-  createBoss("******db/app", { logger });
+  createBoss(TEST_DATABASE_URL, { logger });
   const errorHandler = mocks.instances[0]?.on.mock.calls.find(
     ([event]) => event === "error",
   )?.[1] as ((error: Error) => void) | undefined;
@@ -52,6 +64,33 @@ test("pg-boss error logs contain only the error name", async () => {
   expect(JSON.stringify(logger.error.mock.calls)).not.toContain("private");
 });
 
+test("constructs pg-boss with exact individual connection fields", async () => {
+  const { createBoss } = await import("./boss");
+  const connectionString = buildPostgresUrl({
+    username: "user/%2F ?#@",
+    password: "pass/%2F ?#@",
+    host: "2001:db8::1",
+    port: 6543,
+    database: "data/%2F ?#@",
+  });
+
+  createBoss(connectionString);
+
+  expect(mocks.constructorOptions).toEqual([
+    expect.objectContaining({
+      user: "user/%2F ?#@",
+      password: "pass/%2F ?#@",
+      host: "2001:db8::1",
+      port: 6543,
+      database: "data/%2F ?#@",
+      schema: "job",
+    }),
+  ]);
+  expect(mocks.constructorOptions[0]).not.toHaveProperty(
+    "connectionString",
+  );
+});
+
 test("retries shared boss initialization after a transient start failure", async () => {
   mocks.startImplementations.push(
     () => Promise.reject(new Error("transient")),
@@ -59,14 +98,14 @@ test("retries shared boss initialization after a transient start failure", async
   );
   const { getBoss } = await import("./boss");
 
-  await expect(getBoss("******db/app")).rejects.toThrow(
+  await expect(getBoss(TEST_DATABASE_URL)).rejects.toThrow(
     "transient",
   );
   expect(mocks.instances[0]!.stop).toHaveBeenCalledWith({
     graceful: true,
     timeout: 30_000,
   });
-  await expect(getBoss("******db/app")).resolves.toBe(
+  await expect(getBoss(TEST_DATABASE_URL)).resolves.toBe(
     mocks.instances[1],
   );
   expect(mocks.instances).toHaveLength(2);
@@ -81,7 +120,7 @@ test("failed startup cleanup times out and permits retry", async () => {
     );
     const { getBoss } = await import("./boss");
 
-    const first = getBoss("******db/app", {
+    const first = getBoss(TEST_DATABASE_URL, {
       stopTimeoutMs: 10,
     });
     mocks.instances[0]!.stop.mockImplementation(
@@ -92,7 +131,7 @@ test("failed startup cleanup times out and permits retry", async () => {
     await vi.advanceTimersByTimeAsync(10);
     await failed;
     await expect(
-      getBoss("******db/app", { stopTimeoutMs: 10 }),
+      getBoss(TEST_DATABASE_URL, { stopTimeoutMs: 10 }),
     ).resolves.toBe(mocks.instances[1]);
   } finally {
     vi.useRealTimers();
@@ -102,7 +141,7 @@ test("failed startup cleanup times out and permits retry", async () => {
 test("concurrent resets stop once and block replacement until stop completes", async () => {
   let finishStop: (() => void) | undefined;
   const { getBoss, resetBoss } = await import("./boss");
-  const boss = await getBoss("******db/app");
+  const boss = await getBoss(TEST_DATABASE_URL);
   mocks.instances[0]!.stop.mockImplementation(
     () =>
       new Promise<void>((resolve) => {
@@ -112,7 +151,7 @@ test("concurrent resets stop once and block replacement until stop completes", a
 
   const firstReset = resetBoss(boss);
   const secondReset = resetBoss(boss);
-  const replacement = getBoss("******db/app");
+  const replacement = getBoss(TEST_DATABASE_URL);
   await Promise.resolve();
 
   expect(mocks.instances[0]!.stop).toHaveBeenCalledOnce();
@@ -129,7 +168,7 @@ test("timed-out concurrent resets settle and allow replacement initialization", 
   try {
     let rejectStop: ((error: Error) => void) | undefined;
     const { getBoss, resetBoss } = await import("./boss");
-    const boss = await getBoss("******db/app");
+    const boss = await getBoss(TEST_DATABASE_URL);
     mocks.instances[0]!.stop.mockImplementation(
       () =>
         new Promise<void>((_resolve, reject) => {
@@ -139,7 +178,7 @@ test("timed-out concurrent resets settle and allow replacement initialization", 
 
     const firstReset = resetBoss(boss, { stopTimeoutMs: 10 });
     const secondReset = resetBoss(boss, { stopTimeoutMs: 10 });
-    const replacement = getBoss("******db/app", {
+    const replacement = getBoss(TEST_DATABASE_URL, {
       stopTimeoutMs: 10,
     });
 

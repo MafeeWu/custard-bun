@@ -17,6 +17,7 @@ function createDependencies(
     .mockResolvedValue(undefined);
   const worker = Object.assign(new EventEmitter(), {
     exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
   });
   const killWorker = vi.fn(() => {
     worker.exitCode = 0;
@@ -203,6 +204,76 @@ test("does not signal a child that already exited", async () => {
   await controller.shutdown("SIGTERM");
 
   expect(killWorker).not.toHaveBeenCalled();
+});
+
+test("does not signal a child already terminated by signal without an exit event", async () => {
+  const {
+    dependencies,
+    killWorker,
+    worker,
+  } = createDependencies();
+  const controller = await startWorkerHarness(dependencies);
+  worker.signalCode = "SIGTERM";
+
+  await controller.shutdown("SIGTERM");
+
+  expect(killWorker).not.toHaveBeenCalled();
+});
+
+test("observes a graceful signal exit racing listener installation", async () => {
+  vi.useFakeTimers();
+  try {
+    const {
+      dependencies,
+      killWorker,
+      worker,
+    } = createDependencies();
+    killWorker.mockImplementation(() => true);
+    const originalOnce = worker.once.bind(worker);
+    worker.once = vi.fn((event, listener) => {
+      worker.signalCode = "SIGTERM";
+      return originalOnce(event, listener);
+    }) as typeof worker.once;
+    const controller = await startWorkerHarness(dependencies);
+
+    const shutdown = controller.shutdown("SIGTERM");
+    await vi.runAllTimersAsync();
+    await shutdown;
+
+    expect(killWorker).toHaveBeenCalledOnce();
+    expect(killWorker).toHaveBeenCalledWith(worker, "SIGTERM");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("does not force kill when signal state changes after the graceful wait", async () => {
+  vi.useFakeTimers();
+  try {
+    const {
+      dependencies,
+      killWorker,
+      worker,
+    } = createDependencies();
+    killWorker.mockImplementation((_worker, signal) => {
+      if (signal === "SIGTERM") {
+        setTimeout(() => {
+          worker.signalCode = "SIGTERM";
+        }, 10);
+      }
+      return true;
+    });
+    const controller = await startWorkerHarness(dependencies);
+
+    const shutdown = controller.shutdown("SIGTERM");
+    await vi.runAllTimersAsync();
+    await shutdown;
+
+    expect(killWorker).toHaveBeenCalledOnce();
+    expect(killWorker).toHaveBeenCalledWith(worker, "SIGTERM");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("cleans every acquired resource when later handler setup fails", async () => {

@@ -62,7 +62,10 @@ async function main(): Promise<void> {
     },
     createReadinessServer(worker, database) {
       return createServer(async (_request, response) => {
-        if (worker.exitCode !== null) {
+        if (
+          worker.exitCode !== null ||
+          worker.signalCode !== null
+        ) {
           response.writeHead(503).end();
           return;
         }

@@ -1,4 +1,5 @@
 import { PgBoss } from "pg-boss";
+import { parsePostgresConfig } from "../config/postgres-config";
 
 interface BossLogger {
   error(message: string, metadata: { name: string }): void;
@@ -21,7 +22,7 @@ export function createBoss(
 ): PgBoss {
   const logger = options.logger ?? console;
   const boss = new PgBoss({
-    connectionString: databaseUrl,
+    ...parsePostgresConfig(databaseUrl),
     schema: "job",
   });
 

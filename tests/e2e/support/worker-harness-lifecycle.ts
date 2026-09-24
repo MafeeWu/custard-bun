@@ -8,6 +8,7 @@ export interface HarnessProbeDatabase {
 
 export interface HarnessWorker {
   exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
   once(
     event: "exit",
     listener: (code: number | null) => void,
@@ -60,11 +61,15 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
 }
 
+function workerExited(worker: HarnessWorker): boolean {
+  return worker.exitCode !== null || worker.signalCode !== null;
+}
+
 async function waitForWorkerExit(
   worker: HarnessWorker,
   timeoutMs: number,
 ): Promise<boolean> {
-  if (worker.exitCode !== null) {
+  if (workerExited(worker)) {
     return true;
   }
 
@@ -81,12 +86,12 @@ async function waitForWorkerExit(
     };
     const handleExit = () => finish(true);
     const timeout = setTimeout(() => {
-      finish(worker.exitCode !== null);
+      finish(workerExited(worker));
     }, timeoutMs);
     timeout.unref?.();
 
     worker.once("exit", handleExit);
-    if (worker.exitCode !== null) {
+    if (workerExited(worker)) {
       finish(true);
     }
   });
@@ -109,10 +114,9 @@ export async function startWorkerHarness(
     ownedWorker: HarnessWorker,
     signal: HarnessSignal,
   ): Promise<void> {
-    if (ownedWorker.exitCode !== null) {
+    if (workerExited(ownedWorker)) {
       return;
     }
-
     dependencies.killWorker(ownedWorker, signal);
     if (
       await waitForWorkerExit(
@@ -123,7 +127,7 @@ export async function startWorkerHarness(
       return;
     }
 
-    if (ownedWorker.exitCode === null) {
+    if (!workerExited(ownedWorker)) {
       dependencies.killWorker(ownedWorker, "SIGKILL");
     }
     if (
@@ -160,7 +164,7 @@ export async function startWorkerHarness(
       if (server) {
         await attempt(() => dependencies.closeServer(server!));
       }
-      if (worker && stopWorker && worker.exitCode === null) {
+      if (worker && stopWorker && !workerExited(worker)) {
         await attempt(() => terminateWorker(worker!, signal));
       }
       if (database) {
