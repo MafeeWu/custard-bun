@@ -156,3 +156,26 @@ Updated:
 
 - `src/server/config/load-config.ts` no longer imports `server-only`, so the CLI migration runner can load runtime config. This keeps `pnpm db:migrate` working, but the server-only enforcement is now more convention-based than package-enforced.
 - The repository now has a generated empty Drizzle journal; future schema work must extend it rather than replace the migration workflow.
+
+## Fix Round 1
+
+### Findings addressed
+
+1. Restored the `server-only` guard in `src/server/config/load-config.ts`.
+2. Added a CLI-safe `src/server/config/database-url.ts` helper that validates only `DATABASE_URL` and emits `environment.DATABASE_URL: ...` on failure.
+3. Switched `src/server/db/migrate.ts` from the full runtime loader to the new focused database URL loader.
+4. Changed `createDatabase(databaseUrl)` to return the typed Drizzle database instance directly and relied on `db.$client.end()` for cleanup.
+
+### Verification
+
+- `pnpm test src/server/config/database-url.test.ts src/server/jobs/boss.integration.test.ts`
+- `pnpm test src/server/jobs/boss.integration.test.ts`
+- `DATABASE_URL='postgresql://companion:companion@127.0.0.1:55432/companion_test' pnpm db:migrate`
+- `pnpm test`
+- `pnpm typecheck`
+- `pnpm lint`
+
+### Notes
+
+- `pnpm db:migrate` now succeeds with only `DATABASE_URL` set.
+- The real PostgreSQL job integration test and queue semantics were left unchanged.

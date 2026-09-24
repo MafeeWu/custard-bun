@@ -1,15 +1,15 @@
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { loadRuntimeConfig } from "@/server/config/load-config";
+import { loadDatabaseUrl } from "@/server/config/database-url";
 import { createDatabase } from "./client";
 
 async function main() {
-  const config = await loadRuntimeConfig();
-  const { db, pool } = createDatabase(config.secret.databaseUrl);
+  const databaseUrl = loadDatabaseUrl();
+  const db = createDatabase(databaseUrl);
 
   try {
     await migrate(db, { migrationsFolder: "drizzle" });
   } finally {
-    await pool.end();
+    await db.$client.end();
   }
 }
 
