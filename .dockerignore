@@ -1,0 +1,11 @@
+.git
+.github
+.next
+.env
+.env.*
+!.env.example
+.superpowers
+node_modules
+playwright-report
+test-results
+*.tsbuildinfo

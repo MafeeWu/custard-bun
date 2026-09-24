@@ -5,13 +5,22 @@ import { getBoss } from "@/server/jobs/boss";
 import { ensureQueues } from "@/server/jobs/queues";
 import { createAuth } from "./create-auth";
 
-const config = await getRuntimeConfig();
-const database = createDatabase(config.secret.databaseUrl);
-const boss = await getBoss(config.secret.databaseUrl);
-await ensureQueues(boss);
+async function initializeAuth() {
+  const config = await getRuntimeConfig();
+  const database = createDatabase(config.secret.databaseUrl);
+  const boss = await getBoss(config.secret.databaseUrl);
+  await ensureQueues(boss);
 
-export const auth = createAuth({
-  database,
-  config,
-  emailQueue: createEmailQueue(boss),
-});
+  return createAuth({
+    database,
+    config,
+    emailQueue: createEmailQueue(boss),
+  });
+}
+
+let authPromise: ReturnType<typeof initializeAuth> | undefined;
+
+export function getAuth(): ReturnType<typeof initializeAuth> {
+  authPromise ??= initializeAuth();
+  return authPromise;
+}

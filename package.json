@@ -10,7 +10,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "worker": "tsx src/worker.ts",
+    "worker": "node --env-file-if-exists=.env --import tsx src/worker.ts",
+    "health:worker": "node --env-file-if-exists=.env --import tsx src/server/health/check-worker.ts",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
@@ -18,12 +19,13 @@
     "test:e2e": "playwright test",
     "auth:generate": "auth generate --config src/server/auth/auth-cli.ts --output src/server/db/auth-schema.ts --yes",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/server/db/migrate.ts",
-    "db:test:up": "docker compose -f compose.test.yml up -d --wait",
-    "db:test:down": "docker compose -f compose.test.yml down"
+    "db:migrate": "node --env-file-if-exists=.env --import tsx src/server/db/migrate.ts",
+    "db:test:up": "docker compose -p ai-companion-test -f compose.test.yml up -d --wait",
+    "db:test:down": "docker compose -p ai-companion-test -f compose.test.yml down -v"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.5",
+    "auth": "1.7.5",
     "better-auth": "1.7.5",
     "drizzle-orm": "0.45.3",
     "next": "16.3.6",
@@ -33,16 +35,16 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "0.0.1",
+    "tsx": "4.23.15",
     "yaml": "2.9.1",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
-    "auth": "1.7.5",
+    "@tailwindcss/postcss": "4.3.3",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
-    "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.6",
     "@types/nodemailer": "8.0.2",
     "@types/pg": "8.23.1",
@@ -54,7 +56,6 @@
     "jsdom": "30.1.1",
     "prettier": "3.9.9",
     "tailwindcss": "4.3.3",
-    "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
   }
