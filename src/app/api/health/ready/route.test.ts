@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getRuntimeConfig: vi.fn(),
+  createDatabase: vi.fn(),
   query: vi.fn(),
   end: vi.fn(),
   requireRecentWorkerHeartbeat: vi.fn(),
@@ -13,12 +14,7 @@ vi.mock("@/server/config/load-config", () => ({
 }));
 
 vi.mock("@/server/db/client", () => ({
-  createDatabase: vi.fn(() => ({
-    $client: {
-      query: mocks.query,
-      end: mocks.end,
-    },
-  })),
+  createDatabase: mocks.createDatabase,
 }));
 
 vi.mock("@/server/health/worker-heartbeat", () => ({
@@ -28,6 +24,12 @@ vi.mock("@/server/health/worker-heartbeat", () => ({
 import { GET } from "./route";
 
 beforeEach(() => {
+  mocks.createDatabase.mockReturnValue({
+    $client: {
+      query: mocks.query,
+      end: mocks.end,
+    },
+  });
   mocks.getRuntimeConfig.mockResolvedValue({
     secret: { databaseUrl: "postgresql://hidden:secret@db/app" },
   });
@@ -51,6 +53,19 @@ test("returns 200 only when database and worker are ready", async () => {
     expect.any(Date),
   );
   expect(mocks.end).toHaveBeenCalledOnce();
+});
+
+test("uses bounded PostgreSQL connection and query timeouts", async () => {
+  await GET();
+
+  expect(mocks.createDatabase).toHaveBeenCalledWith(
+    expect.any(String),
+    {
+      connectionTimeoutMillis: 1_000,
+      query_timeout: 1_000,
+      statement_timeout: 1_000,
+    },
+  );
 });
 
 test("returns a redacted 503 when runtime configuration cannot load", async () => {

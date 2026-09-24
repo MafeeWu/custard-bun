@@ -1,9 +1,14 @@
 x-application: &application
   build: .
   image: ai-companion-web:phase-1
+  entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
   env_file: .env
   environment:
-    DATABASE_URL: postgresql://companion:${POSTGRES_PASSWORD}@postgres:5432/companion
+    POSTGRES_DB: companion
+    POSTGRES_HOST: postgres
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    POSTGRES_PORT: "5432"
+    POSTGRES_USER: companion
   volumes:
     - ./app.config.yml:/app/app.config.yml:ro
 
@@ -39,7 +44,14 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "pnpm", "health:worker"]
+      test:
+        [
+          "CMD",
+          "/bin/sh",
+          "/app/scripts/docker-entrypoint.sh",
+          "pnpm",
+          "health:worker",
+        ]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -47,6 +59,7 @@ services:
 
   app:
     <<: *application
+    command: ["pnpm", "start"]
     depends_on:
       postgres:
         condition: service_healthy

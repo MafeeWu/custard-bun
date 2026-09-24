@@ -36,6 +36,22 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await page.getByRole("button", { name: "Reset password" }).click();
   await expect(page.getByRole("status")).toContainText(/has been reset/i);
 
+  await page.context().clearCookies();
+  await page.goto("/auth/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(firstPassword);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: /invalid/i }),
+  ).toContainText(/invalid/i);
+  await expect(page).toHaveURL(/\/auth\/sign-in$/);
+
+  await page.goto("/auth/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(secondPassword);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/app$/);
+
   await page.goto("/account");
   await page.getByLabel("Confirm account email").fill(email);
   await page.getByRole("button", { name: "Delete account" }).click();
@@ -44,6 +60,7 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await page.goto(deletionUrl);
   await expect(page).toHaveURL(/\/goodbye$/);
 
+  await page.context().clearCookies();
   await page.goto("/auth/sign-in");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(secondPassword);

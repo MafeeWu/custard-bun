@@ -44,6 +44,10 @@ interface HeartbeatLogger {
   error(message: string, metadata: { name: string }): void;
 }
 
+export interface WorkerHeartbeatController {
+  stop(): Promise<void>;
+}
+
 interface StartWorkerHeartbeatOptions {
   recordHeartbeat?: typeof recordWorkerHeartbeat;
   logger?: HeartbeatLogger;
@@ -57,7 +61,7 @@ interface StartWorkerHeartbeatOptions {
 export async function startWorkerHeartbeat(
   database: HeartbeatDatabase,
   options: StartWorkerHeartbeatOptions = {},
-): Promise<() => void> {
+): Promise<WorkerHeartbeatController> {
   const recordHeartbeat = options.recordHeartbeat ?? recordWorkerHeartbeat;
   const logger = options.logger ?? console;
   const setIntervalFn =
@@ -68,16 +72,39 @@ export async function startWorkerHeartbeat(
 
   await recordHeartbeat(database, "auth-email-worker");
 
+  let stopping = false;
+  let inFlight: Promise<void> | undefined;
   const timer = setIntervalFn(() => {
-    void recordHeartbeat(database, "auth-email-worker").catch(
-      (error: unknown) => {
+    if (stopping || inFlight) {
+      return;
+    }
+
+    const refresh = Promise.resolve()
+      .then(() => recordHeartbeat(database, "auth-email-worker"))
+      .catch((error: unknown) => {
         logger.error("worker heartbeat failed", {
           name: error instanceof Error ? error.name : "UnknownError",
         });
-      },
-    );
+      })
+      .finally(() => {
+        if (inFlight === refresh) {
+          inFlight = undefined;
+        }
+      });
+    inFlight = refresh;
   }, 20_000);
   timer.unref();
 
-  return () => clearIntervalFn(timer);
+  let stopPromise: Promise<void> | undefined;
+
+  return {
+    stop() {
+      stopPromise ??= (async () => {
+        stopping = true;
+        clearIntervalFn(timer);
+        await inFlight;
+      })();
+      return stopPromise;
+    },
+  };
 }

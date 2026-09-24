@@ -32,6 +32,11 @@ Keep `.env` private. It contains the database, authentication, and SMTP
 credentials. Mailpit is used only by the automated test stack and is not a
 production dependency.
 
+`POSTGRES_PASSWORD` may contain URI delimiters such as `/`, `?`, `#`, `@`, and
+spaces. Keep the value quoted in `.env`; the production entrypoint constructs
+and percent-encodes `DATABASE_URL` at runtime without storing a second copy of
+the password.
+
 ## Deploy with Docker Compose
 
 Build, migrate, and start PostgreSQL, the email worker, and the web app:
@@ -45,7 +50,8 @@ The same production image is used for the migration job, worker, and app.
 Create the first administrator after the services are healthy:
 
 ```bash
-docker compose exec app pnpm exec auth create-admin \
+docker compose exec app /bin/sh /app/scripts/docker-entrypoint.sh \
+  pnpm exec auth create-admin \
   --config src/server/auth/auth-cli.ts \
   --email admin@example.com \
   --name "Admin" \
@@ -65,10 +71,11 @@ Health endpoints:
 
 ## Run locally
 
-For local Node development, set `DATABASE_URL` to the PostgreSQL instance you
-intend to use and set the SMTP values to a reachable mail server. The test
-stack exposes PostgreSQL on port `55432` and Mailpit SMTP on port `1025`.
-Then apply migrations and run the app and worker in separate terminals:
+For local Node development, export a percent-encoded `DATABASE_URL` for the
+PostgreSQL instance you intend to use and set the SMTP values to a reachable
+mail server. The test stack exposes PostgreSQL on port `55432` and Mailpit SMTP
+on port `1025`. Then apply migrations and run the app and worker in separate
+terminals:
 
 ```bash
 pnpm db:test:up

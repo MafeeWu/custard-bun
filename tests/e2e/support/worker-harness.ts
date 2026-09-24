@@ -6,89 +6,132 @@ import { loadDatabaseUrl } from "../../../src/server/config/database-url";
 import { createDatabase } from "../../../src/server/db/client";
 import { workerHeartbeat } from "../../../src/server/db/system-schema";
 import { requireRecentWorkerHeartbeat } from "../../../src/server/health/worker-heartbeat";
+import {
+  startWorkerHarness,
+  type HarnessProbeDatabase,
+} from "./worker-harness-lifecycle";
 
 async function main(): Promise<void> {
   const databaseUrl = loadDatabaseUrl();
-  const probeDatabase = createDatabase(databaseUrl);
+  type ProbeDatabase = ReturnType<typeof createDatabase>;
 
-  await probeDatabase
-    .delete(workerHeartbeat)
-    .where(eq(workerHeartbeat.worker, "auth-email-worker"));
-
-  const worker = spawn(
-    process.execPath,
-    ["--import", "tsx", "src/worker.ts"],
-    {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: "inherit",
+  await startWorkerHarness({
+    createProbeDatabase() {
+      const database = createDatabase(databaseUrl);
+      return {
+        async deleteHeartbeat() {
+          await database
+            .delete(workerHeartbeat)
+            .where(eq(workerHeartbeat.worker, "auth-email-worker"));
+        },
+        async requireReady() {
+          await requireRecentWorkerHeartbeat(
+            database,
+            "auth-email-worker",
+            new Date(Date.now() - 60_000),
+          );
+        },
+        close: () => database.$client.end(),
+        database,
+      } satisfies HarnessProbeDatabase & { database: ProbeDatabase };
     },
-  );
-
-  const server = createServer(async (_request, response) => {
-    if (worker.exitCode !== null) {
-      response.writeHead(503).end();
-      return;
-    }
-
-    try {
-      await requireRecentWorkerHeartbeat(
-        probeDatabase,
-        "auth-email-worker",
-        new Date(Date.now() - 60_000),
+    spawnWorker() {
+      return spawn(
+        process.execPath,
+        ["--import", "tsx", "src/worker.ts"],
+        {
+          cwd: process.cwd(),
+          env: process.env,
+          stdio: "inherit",
+        },
       );
-      response.writeHead(200).end();
-    } catch {
-      response.writeHead(503).end();
-    }
-  });
+    },
+    waitForWorkerSpawn(worker) {
+      const child = worker as ReturnType<typeof spawn>;
+      return new Promise<void>((resolve, reject) => {
+        const handleSpawn = () => {
+          child.off("error", handleError);
+          resolve();
+        };
+        const handleError = (error: Error) => {
+          child.off("spawn", handleSpawn);
+          reject(error);
+        };
+        child.once("spawn", handleSpawn);
+        child.once("error", handleError);
+      });
+    },
+    createReadinessServer(worker, database) {
+      return createServer(async (_request, response) => {
+        if (worker.exitCode !== null) {
+          response.writeHead(503).end();
+          return;
+        }
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(3101, "127.0.0.1", resolve);
-  });
-
-  let stopping = false;
-
-  async function shutdown(signal: NodeJS.Signals): Promise<void> {
-    if (stopping) {
-      return;
-    }
-    stopping = true;
-
-    server.close();
-    worker.kill(signal);
-
-    const timeout = setTimeout(() => {
-      if (worker.exitCode === null) {
-        worker.kill("SIGKILL");
+        try {
+          await database.requireReady();
+          response.writeHead(200).end();
+        } catch {
+          response.writeHead(503).end();
+        }
+      });
+    },
+    listen(server) {
+      return new Promise<void>((resolve, reject) => {
+        const httpServer = server as ReturnType<typeof createServer>;
+        httpServer.once("error", reject);
+        httpServer.listen(3101, "127.0.0.1", resolve);
+      });
+    },
+    closeServer(server) {
+      const httpServer = server as ReturnType<typeof createServer>;
+      if (!httpServer.listening) {
+        return Promise.resolve();
       }
-    }, 35_000);
-    timeout.unref();
+      return new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    },
+    killWorker(worker, signal) {
+      return (worker as ReturnType<typeof spawn>).kill(signal);
+    },
+    async waitForWorkerExit(worker) {
+      const child = worker as ReturnType<typeof spawn>;
+      if (child.exitCode !== null) {
+        return;
+      }
 
-    if (worker.exitCode === null) {
-      await once(worker, "exit");
-    }
-    clearTimeout(timeout);
-    await probeDatabase.$client.end();
-  }
-
-  worker.once("exit", async (code) => {
-    if (!stopping) {
-      stopping = true;
-      server.close();
-      await probeDatabase.$client.end();
-      process.exitCode = code ?? 1;
-    }
+      const timeout = setTimeout(() => {
+        if (child.exitCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, 35_000);
+      timeout.unref();
+      await once(child, "exit");
+      clearTimeout(timeout);
+    },
+    onWorkerExit(worker, listener) {
+      const child = worker as ReturnType<typeof spawn>;
+      child.once("exit", listener);
+      return () => child.off("exit", listener);
+    },
+    onSignal(signal, listener) {
+      process.once(signal, listener);
+      return () => process.off(signal, listener);
+    },
+    setExitCode(code) {
+      process.exitCode = code;
+    },
+    logger: console,
   });
-
-  process.once("SIGINT", () => void shutdown("SIGINT"));
-  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 void main().catch((error: unknown) => {
   console.error("worker harness failed", {
     name: error instanceof Error ? error.name : "UnknownError",
   });
-  process.exitCode = 1;
+  process.exit(1);
 });

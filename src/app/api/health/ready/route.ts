@@ -17,7 +17,11 @@ export async function GET(): Promise<Response> {
 
   try {
     const config = await getRuntimeConfig();
-    const activeDatabase = createDatabase(config.secret.databaseUrl);
+    const activeDatabase = createDatabase(config.secret.databaseUrl, {
+      connectionTimeoutMillis: 1_000,
+      query_timeout: 1_000,
+      statement_timeout: 1_000,
+    });
     database = activeDatabase;
     result = await checkReadiness({
       checkDatabase: async () => {
