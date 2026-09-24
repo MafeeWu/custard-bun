@@ -44,7 +44,15 @@ export async function loadRuntimeConfig(
     throw new Error(`Unable to read app config at ${configPath}: ${message}`);
   });
 
-  const publicResult = publicAppConfigSchema.safeParse(parse(source));
+  let rawYaml: unknown;
+  try {
+    rawYaml = parse(source);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`app.config.yml.<root>: Invalid YAML syntax: ${reason}`);
+  }
+
+  const publicResult = publicAppConfigSchema.safeParse(rawYaml);
   if (!publicResult.success) {
     throw new Error(formatIssues("app.config.yml", publicResult.error.issues));
   }

@@ -25,6 +25,15 @@ describe("loadRuntimeConfig", () => {
     expect(config.secret.databaseUrl).toContain("postgresql://");
   });
 
+  test("rejects syntactically malformed YAML with app.config.yml.<root> prefix", async () => {
+    const malformedYaml = "branding:\n  name: Custard Bun\n  invalid: : :";
+    const configPath = await writeConfig(malformedYaml);
+
+    await expect(
+      loadRuntimeConfig({ configPath, env: validSecretEnv }),
+    ).rejects.toThrow(/^app\.config\.yml\.<root>:/);
+  });
+
   test.each([
     ["unknown YAML key", validYaml + "\nunknown: true\n", validSecretEnv, "unknown"],
     [
