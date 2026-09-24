@@ -12,7 +12,7 @@
     "start": "next start",
     "worker": "tsx src/worker.ts",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
