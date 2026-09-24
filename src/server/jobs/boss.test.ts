@@ -72,6 +72,33 @@ test("retries shared boss initialization after a transient start failure", async
   expect(mocks.instances).toHaveLength(2);
 });
 
+test("failed startup cleanup times out and permits retry", async () => {
+  vi.useFakeTimers();
+  try {
+    mocks.startImplementations.push(
+      () => Promise.reject(new Error("transient")),
+      () => Promise.resolve(),
+    );
+    const { getBoss } = await import("./boss");
+
+    const first = getBoss("******db/app", {
+      stopTimeoutMs: 10,
+    });
+    mocks.instances[0]!.stop.mockImplementation(
+      () => new Promise<void>(() => undefined),
+    );
+    const failed = expect(first).rejects.toThrow("transient");
+
+    await vi.advanceTimersByTimeAsync(10);
+    await failed;
+    await expect(
+      getBoss("******db/app", { stopTimeoutMs: 10 }),
+    ).resolves.toBe(mocks.instances[1]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("concurrent resets stop once and block replacement until stop completes", async () => {
   let finishStop: (() => void) | undefined;
   const { getBoss, resetBoss } = await import("./boss");
@@ -95,4 +122,40 @@ test("concurrent resets stop once and block replacement until stop completes", a
   await Promise.all([firstReset, secondReset]);
   await expect(replacement).resolves.toBe(mocks.instances[1]);
   expect(mocks.instances).toHaveLength(2);
+});
+
+test("timed-out concurrent resets settle and allow replacement initialization", async () => {
+  vi.useFakeTimers();
+  try {
+    let rejectStop: ((error: Error) => void) | undefined;
+    const { getBoss, resetBoss } = await import("./boss");
+    const boss = await getBoss("******db/app");
+    mocks.instances[0]!.stop.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStop = reject;
+        }),
+    );
+
+    const firstReset = resetBoss(boss, { stopTimeoutMs: 10 });
+    const secondReset = resetBoss(boss, { stopTimeoutMs: 10 });
+    const replacement = getBoss("******db/app", {
+      stopTimeoutMs: 10,
+    });
+
+    expect(firstReset).toBe(secondReset);
+    expect(mocks.instances[0]!.stop).toHaveBeenCalledOnce();
+    expect(mocks.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(firstReset).rejects.toThrow(
+      "pg-boss stop timed out after 10ms",
+    );
+    await expect(replacement).resolves.toBe(mocks.instances[1]);
+
+    rejectStop?.(new Error("late stop rejection"));
+    await Promise.resolve();
+  } finally {
+    vi.useRealTimers();
+  }
 });

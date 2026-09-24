@@ -8,6 +8,14 @@ export interface HarnessProbeDatabase {
 
 export interface HarnessWorker {
   exitCode: number | null;
+  once(
+    event: "exit",
+    listener: (code: number | null) => void,
+  ): unknown;
+  off(
+    event: "exit",
+    listener: (code: number | null) => void,
+  ): unknown;
 }
 
 export type HarnessServer = object;
@@ -30,7 +38,6 @@ export interface WorkerHarnessDependencies {
     worker: HarnessWorker,
     signal: HarnessSignal | "SIGKILL",
   ): boolean;
-  waitForWorkerExit(worker: HarnessWorker): Promise<void>;
   onWorkerExit(
     worker: HarnessWorker,
     listener: (code: number | null) => void,
@@ -41,6 +48,8 @@ export interface WorkerHarnessDependencies {
   ): () => void;
   setExitCode(code: number): void;
   logger: HarnessLogger;
+  gracefulShutdownTimeoutMs?: number;
+  forceShutdownTimeoutMs?: number;
 }
 
 export interface WorkerHarnessController {
@@ -51,6 +60,38 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
 }
 
+async function waitForWorkerExit(
+  worker: HarnessWorker,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (worker.exitCode !== null) {
+    return true;
+  }
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      worker.off("exit", handleExit);
+      resolve(exited);
+    };
+    const handleExit = () => finish(true);
+    const timeout = setTimeout(() => {
+      finish(worker.exitCode !== null);
+    }, timeoutMs);
+    timeout.unref?.();
+
+    worker.once("exit", handleExit);
+    if (worker.exitCode !== null) {
+      finish(true);
+    }
+  });
+}
+
 export async function startWorkerHarness(
   dependencies: WorkerHarnessDependencies,
 ): Promise<WorkerHarnessController> {
@@ -59,6 +100,40 @@ export async function startWorkerHarness(
   let server: HarnessServer | undefined;
   const removeListeners: Array<() => void> = [];
   let shutdownPromise: Promise<void> | undefined;
+  const gracefulShutdownTimeoutMs =
+    dependencies.gracefulShutdownTimeoutMs ?? 35_000;
+  const forceShutdownTimeoutMs =
+    dependencies.forceShutdownTimeoutMs ?? 5_000;
+
+  async function terminateWorker(
+    ownedWorker: HarnessWorker,
+    signal: HarnessSignal,
+  ): Promise<void> {
+    if (ownedWorker.exitCode !== null) {
+      return;
+    }
+
+    dependencies.killWorker(ownedWorker, signal);
+    if (
+      await waitForWorkerExit(
+        ownedWorker,
+        gracefulShutdownTimeoutMs,
+      )
+    ) {
+      return;
+    }
+
+    if (ownedWorker.exitCode === null) {
+      dependencies.killWorker(ownedWorker, "SIGKILL");
+    }
+    if (
+      await waitForWorkerExit(ownedWorker, forceShutdownTimeoutMs)
+    ) {
+      return;
+    }
+
+    throw new Error("worker did not exit after SIGKILL");
+  }
 
   async function cleanup(
     signal: HarnessSignal,
@@ -86,13 +161,7 @@ export async function startWorkerHarness(
         await attempt(() => dependencies.closeServer(server!));
       }
       if (worker && stopWorker && worker.exitCode === null) {
-        let signaled = false;
-        await attempt(() => {
-          signaled = dependencies.killWorker(worker!, signal);
-        });
-        if (signaled) {
-          await attempt(() => dependencies.waitForWorkerExit(worker!));
-        }
+        await attempt(() => terminateWorker(worker!, signal));
       }
       if (database) {
         await attempt(() => database!.close());
@@ -124,12 +193,16 @@ export async function startWorkerHarness(
     );
     removeListeners.push(
       dependencies.onSignal("SIGINT", () => {
-        void cleanup("SIGINT", true);
+        void cleanup("SIGINT", true).catch(() => {
+          dependencies.setExitCode(1);
+        });
       }),
     );
     removeListeners.push(
       dependencies.onSignal("SIGTERM", () => {
-        void cleanup("SIGTERM", true);
+        void cleanup("SIGTERM", true).catch(() => {
+          dependencies.setExitCode(1);
+        });
       }),
     );
 

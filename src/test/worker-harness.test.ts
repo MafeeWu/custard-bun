@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { EventEmitter } from "node:events";
 import { expect, test, vi } from "vitest";
 import {
   startWorkerHarness,
@@ -14,8 +15,14 @@ function createDependencies(
   const closeServer = vi
     .fn<() => Promise<void>>()
     .mockResolvedValue(undefined);
-  const killWorker = vi.fn(() => true);
-  const worker = { exitCode: null as number | null };
+  const worker = Object.assign(new EventEmitter(), {
+    exitCode: null as number | null,
+  });
+  const killWorker = vi.fn(() => {
+    worker.exitCode = 0;
+    worker.emit("exit", 0);
+    return true;
+  });
 
   const dependencies: WorkerHarnessDependencies = {
     createProbeDatabase: vi.fn(() => ({
@@ -29,15 +36,22 @@ function createDependencies(
     listen: vi.fn().mockResolvedValue(undefined),
     closeServer,
     killWorker,
-    waitForWorkerExit: vi.fn().mockResolvedValue(undefined),
     onWorkerExit: vi.fn(() => vi.fn()),
     onSignal: vi.fn(() => vi.fn()),
     setExitCode: vi.fn(),
     logger: { error: vi.fn() },
+    gracefulShutdownTimeoutMs: 10,
+    forceShutdownTimeoutMs: 10,
     ...overrides,
   };
 
-  return { dependencies, closeDatabase, closeServer, killWorker };
+  return {
+    dependencies,
+    closeDatabase,
+    closeServer,
+    killWorker: vi.mocked(dependencies.killWorker),
+    worker,
+  };
 }
 
 test("closes the probe database when heartbeat deletion fails", async () => {
@@ -93,6 +107,102 @@ test("kills the exact child and closes server and database when listen fails", a
   expect(killWorker).toHaveBeenCalledWith(spawnedWorker, "SIGTERM");
   expect(closeServer).toHaveBeenCalledOnce();
   expect(closeDatabase).toHaveBeenCalledOnce();
+});
+
+test("falls back to SIGKILL when the initial signal returns false", async () => {
+  vi.useFakeTimers();
+  try {
+    const {
+      dependencies,
+      killWorker,
+      worker,
+    } = createDependencies();
+    killWorker.mockImplementation((_worker, signal) => {
+      if (signal === "SIGKILL") {
+        worker.exitCode = 137;
+        worker.emit("exit", 137);
+        return true;
+      }
+      return false;
+    });
+    const controller = await startWorkerHarness(dependencies);
+
+    const shutdown = controller.shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(10);
+    await shutdown;
+
+    expect(killWorker.mock.calls).toEqual([
+      [worker, "SIGTERM"],
+      [worker, "SIGKILL"],
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("rejects deterministically and closes resources when SIGKILL does not exit", async () => {
+  vi.useFakeTimers();
+  try {
+    const {
+      dependencies,
+      closeDatabase,
+      closeServer,
+      killWorker,
+    } = createDependencies({
+      killWorker: vi.fn(() => true),
+    });
+    const controller = await startWorkerHarness(dependencies);
+
+    const shutdown = controller.shutdown("SIGTERM");
+    const rejected = expect(shutdown).rejects.toThrow(
+      "worker did not exit after SIGKILL",
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    await rejected;
+
+    expect(killWorker).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      "SIGTERM",
+    );
+    expect(killWorker).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      "SIGKILL",
+    );
+    expect(closeServer).toHaveBeenCalledOnce();
+    expect(closeDatabase).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("does not force kill after a graceful exit", async () => {
+  const {
+    dependencies,
+    killWorker,
+    worker,
+  } = createDependencies();
+  const controller = await startWorkerHarness(dependencies);
+
+  await controller.shutdown("SIGINT");
+
+  expect(killWorker).toHaveBeenCalledOnce();
+  expect(killWorker).toHaveBeenCalledWith(worker, "SIGINT");
+});
+
+test("does not signal a child that already exited", async () => {
+  const {
+    dependencies,
+    killWorker,
+    worker,
+  } = createDependencies();
+  const controller = await startWorkerHarness(dependencies);
+  worker.exitCode = 0;
+
+  await controller.shutdown("SIGTERM");
+
+  expect(killWorker).not.toHaveBeenCalled();
 });
 
 test("cleans every acquired resource when later handler setup fails", async () => {

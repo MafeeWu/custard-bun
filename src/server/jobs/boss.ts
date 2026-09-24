@@ -8,6 +8,13 @@ interface CreateBossOptions {
   logger?: BossLogger;
 }
 
+interface BossLifecycleOptions {
+  stopTimeoutMs?: number;
+}
+
+const BOSS_GRACEFUL_STOP_TIMEOUT_MS = 30_000;
+const DEFAULT_BOSS_STOP_TIMEOUT_MS = 35_000;
+
 export function createBoss(
   databaseUrl: string,
   options: CreateBossOptions = {},
@@ -42,11 +49,53 @@ function getBossState(): BossState {
   return globalBoss.companionBossState;
 }
 
-export function getBoss(databaseUrl: string): Promise<PgBoss> {
+function stopBoss(
+  boss: PgBoss,
+  timeoutMs: number,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<void>;
+  try {
+    stopping = Promise.resolve(
+      boss.stop({
+        graceful: true,
+        timeout: BOSS_GRACEFUL_STOP_TIMEOUT_MS,
+      }),
+    );
+  } catch (error: unknown) {
+    stopping = Promise.reject(error);
+  }
+  void stopping.catch(() => undefined);
+
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(
+        new Error(`pg-boss stop timed out after ${timeoutMs}ms`),
+      );
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+
+  return Promise.race([stopping, timedOut]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
+export function getBoss(
+  databaseUrl: string,
+  options: BossLifecycleOptions = {},
+): Promise<PgBoss> {
   const state = getBossState();
+  const stopTimeoutMs =
+    options.stopTimeoutMs ?? DEFAULT_BOSS_STOP_TIMEOUT_MS;
 
   if (state.resetPromise) {
-    return state.resetPromise.then(() => getBoss(databaseUrl));
+    return state.resetPromise.then(
+      () => getBoss(databaseUrl, options),
+      () => getBoss(databaseUrl, options),
+    );
   }
 
   if (state.promise) {
@@ -59,9 +108,7 @@ export function getBoss(databaseUrl: string): Promise<PgBoss> {
       await boss.start();
       return boss;
     } catch (error: unknown) {
-      await Promise.allSettled([
-        boss.stop({ graceful: true, timeout: 30_000 }),
-      ]);
+      await Promise.allSettled([stopBoss(boss, stopTimeoutMs)]);
       throw error;
     }
   })();
@@ -84,8 +131,13 @@ export function getBoss(databaseUrl: string): Promise<PgBoss> {
   return pending;
 }
 
-export function resetBoss(boss: PgBoss): Promise<void> {
+export function resetBoss(
+  boss: PgBoss,
+  options: BossLifecycleOptions = {},
+): Promise<void> {
   const state = getBossState();
+  const stopTimeoutMs =
+    options.stopTimeoutMs ?? DEFAULT_BOSS_STOP_TIMEOUT_MS;
 
   if (state.resetPromise) {
     return state.resetPromise;
@@ -94,15 +146,13 @@ export function resetBoss(boss: PgBoss): Promise<void> {
     return Promise.resolve();
   }
 
-  const reset = (async () => {
-    try {
-      await boss.stop({ graceful: true, timeout: 30_000 });
-    } finally {
+  const reset = stopBoss(boss, stopTimeoutMs).finally(() => {
+    if (state.resetPromise === reset) {
       state.promise = undefined;
       state.instance = undefined;
       state.resetPromise = undefined;
     }
-  })();
+  });
   state.resetPromise = reset;
   return reset;
 }

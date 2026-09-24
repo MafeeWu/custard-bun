@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { createServer } from "node:http";
 import { eq } from "drizzle-orm";
 import { loadDatabaseUrl } from "../../../src/server/config/database-url";
@@ -97,21 +96,6 @@ async function main(): Promise<void> {
     },
     killWorker(worker, signal) {
       return (worker as ReturnType<typeof spawn>).kill(signal);
-    },
-    async waitForWorkerExit(worker) {
-      const child = worker as ReturnType<typeof spawn>;
-      if (child.exitCode !== null) {
-        return;
-      }
-
-      const timeout = setTimeout(() => {
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-        }
-      }, 35_000);
-      timeout.unref();
-      await once(child, "exit");
-      clearTimeout(timeout);
     },
     onWorkerExit(worker, listener) {
       const child = worker as ReturnType<typeof spawn>;

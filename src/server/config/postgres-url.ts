@@ -13,11 +13,19 @@ export function buildPostgresUrl({
   port,
   database,
 }: PostgresUrlOptions): string {
-  const url = new URL("postgresql://localhost");
-  url.username = username;
-  url.password = password;
-  url.hostname = host;
-  url.port = String(port);
-  url.pathname = `/${database}`;
-  return url.toString();
+  const hostname =
+    host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const authority = new URL(`postgresql://${hostname}`);
+  authority.port = String(port);
+
+  return [
+    "postgresql://",
+    encodeURIComponent(username),
+    ":",
+    encodeURIComponent(password),
+    "@",
+    authority.host,
+    "/",
+    encodeURIComponent(database),
+  ].join("");
 }
