@@ -16,7 +16,7 @@ export default defineConfig({
       APP_CONFIG_PATH: "app.config.yml",
       NODE_ENV: "test",
       DATABASE_URL:
-        "postgresql://postgres:postgres@127.0.0.1:55432/companion_test",
+        "postgresql://companion:companion@127.0.0.1:55432/companion_test",
       BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
       BETTER_AUTH_URL: "http://127.0.0.1:3000",
       SMTP_HOST: "127.0.0.1",
