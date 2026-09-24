@@ -1,0 +1,13 @@
+branding:
+  name: Custard Bun
+  description: Private conversations with consistent AI characters.
+  logoPath: /brand/logo.svg
+  faviconPath: /brand/favicon.svg
+  primaryColor: "#F59E0B"
+registration:
+  open: true
+  maxAttemptsPerHourPerIp: 5
+links:
+  privacyUrl: https://example.com/privacy
+  termsUrl: https://example.com/terms
+  supportUrl: mailto:support@example.com
