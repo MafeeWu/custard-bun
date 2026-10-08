@@ -1,19 +1,30 @@
 import { expect, test } from "@playwright/test";
 
-test("a forged Better Auth cookie cannot access protected pages", async ({
-  context,
-  page,
-}) => {
-  await context.addCookies([
-    {
-      name: "better-auth.session_token",
-      value: "forged-session-token",
-      domain: "127.0.0.1",
-      path: "/",
-    },
-  ]);
-
-  await page.goto("/app");
-
-  await expect(page).toHaveURL(/\/auth\/sign-in$/);
-});
+for (const identity of ["anonymous", "forged cookie"]) {
+  test(`${identity} cannot access account or administrator pages`, async ({
+    context,
+    page,
+  }) => {
+    if (identity === "forged cookie") {
+      await context.addCookies([
+        {
+          name: "better-auth.session_token",
+          value: "forged-session-token",
+          domain: "127.0.0.1",
+          path: "/",
+        },
+      ]);
+    }
+    for (const route of [
+      "/app",
+      "/account",
+      "/admin",
+      "/admin/characters",
+      "/admin/users",
+      "/admin/audit",
+    ]) {
+      await page.goto(route);
+      await expect(page).toHaveURL(/\/auth\/sign-in$/);
+    }
+  });
+}

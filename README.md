@@ -3,8 +3,8 @@
 Custard Bun is a self-hosted foundation for private AI companion
 conversations. Phase 2 provides runtime branding, account registration,
 email verification, password recovery, account deletion, deployable
-application and worker processes, and the official character catalog
-foundation.
+application and worker processes, the official character catalog, and
+administrator character and ordinary-user controls.
 
 Chat and long-term memory arrive in later phases. Model credentials will remain
 server-only when model integrations are added.
@@ -113,6 +113,85 @@ files are immutable operational assets: add a new file and publish a new
 character version instead of overwriting a file that an existing version
 references.
 
+## Characters and administration
+
+Anonymous visitors can browse `/characters` and `/characters/<slug>`.
+Only active characters with an explicitly selected default published version
+are public. Unknown, archived, and not-yet-defaulted character URLs return 404.
+Neither page offers chat or historical-version selection in Phase 2.
+
+Sign in with the CLI-created administrator account, then use:
+
+- `/admin`: administration home;
+- `/admin/characters`: lifecycle, draft, default, and latest-version overview;
+- `/admin/characters/new`: create a character with a unique, permanent slug;
+- `/admin/characters/<id>`: edit, publish, select a default, archive, or restore;
+- `/admin/characters/<id>/preview`: preview the **saved** draft's real catalog
+  card, detail view, and structured character package;
+- `/admin/users`: search ordinary users and disable or restore access; and
+- `/admin/audit`: read-only, paginated administrative history.
+
+Unauthenticated requests redirect to sign-in; ordinary accounts receive no
+administration data. The deployment CLI above is the only administrator
+bootstrap/role-management path. There is no web role editor or invitation flow.
+For standalone deployments, run the same CLI against the configured instance:
+
+```bash
+pnpm exec auth create-admin --config src/server/auth/auth-cli.ts \
+  --email admin@example.com --name "Admin" --role admin
+```
+
+### Character version lifecycle
+
+Each stable character has at most one mutable draft. Save the complete package
+before previewing or publishing. Saving uses a draft revision: if another
+administrator saves first, reload and reconcile the changes rather than
+overwriting them.
+
+Publishing validates the content and the avatar's availability, rejects an
+unchanged package, and appends an immutable numbered snapshot. It retains the
+draft as the base for further editing. **Publishing never selects the default.**
+Use the version-history controls to explicitly choose a published version.
+Public reads then use that version; older snapshots remain loadable by ID.
+The Phase 3 integration contracts are `resolveDefaultCharacterVersion` for a
+new conversation and `getPublishedCharacterVersion` for an existing version.
+
+Archive hides a character from the public catalog and makes its public detail
+URL return 404. It does not delete the draft, versions, or default pointer.
+Restore makes it public again if a default is still selected. There is no
+character deletion operation.
+
+Avatar paths must be site-relative under `/characters/`, with `.svg`, `.png`,
+`.webp`, `.jpg`, or `.jpeg` extensions. Remote URLs, traversal, query strings,
+and fragments are rejected. Deploy the file under `public/characters` before
+publication. Never overwrite an avatar referenced by a published version:
+deploy a new filename and publish a version referencing that path.
+
+### User controls and audit privacy
+
+Disabling an ordinary account requires a reason and confirmation. It immediately
+revokes **all** active sessions and rejects subsequent sign-ins. Restoring
+clears the disabled state; the user must sign in again. There is no timed ban
+or automatic expiration. Administrators cannot disable themselves or other
+administrators through these controls.
+
+Character creation, draft saves, publication, default changes, archive/restore,
+and user disable/restore write audit events atomically with their state changes.
+Events retain the actor label, target, operation ID, timestamp, and small
+metadata such as version numbers, lifecycle state, and changed field names.
+Audit pages and operational logs must not copy full character packages,
+disable-reason text, passwords, tokens, or private user content. A disable
+reason is stored in the authentication ban record, not displayed in the audit
+view; audit is not a private-message inspection interface.
+
+Phase 2 deliberately excludes model calls/test chats, conversations/messages,
+actual conversation-version pinning, memory, user-created/shared characters,
+marketplace/social features, avatar uploads/object storage, public history
+browsing, web administrator-role management, automatic ban expiry, voice,
+image generation, RAG, plugins, billing, and relationship levels.
+
+## Service health
+
 Health endpoints:
 
 - Liveness: `http://127.0.0.1:3000/api/health/live`
@@ -143,7 +222,7 @@ terminals:
 
 ```bash
 pnpm db:test:up
-pnpm db:migrate
+pnpm db:deploy
 pnpm dev
 pnpm worker
 ```
@@ -163,9 +242,47 @@ owned branding server, independently of your shell's SMTP/auth variables.
 pnpm db:test:up
 DATABASE_URL=postgresql://companion:companion@127.0.0.1:55432/companion_test pnpm db:migrate
 pnpm test
+pnpm db:deploy
 pnpm test:e2e
 pnpm db:test:down
 ```
+
+Before running `db:deploy` in the test sequence, ensure `.env`'s `DATABASE_URL`
+targets the same guarded local test database as `TEST_DATABASE_URL`. Integration
+tests share that database and may truncate the seeded catalog: **rerun
+`pnpm db:deploy` immediately before every Playwright run**, even if migrations
+and seeds ran earlier. Do not point this sequence at a production database.
+
+Phase 2 E2E tests use one worker and unique public registrations verified through
+Mailpit. A test-only, loopback/`_test`-guarded helper promotes only the newly
+verified account, revokes its sessions, and signs in through the public UI.
+It is not a production bootstrap bypass. Tests never edit seed characters.
+Cleanup archives only owned test-created characters and removes fixture
+sessions/credentials while retiring the fixture accounts. Immutable versions,
+publisher identities, and audit history are intentionally retained, not deleted
+by disabling integrity triggers. Do not run concurrent suites on this database.
+
+Full release gate (with the test database configured as above):
+
+```bash
+pnpm db:test:up
+pnpm db:deploy
+pnpm test
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm db:deploy
+pnpm test:e2e
+pnpm exec drizzle-kit generate --name final_schema_drift_check
+git status --short
+```
+
+Every command must pass; Drizzle must report no schema changes and create no
+migration. The currently pinned TypeScript 7.0.2 / typescript-eslint 8.70.1
+combination blocks `pnpm lint` at startup (`typescript-eslint does not support
+TS 7.0`). Phase 2 release acceptance remains blocked until that incompatibility
+is resolved through an approved toolchain change. Do not downgrade TypeScript,
+bypass its parser, or disable lint rules to claim a green gate.
 
 Next 16 automatically maintains both production and development route-type
 includes in `tsconfig.json` during `next typegen`/build; these generated-directory

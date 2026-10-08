@@ -30,20 +30,30 @@ account.
 
 ## Phase 2: Official Characters and Administration
 
-Create a separate implementation plan after Phase 1 is accepted.
+**Detailed plan:** `docs/superpowers/plans/2026-10-08-official-characters-and-administration.md`
+
+**Status:** Implementation and acceptance coverage delivered; release acceptance
+blocked by the pinned TypeScript 7.0.2 / typescript-eslint 8.70.1 startup
+incompatibility in `pnpm lint`. Do not mark Phase 2 complete until the full
+release gate passes and whole-branch review is accepted.
 
 Deliver:
 
 - Character and immutable character-version schema
-- Four to six seed characters
+- Five distinct, idempotently deployed seed characters
 - Public catalog and character detail screens
 - Admin authentication and user disable/restore controls
 - Character drafting, previewing, publishing, and default-version selection
 - Audit events for administrative mutations
 
-Independent acceptance test: an administrator publishes a new character
-version, existing conversations remain pinned to the old version, and new
-conversations select the new default.
+Independent acceptance test: an administrator publishes v1, explicitly selects
+it as default, then publishes v2 without changing public v1 reads. Selecting v2
+changes `resolveDefaultCharacterVersion`, while the previous immutable version
+remains loadable by ID through `getPublishedCharacterVersion`. Archive removes public
+selection without invalidating that immutable version; restore reinstates the
+selected default. Browser coverage also verifies anonymous catalog browsing,
+administrator authorization, ordinary-user disable/session revocation/restore,
+and privacy-safe audit events. Actual conversation pinning belongs to Phase 3.
 
 ## Phase 3: Streaming Chat, Model Gateway, and Quotas
 
@@ -62,6 +72,10 @@ Deliver:
 Independent acceptance test: two users can chat with the same character
 without crossing data boundaries; timeout, rate limit, interrupted stream,
 user quota, and instance budget produce explicit recoverable states.
+After an administrator publishes and selects a new default character version,
+an existing conversation remains pinned to its original version and a newly
+created conversation selects the new default. Verify this in the browser once
+conversation storage and chat exist.
 
 ## Phase 4: Long-Term Memory, Privacy, and Operational Completion
 
