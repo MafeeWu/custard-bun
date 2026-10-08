@@ -24,8 +24,10 @@ Use either:
 The TypeScript toolchain intentionally uses the TypeScript 7 compiler plus the
 official TypeScript 6 API compatibility package. Keep `pnpm typecheck` on
 `tsc --noEmit`: the workspace `tsc` binary resolves through `@typescript/native`
-to TypeScript 7.0.2, while linting and other compiler-API consumers import
-`typescript` through `@typescript/typescript6` and see the TypeScript 6.0.3 API.
+to TypeScript 7.0.2, while linting, Next's compiler-API consumers, and other
+tooling import `typescript` through `@typescript/typescript6` and see the
+TypeScript 6.0.3 API. The production `pnpm build` entry point runs that native
+TypeScript 7 preflight via `pnpm typecheck` before `next build`.
 
 ## Configure
 
@@ -67,6 +69,10 @@ docker compose up --build
 The same production image is used for the migration job, worker, and app.
 It retains the pinned lockfile for runtime CLI commands and omits rebuild-only
 Next caches; startup must not resolve or install a new dependency graph.
+The image build continues to invoke `pnpm build`, so Docker and Compose run the
+native TypeScript 7 `pnpm typecheck` preflight before `next build` while Next's
+own build-time compiler-API consumers still resolve the official TypeScript 6
+compatibility package.
 
 `pnpm start` runs the supported production HTTP boundary in the same process as
 Next. It validates the entire runtime configuration **before listening**, then
@@ -305,6 +311,8 @@ migration. The lint toolchain uses the TypeScript 7 compiler plus the official
 TypeScript 6 API compatibility package, so `pnpm lint` runs the full source
 lint without a TypeScript 7 compiler-API startup exception. Do not downgrade
 the compiler, bypass its parser, or disable lint rules to claim a green gate.
+`pnpm build` now reports both stages: it runs native TypeScript 7 preflight
+typechecking first, then `next build` with Next's own checks intact.
 
 Next 16 automatically maintains both production and development route-type
 includes in `tsconfig.json` during `next typegen`/build; these generated-directory

@@ -6,9 +6,11 @@ import { expect, test } from "vitest";
 
 const root = join(__dirname, "..", "..");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+  scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 };
+const dockerfile = readFileSync(join(root, "Dockerfile"), "utf8");
 
 function dependencySpec(name: string): string | undefined {
   return packageJson.dependencies?.[name] ?? packageJson.devDependencies?.[name];
@@ -40,4 +42,10 @@ test("keeps package dependency pins exact", () => {
     expect(spec, `${name} must use an exact pinned dependency spec`).not.toMatch(/^[~^*]|[<>xX]/);
     expect(spec, `${name} must not be floated with latest`).not.toBe("latest");
   }
+});
+
+test("build runs native TypeScript 7 typecheck before next build and Docker uses that entry point", () => {
+  expect(packageJson.scripts?.build).toBe("pnpm typecheck && next build");
+  expect(packageJson.scripts?.typecheck).toBe("next typegen && tsc --noEmit");
+  expect(dockerfile).toContain("RUN pnpm build && rm -rf .next/cache");
 });

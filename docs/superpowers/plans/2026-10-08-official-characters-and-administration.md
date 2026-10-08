@@ -16,6 +16,9 @@
 - Keep the TypeScript 7 compiler plus official TypeScript 6 API compatibility
   package split: `pnpm exec tsc --version` must remain 7.0.2, while importing
   `typescript` exposes the TypeScript 6.0.3 API for compiler-API tools.
+  Production `pnpm build` must run native TypeScript 7 preflight typechecking
+  before `next build`, while Next/tooling can continue importing the official
+  TypeScript 6 compatibility API.
 - PostgreSQL remains the only required stateful production dependency.
 - Characters are official content managed by administrators; users cannot create or publish characters.
 - The catalog and character detail pages are publicly readable.
@@ -1558,6 +1561,7 @@ pnpm test
 pnpm typecheck
 pnpm lint
 pnpm build
+pnpm db:deploy
 pnpm test:e2e
 pnpm exec drizzle-kit generate --name final_schema_drift_check
 git status --short

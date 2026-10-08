@@ -27,8 +27,9 @@ establishes the versioned character contract that Phase 3 will consume.
 
 - The application remains a TypeScript and Next.js modular monolith.
 - The toolchain uses the TypeScript 7 compiler plus the official TypeScript 6
-  API compatibility package so `tsc --noEmit` keeps TypeScript 7 behavior while
-  lint tooling imports the TypeScript 6 compatibility API.
+  API compatibility package so the production build runs native TypeScript 7
+  preflight typechecking before `next build`, while lint tooling and Next's
+  compiler-API consumers import the TypeScript 6 compatibility API.
 - PostgreSQL remains the only required stateful production dependency.
 - Characters are official content managed by administrators. Users cannot
   create or publish characters.
