@@ -1,0 +1,21 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 128 128"
+  role="img"
+  aria-labelledby="title"
+>
+  <title>Gentle Action Coach abstract coral steps</title>
+  <rect width="128" height="128" rx="28" fill="#FFE8E1" />
+  <path
+    d="M30 91h24V67h24V43h24"
+    fill="none"
+    stroke="#E76F51"
+    stroke-width="13"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="31" cy="91" r="10" fill="#FFFFFF" />
+  <circle cx="54" cy="67" r="10" fill="#F4A261" />
+  <circle cx="78" cy="43" r="10" fill="#FFFFFF" />
+  <path d="M93 35l13 8-13 8z" fill="#E76F51" />
+</svg>

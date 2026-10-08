@@ -20,6 +20,8 @@
     "auth:generate": "auth generate --config src/server/auth/auth-cli.ts --output src/server/db/auth-schema.ts --yes",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/server/db/migrate.ts",
+    "db:seed:characters": "node --env-file-if-exists=.env --import tsx src/server/db/seed-characters.ts",
+    "db:deploy": "pnpm db:migrate && pnpm db:seed:characters",
     "db:test:up": "docker compose -p ai-companion-test -f compose.test.yml up -d --wait",
     "db:test:down": "docker compose -p ai-companion-test -f compose.test.yml down -v"
   },

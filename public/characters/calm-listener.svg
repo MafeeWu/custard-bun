@@ -1,0 +1,26 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 128 128"
+  role="img"
+  aria-labelledby="title"
+>
+  <title>Calm Listener abstract blue ripple</title>
+  <rect width="128" height="128" rx="28" fill="#E6F4FF" />
+  <circle cx="64" cy="64" r="38" fill="#7CC7E8" />
+  <path
+    d="M35 67c13-20 45-20 58 0"
+    fill="none"
+    stroke="#1D6F96"
+    stroke-width="8"
+    stroke-linecap="round"
+  />
+  <path
+    d="M45 82c9-10 29-10 38 0"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="7"
+    stroke-linecap="round"
+    opacity=".9"
+  />
+  <circle cx="64" cy="52" r="10" fill="#FFFFFF" opacity=".92" />
+</svg>

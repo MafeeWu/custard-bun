@@ -1,0 +1,15 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 128 128"
+  role="img"
+  aria-labelledby="title"
+>
+  <title>Energetic Friend abstract orange spark</title>
+  <rect width="128" height="128" rx="28" fill="#FFF1D6" />
+  <path
+    d="M64 19l10 30 31-6-22 23 22 23-31-6-10 30-10-30-31 6 22-23-22-23 31 6z"
+    fill="#FF9F1C"
+  />
+  <circle cx="64" cy="66" r="22" fill="#FFBF69" />
+  <circle cx="64" cy="66" r="9" fill="#FFFFFF" />
+</svg>

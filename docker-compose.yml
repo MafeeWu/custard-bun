@@ -1,6 +1,6 @@
 x-application: &application
   build: .
-  image: ai-companion-web:phase-1
+  image: ai-companion-web:phase-2
   entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
   env_file: .env
   environment:
@@ -11,6 +11,7 @@ x-application: &application
     POSTGRES_USER: companion
   volumes:
     - ./app.config.yml:/app/app.config.yml:ro
+    - ./public/characters:/app/public/characters:ro
 
 services:
   postgres:
@@ -29,7 +30,7 @@ services:
 
   migrate:
     <<: *application
-    command: ["pnpm", "db:migrate"]
+    command: ["pnpm", "db:deploy"]
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,12 +1,13 @@
 # Custard Bun
 
 Custard Bun is a self-hosted foundation for private AI companion
-conversations. Phase 1 provides runtime branding, account registration,
-email verification, password recovery, account deletion, and deployable
-application and worker processes.
+conversations. Phase 2 provides runtime branding, account registration,
+email verification, password recovery, account deletion, deployable
+application and worker processes, and the official character catalog
+foundation.
 
-Chat, characters, and long-term memory arrive in later phases. Model
-credentials will remain server-only when model integrations are added.
+Chat and long-term memory arrive in later phases. Model credentials will remain
+server-only when model integrations are added.
 
 ## Prerequisites
 
@@ -81,6 +82,31 @@ Run migrations independently when needed:
 ```bash
 docker compose run --rm migrate
 ```
+
+The migration job runs `pnpm db:deploy`, which applies database migrations and
+then idempotently seeds the five official character packages. For local or
+standalone operations, run the same steps directly:
+
+```bash
+pnpm db:migrate
+pnpm db:seed:characters
+# or both:
+pnpm db:deploy
+```
+
+Character seeding is safe to rerun. Existing official character IDs with their
+expected slugs are counted as existing and are not overwritten: drafts,
+published versions, default version pointers, lifecycle state, and admin state
+remain unchanged. A reserved slug or stable ID collision fails explicitly and
+rolls back the seed operation instead of partially creating the catalog. The
+bootstrap seed does not create administrator audit events.
+
+Official avatars live under `public/characters` and are referenced as local
+paths such as `/characters/calm-listener.svg`. Compose mounts this directory
+read-only into the app, worker, and migration containers. Published avatar
+files are immutable operational assets: add a new file and publish a new
+character version instead of overwriting a file that an existing version
+references.
 
 Health endpoints:
 

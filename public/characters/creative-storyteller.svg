@@ -1,0 +1,21 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 128 128"
+  role="img"
+  aria-labelledby="title"
+>
+  <title>Creative Storyteller abstract purple moon path</title>
+  <rect width="128" height="128" rx="28" fill="#F0E7FF" />
+  <path
+    d="M82 24c-24 4-42 25-38 50 3 19 18 33 37 36-9 6-21 8-33 5-27-7-43-34-36-61S46 11 73 18c4 1 7 3 9 6z"
+    fill="#8A5CF6"
+  />
+  <path
+    d="M52 82c12-18 25-28 43-35"
+    fill="none"
+    stroke="#FFD166"
+    stroke-width="8"
+    stroke-linecap="round"
+  />
+  <circle cx="92" cy="43" r="7" fill="#FFD166" />
+</svg>
