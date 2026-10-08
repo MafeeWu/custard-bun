@@ -10,7 +10,10 @@ type EditorAction = (
   formData: FormData,
 ) => Promise<AdminActionState>;
 
-type PublishAction = (formData: FormData) => void | Promise<void>;
+type PublishAction = (
+  state: AdminActionState,
+  formData: FormData,
+) => Promise<AdminActionState>;
 
 export interface CharacterEditorProps {
   mode: "create" | "edit";
@@ -21,6 +24,13 @@ export interface CharacterEditorProps {
   action: EditorAction;
   publishAction?: PublishAction;
   state?: AdminActionState;
+  publishState?: AdminActionState;
+}
+
+const idleState: AdminActionState = { status: "idle" };
+
+async function noopAction() {
+  return idleState;
 }
 
 function FieldError({ messages }: { messages?: string[] }) {
@@ -40,6 +50,38 @@ function textAreaValue(values: string[]) {
   return values.join("\n");
 }
 
+function ActionFeedback({
+  state,
+  showFieldErrors = false,
+}: {
+  state: AdminActionState;
+  showFieldErrors?: boolean;
+}) {
+  if (!state.message && (!showFieldErrors || !state.fieldErrors)) {
+    return null;
+  }
+  const fieldMessages = showFieldErrors
+    ? Object.entries(state.fieldErrors ?? {}).flatMap(([field, messages]) =>
+        messages.map((message) => ({
+          key: `${field}-${message}`,
+          message,
+        })),
+      )
+    : [];
+  return (
+    <div role={state.status === "error" ? "alert" : "status"}>
+      {state.message ? <p>{state.message}</p> : null}
+      {fieldMessages.length > 0 ? (
+        <ul className="admin-field-errors">
+          {fieldMessages.map(({ key, message }) => (
+            <li key={key}>{message}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function CharacterEditor({
   mode,
   characterId,
@@ -49,9 +91,12 @@ export function CharacterEditor({
   action,
   publishAction,
   state = { status: "idle" },
+  publishState = { status: "idle" },
 }: CharacterEditorProps) {
   const formId = useId();
   const [actionState, formAction, pending] = useActionState(action, state);
+  const [publishActionState, publishFormAction, publishPending] =
+    useActionState(publishAction ?? noopAction, publishState);
   const examples =
     content.exampleConversations.length > 0
       ? content.exampleConversations
@@ -59,11 +104,7 @@ export function CharacterEditor({
 
   return (
     <div className="page-stack">
-      {actionState.message ? (
-        <p role={actionState.status === "error" ? "alert" : "status"}>
-          {actionState.message}
-        </p>
-      ) : null}
+      <ActionFeedback state={actionState} />
 
       <form
         action={formAction}
@@ -259,14 +300,17 @@ export function CharacterEditor({
           <Link href={`/admin/characters/${characterId}/preview`}>
             Preview persisted draft
           </Link>
-          <form action={publishAction}>
+          <form action={publishFormAction}>
+            <ActionFeedback state={publishActionState} showFieldErrors />
             <input
               type="hidden"
               name="expectedRevision"
               value={draftRevision}
               readOnly
             />
-            <button type="submit">Publish draft</button>
+            <button type="submit" disabled={publishPending}>
+              Publish draft
+            </button>
           </form>
         </div>
       ) : null}

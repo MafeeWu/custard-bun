@@ -95,3 +95,34 @@ test("shows visible field errors and operation status while keeping preview and 
     screen.queryByRole("button", { name: /delete/i }),
   ).not.toBeInTheDocument();
 });
+
+test("shows returned publish draft conflict guidance without using save draft state", () => {
+  render(
+    <CharacterEditor
+      mode="edit"
+      characterId="char-1"
+      slug="calm-guide"
+      draftRevision={3}
+      content={content}
+      action={vi.fn()}
+      publishAction={vi.fn()}
+      state={{ status: "idle" }}
+      publishState={{
+        status: "error",
+        message:
+          "This draft changed in another session. Reload the page before editing again.",
+      }}
+    />,
+  );
+
+  const publishForm = screen
+    .getByRole("button", { name: "Publish draft" })
+    .closest("form");
+
+  expect(
+    within(publishForm as HTMLFormElement).getByRole("alert"),
+  ).toHaveTextContent(
+    "This draft changed in another session. Reload the page before editing again.",
+  );
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});

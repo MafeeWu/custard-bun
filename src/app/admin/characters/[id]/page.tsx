@@ -6,6 +6,7 @@ import { requireAdmin } from "@/server/admin/require-admin";
 import { getAdminCharacterEditorDetail } from "@/server/characters/character-queries";
 import { getDatabase } from "@/server/db/database";
 import {
+  type AdminActionState,
   archiveCharacterAction,
   publishCharacterDraftAction,
   restoreCharacterAction,
@@ -31,42 +32,54 @@ export default async function EditCharacterPage({
   }
   const detail = character;
 
-  async function publishAction(formData: FormData) {
+  async function publishAction(
+    state: AdminActionState,
+    formData: FormData,
+  ) {
     "use server";
-    await publishCharacterDraftAction(
+    return publishCharacterDraftAction(
       detail.id,
       detail.slug,
-      { status: "idle" },
+      state,
       formData,
     );
   }
 
-  async function setDefaultAction(formData: FormData) {
+  async function setDefaultAction(
+    state: AdminActionState,
+    formData: FormData,
+  ) {
     "use server";
-    await setDefaultCharacterVersionAction(
+    return setDefaultCharacterVersionAction(
       detail.id,
       detail.slug,
-      { status: "idle" },
+      state,
       formData,
     );
   }
 
-  async function archiveAction(formData: FormData) {
+  async function archiveAction(
+    state: AdminActionState,
+    formData: FormData,
+  ) {
     "use server";
-    await archiveCharacterAction(
+    return archiveCharacterAction(
       detail.id,
       detail.slug,
-      { status: "idle" },
+      state,
       formData,
     );
   }
 
-  async function restoreAction(formData: FormData) {
+  async function restoreAction(
+    state: AdminActionState,
+    formData: FormData,
+  ) {
     "use server";
-    await restoreCharacterAction(
+    return restoreCharacterAction(
       detail.id,
       detail.slug,
-      { status: "idle" },
+      state,
       formData,
     );
   }

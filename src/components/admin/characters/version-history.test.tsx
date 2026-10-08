@@ -2,6 +2,8 @@ import { render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { VersionHistory } from "./version-history";
 
+const idleAction = vi.fn(async () => ({ status: "idle" as const }));
+
 test("shows immutable versions, publication time, explicit default selection, and archive/restore controls", () => {
   render(
     <VersionHistory
@@ -23,9 +25,9 @@ test("shows immutable versions, publication time, explicit default selection, an
           publishedAt: new Date("2026-10-07T01:02:03Z"),
         },
       ]}
-      setDefaultAction={vi.fn()}
-      archiveAction={vi.fn()}
-      restoreAction={vi.fn()}
+      setDefaultAction={idleAction}
+      archiveAction={idleAction}
+      restoreAction={idleAction}
     />,
   );
 
@@ -57,9 +59,9 @@ test("shows an explicit restore confirmation for archived characters", () => {
       lifecycle="archived"
       defaultVersionId={null}
       versions={[]}
-      setDefaultAction={vi.fn()}
-      archiveAction={vi.fn()}
-      restoreAction={vi.fn()}
+      setDefaultAction={idleAction}
+      archiveAction={idleAction}
+      restoreAction={idleAction}
     />,
   );
 
@@ -70,4 +72,94 @@ test("shows an explicit restore confirmation for archived characters", () => {
   expect(
     within(restoreForm).getByRole("button", { name: "Restore character" }),
   ).toBeVisible();
+});
+
+test("shows returned set-default errors beside the selected version form", () => {
+  render(
+    <VersionHistory
+      characterId="char-1"
+      slug="calm-guide"
+      lifecycle="active"
+      defaultVersionId={null}
+      versions={[
+        {
+          id: "v2",
+          versionNumber: 2,
+          displayName: "Second",
+          publishedAt: new Date("2026-10-08T01:02:03Z"),
+        },
+      ]}
+      setDefaultAction={idleAction}
+      archiveAction={idleAction}
+      restoreAction={idleAction}
+      defaultActionStates={{
+        v2: {
+          status: "error",
+          message: "Default version could not be changed.",
+        },
+      }}
+    />,
+  );
+
+  const defaultForm = screen
+    .getByRole("button", { name: "Set version 2 as default" })
+    .closest("form");
+
+  expect(
+    within(defaultForm as HTMLFormElement).getByRole("alert"),
+  ).toHaveTextContent("Default version could not be changed.");
+});
+
+test("shows returned archive lifecycle errors in the archive form", () => {
+  render(
+    <VersionHistory
+      characterId="char-1"
+      slug="calm-guide"
+      lifecycle="active"
+      defaultVersionId={null}
+      versions={[]}
+      setDefaultAction={idleAction}
+      archiveAction={idleAction}
+      restoreAction={idleAction}
+      archiveActionState={{
+        status: "error",
+        message: "Character could not be archived.",
+      }}
+    />,
+  );
+
+  const archiveForm = screen
+    .getByRole("button", { name: "Archive character" })
+    .closest("form");
+
+  expect(
+    within(archiveForm as HTMLFormElement).getByRole("alert"),
+  ).toHaveTextContent("Character could not be archived.");
+});
+
+test("shows returned restore lifecycle errors in the restore form", () => {
+  render(
+    <VersionHistory
+      characterId="char-1"
+      slug="calm-guide"
+      lifecycle="archived"
+      defaultVersionId={null}
+      versions={[]}
+      setDefaultAction={idleAction}
+      archiveAction={idleAction}
+      restoreAction={idleAction}
+      restoreActionState={{
+        status: "error",
+        message: "Character could not be restored.",
+      }}
+    />,
+  );
+
+  const restoreForm = screen
+    .getByRole("button", { name: "Restore character" })
+    .closest("form");
+
+  expect(
+    within(restoreForm as HTMLFormElement).getByRole("alert"),
+  ).toHaveTextContent("Character could not be restored.");
 });
