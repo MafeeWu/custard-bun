@@ -307,6 +307,19 @@ export function createCharacterService(dependencies: {
 
     async setDefaultVersion(input) {
       await database.transaction(async (transaction) => {
+        await transaction.execute(sql`
+          SELECT id
+          FROM characters
+          WHERE id = ${input.characterId}
+          FOR UPDATE
+        `);
+
+        const [selectedCharacter] = await transaction
+          .select({ defaultVersionId: character.defaultVersionId })
+          .from(character)
+          .where(eq(character.id, input.characterId))
+          .limit(1);
+
         const [selectedVersion] = await transaction
           .select({
             id: characterVersion.id,
@@ -319,12 +332,6 @@ export function createCharacterService(dependencies: {
               eq(characterVersion.characterId, input.characterId),
             ),
           )
-          .limit(1);
-
-        const [selectedCharacter] = await transaction
-          .select({ defaultVersionId: character.defaultVersionId })
-          .from(character)
-          .where(eq(character.id, input.characterId))
           .limit(1);
 
         if (!selectedCharacter) {
@@ -361,25 +368,10 @@ export function createCharacterService(dependencies: {
 
     async setArchived(input) {
       await database.transaction(async (transaction) => {
-        const [selectedCharacter] = await transaction
-          .select({ lifecycle: character.lifecycle })
-          .from(character)
-          .where(eq(character.id, input.characterId))
-          .limit(1);
-
-        if (!selectedCharacter) {
-          throw new CharacterNotFoundError();
-        }
-
-        const currentArchived = selectedCharacter.lifecycle === "archived";
-        if (currentArchived === input.archived) {
-          throw new InvalidCharacterStateError();
-        }
-
         const action = input.archived
           ? "character.archive"
           : "character.restore";
-        await transaction
+        const [updated] = await transaction
           .update(character)
           .set({
             lifecycle: input.archived ? "archived" : "active",
@@ -387,7 +379,20 @@ export function createCharacterService(dependencies: {
             archivedBy: input.archived ? actor.userId : null,
             updatedAt: new Date(),
           })
-          .where(eq(character.id, input.characterId));
+          .where(
+            and(
+              eq(character.id, input.characterId),
+              eq(character.lifecycle, input.archived ? "active" : "archived"),
+            ),
+          )
+          .returning({ id: character.id });
+
+        if (!updated) {
+          if (await selectCharacterExists(transaction, input.characterId)) {
+            throw new InvalidCharacterStateError();
+          }
+          throw new CharacterNotFoundError();
+        }
 
         await recordAdminAudit(transaction, actor, {
           action,

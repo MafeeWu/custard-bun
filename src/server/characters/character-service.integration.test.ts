@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import type { AdminActor } from "@/server/admin/admin-actor";
@@ -138,6 +139,38 @@ async function getVersions(characterId: string) {
     .from(characterVersion)
     .where(eq(characterVersion.characterId, characterId))
     .orderBy(characterVersion.versionNumber);
+}
+
+async function waitForApplicationLockWait(
+  applicationName: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    const result = await database.$client.query<{
+      wait_event_type: string | null;
+    }>(
+      `
+        SELECT wait_event_type
+        FROM pg_stat_activity
+        WHERE application_name = $1
+          AND state = 'active'
+      `,
+      [applicationName],
+    );
+
+    if (result.rows.some((row) => row.wait_event_type === "Lock")) {
+      return;
+    }
+
+    await delay(10);
+  }
+
+  throw new Error(`${applicationName} did not wait on a PostgreSQL lock`);
+}
+
+async function deleteAuditEvents(): Promise<void> {
+  await database.delete(adminAuditEvent);
 }
 
 beforeEach(async () => {
@@ -459,6 +492,175 @@ describe("setDefaultVersion and lifecycle", () => {
     expect(await auditEvents("character.default.change")).toHaveLength(1);
     expect(await auditEvents("character.archive")).toHaveLength(1);
     expect(await auditEvents("character.restore")).toHaveLength(1);
+  });
+
+  test("two concurrent same-state archive calls yield one success, one invalid state, and one audit event", async () => {
+    const setupService = createService();
+    const created = await setupService.createCharacter({
+      slug: "mira",
+      content: validContent,
+    });
+    await deleteAuditEvents();
+
+    const firstDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "character-archive-first",
+      max: 1,
+    });
+    const secondDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "character-archive-second",
+      max: 1,
+    });
+    const firstService = createCharacterService({
+      database: firstDatabase,
+      actor,
+      verifyAvatarAsset: vi.fn(async () => undefined),
+    });
+    const secondService = createCharacterService({
+      database: secondDatabase,
+      actor,
+      verifyAvatarAsset: vi.fn(async () => undefined),
+    });
+    const locker = await database.$client.connect();
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query("SELECT id FROM characters WHERE id = $1 FOR UPDATE", [
+        created.characterId,
+      ]);
+
+      const firstArchive = firstService.setArchived({
+        characterId: created.characterId,
+        archived: true,
+      });
+      await waitForApplicationLockWait("character-archive-first");
+
+      const secondArchive = secondService.setArchived({
+        characterId: created.characterId,
+        archived: true,
+      });
+      await waitForApplicationLockWait("character-archive-second");
+
+      await locker.query("COMMIT");
+
+      const results = await Promise.allSettled([firstArchive, secondArchive]);
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected");
+      expect(rejected).toBeDefined();
+      expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+        code: "INVALID_CHARACTER_STATE",
+      });
+      expect(await getCharacter(created.characterId)).toMatchObject({
+        lifecycle: "archived",
+      });
+      expect(await auditEvents("character.archive")).toHaveLength(1);
+    } finally {
+      await locker.query("ROLLBACK").catch(() => undefined);
+      locker.release();
+      await firstDatabase.$client.end();
+      await secondDatabase.$client.end();
+    }
+  });
+
+  test("concurrent default changes serialize previous version audit metadata in lock order", async () => {
+    const setupService = createService();
+    const created = await setupService.createCharacter({
+      slug: "mira",
+      content: validContent,
+    });
+    const versionOne = await setupService.publishDraft({
+      characterId: created.characterId,
+      expectedRevision: 1,
+    });
+    const draftForVersionTwo = await setupService.saveDraft({
+      characterId: created.characterId,
+      expectedRevision: 2,
+      content: contentWith({ displayName: "Mira v2" }),
+    });
+    const versionTwo = await setupService.publishDraft({
+      characterId: created.characterId,
+      expectedRevision: draftForVersionTwo.draftRevision,
+    });
+    const draftForVersionThree = await setupService.saveDraft({
+      characterId: created.characterId,
+      expectedRevision: versionTwo.draftRevision,
+      content: contentWith({ displayName: "Mira v3" }),
+    });
+    const versionThree = await setupService.publishDraft({
+      characterId: created.characterId,
+      expectedRevision: draftForVersionThree.draftRevision,
+    });
+    await setupService.setDefaultVersion({
+      characterId: created.characterId,
+      versionId: versionOne.versionId,
+    });
+    await deleteAuditEvents();
+
+    const firstDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "character-default-v2",
+      max: 1,
+    });
+    const secondDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "character-default-v3",
+      max: 1,
+    });
+    const firstService = createCharacterService({
+      database: firstDatabase,
+      actor,
+      verifyAvatarAsset: vi.fn(async () => undefined),
+    });
+    const secondService = createCharacterService({
+      database: secondDatabase,
+      actor,
+      verifyAvatarAsset: vi.fn(async () => undefined),
+    });
+    const locker = await database.$client.connect();
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query("SELECT id FROM characters WHERE id = $1 FOR UPDATE", [
+        created.characterId,
+      ]);
+
+      const setVersionTwoDefault = firstService.setDefaultVersion({
+        characterId: created.characterId,
+        versionId: versionTwo.versionId,
+      });
+      await waitForApplicationLockWait("character-default-v2");
+
+      const setVersionThreeDefault = secondService.setDefaultVersion({
+        characterId: created.characterId,
+        versionId: versionThree.versionId,
+      });
+      await waitForApplicationLockWait("character-default-v3");
+
+      await locker.query("COMMIT");
+
+      const results = await Promise.allSettled([
+        setVersionTwoDefault,
+        setVersionThreeDefault,
+      ]);
+      expect(results).toEqual([
+        expect.objectContaining({ status: "fulfilled" }),
+        expect.objectContaining({ status: "fulfilled" }),
+      ]);
+      expect(await getCharacter(created.characterId)).toMatchObject({
+        defaultVersionId: versionThree.versionId,
+      });
+
+      const defaultAudits = await auditEvents("character.default.change");
+      expect(defaultAudits).toHaveLength(2);
+      expect(defaultAudits.map((event) => event.metadata)).toEqual([
+        { previousVersionNumber: 1, newVersionNumber: 2 },
+        { previousVersionNumber: 2, newVersionNumber: 3 },
+      ]);
+    } finally {
+      await locker.query("ROLLBACK").catch(() => undefined);
+      locker.release();
+      await firstDatabase.$client.end();
+      await secondDatabase.$client.end();
+    }
   });
 });
 
