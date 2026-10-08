@@ -32,10 +32,9 @@ account.
 
 **Detailed plan:** `docs/superpowers/plans/2026-10-08-official-characters-and-administration.md`
 
-**Status:** Implementation and acceptance coverage delivered; release acceptance
-blocked by the pinned TypeScript 7.0.2 / typescript-eslint 8.70.1 startup
-incompatibility in `pnpm lint`. Do not mark Phase 2 complete until the full
-release gate passes and whole-branch review is accepted.
+**Status:** Complete. Implementation, acceptance coverage, full release gate,
+and the approved TypeScript 7 compiler plus official TypeScript 6 API
+compatibility lint-toolchain fix are delivered.
 
 Deliver:
 

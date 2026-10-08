@@ -6,13 +6,16 @@
 
 **Architecture:** Extend the existing Next.js modular monolith with a focused character domain: strict content schemas, one mutable draft per stable character, append-only published snapshots, transactional services, and public/admin query boundaries. Reuse Better Auth identity tables for administrator authorization and user disabling, keep PostgreSQL as the only stateful dependency, and make the deployment migration command seed missing official characters without overwriting administrator state.
 
-**Tech Stack:** Node.js 24.x, pnpm 12.5.1, Next.js 16.3.6, React 19.3.0, TypeScript 7.0.2, Better Auth 1.7.5, Drizzle ORM 0.45.3, PostgreSQL 16, Zod 4.6.5, Vitest 5.0.1, Testing Library 16.3.3, Playwright 1.63.0, Tailwind CSS 4.3.3.
+**Tech Stack:** Node.js 24.x, pnpm 12.5.1, Next.js 16.3.6, React 19.3.0, TypeScript 7.0.2 compiler with the official TypeScript 6 API compatibility package for lint tooling, Better Auth 1.7.5, Drizzle ORM 0.45.3, PostgreSQL 16, Zod 4.6.5, Vitest 5.0.1, Testing Library 16.3.3, Playwright 1.63.0, Tailwind CSS 4.3.3.
 
 **Spec:** `docs/superpowers/specs/2026-10-08-official-characters-and-administration-design.md`
 
 ## Global Constraints
 
 - The application remains a TypeScript and Next.js modular monolith.
+- Keep the TypeScript 7 compiler plus official TypeScript 6 API compatibility
+  package split: `pnpm exec tsc --version` must remain 7.0.2, while importing
+  `typescript` exposes the TypeScript 6.0.3 API for compiler-API tools.
 - PostgreSQL remains the only required stateful production dependency.
 - Characters are official content managed by administrators; users cannot create or publish characters.
 - The catalog and character detail pages are publicly readable.

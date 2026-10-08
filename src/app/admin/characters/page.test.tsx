@@ -6,9 +6,30 @@ import {
   listAdminCharacters,
 } from "@/server/characters/character-queries";
 
+type FormAction = (
+  state: { status: "idle" },
+  formData: FormData,
+) => Promise<unknown>;
+
+type CharacterEditorProps = {
+  publishAction: FormAction;
+};
+
+type VersionHistoryProps = {
+  setDefaultAction: FormAction;
+  archiveAction: FormAction;
+  restoreAction: FormAction;
+};
+
 const editPageMocks = vi.hoisted(() => ({
-  CharacterEditor: vi.fn((_props: any) => null),
-  VersionHistory: vi.fn((_props: any) => null),
+  CharacterEditor: vi.fn((props: CharacterEditorProps) => {
+    void props;
+    return null;
+  }),
+  VersionHistory: vi.fn((props: VersionHistoryProps) => {
+    void props;
+    return null;
+  }),
   publishCharacterDraftAction: vi.fn(),
   setDefaultCharacterVersionAction: vi.fn(),
   archiveCharacterAction: vi.fn(),

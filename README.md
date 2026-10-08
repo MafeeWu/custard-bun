@@ -21,6 +21,12 @@ Use either:
 - Docker with Docker Compose; or
 - Node.js 24.x, pnpm 12.5.1, and PostgreSQL 16.
 
+The TypeScript toolchain intentionally uses the TypeScript 7 compiler plus the
+official TypeScript 6 API compatibility package. Keep `pnpm typecheck` on
+`tsc --noEmit`: the workspace `tsc` binary resolves through `@typescript/native`
+to TypeScript 7.0.2, while linting and other compiler-API consumers import
+`typescript` through `@typescript/typescript6` and see the TypeScript 6.0.3 API.
+
 ## Configure
 
 Copy the environment template and replace every placeholder:
@@ -295,11 +301,10 @@ git status --short
 ```
 
 Every command must pass; Drizzle must report no schema changes and create no
-migration. The currently pinned TypeScript 7.0.2 / typescript-eslint 8.70.1
-combination blocks `pnpm lint` at startup (`typescript-eslint does not support
-TS 7.0`). Phase 2 release acceptance remains blocked until that incompatibility
-is resolved through an approved toolchain change. Do not downgrade TypeScript,
-bypass its parser, or disable lint rules to claim a green gate.
+migration. The lint toolchain uses the TypeScript 7 compiler plus the official
+TypeScript 6 API compatibility package, so `pnpm lint` runs the full source
+lint without a TypeScript 7 compiler-API startup exception. Do not downgrade
+the compiler, bypass its parser, or disable lint rules to claim a green gate.
 
 Next 16 automatically maintains both production and development route-type
 includes in `tsconfig.json` during `next typegen`/build; these generated-directory

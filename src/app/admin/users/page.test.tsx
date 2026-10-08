@@ -3,8 +3,15 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { requireAdmin } from "@/server/admin/require-admin";
 import { listOrdinaryUsers } from "@/server/admin/user-queries";
 
+type UserStatusFormProps = {
+  user: unknown;
+};
+
 const usersPageMocks = vi.hoisted(() => ({
-  UserStatusForm: vi.fn((_props: any) => null),
+  UserStatusForm: vi.fn((props: UserStatusFormProps) => {
+    void props;
+    return null;
+  }),
 }));
 
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
