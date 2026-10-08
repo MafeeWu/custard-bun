@@ -1,12 +1,27 @@
 import { expect, test, vi } from "vitest";
 
-async function loadPlaywrightConfig(ciValue: string | undefined) {
-  const originalCi = process.env.CI;
+async function loadPlaywrightConfig(
+  ciValue: string | undefined,
+  env: Record<string, string | undefined> = {},
+) {
+  const original = {
+    CI: process.env.CI,
+    DATABASE_URL: process.env.DATABASE_URL,
+    TEST_DATABASE_URL: process.env.TEST_DATABASE_URL,
+  };
 
   if (ciValue === undefined) {
     delete process.env.CI;
   } else {
     process.env.CI = ciValue;
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
 
   vi.resetModules();
@@ -15,10 +30,20 @@ async function loadPlaywrightConfig(ciValue: string | undefined) {
     const { default: config } = await import("../../playwright.config");
     return config;
   } finally {
-    if (originalCi === undefined) {
+    if (original.CI === undefined) {
       delete process.env.CI;
     } else {
-      process.env.CI = originalCi;
+      process.env.CI = original.CI;
+    }
+    if (original.DATABASE_URL === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = original.DATABASE_URL;
+    }
+    if (original.TEST_DATABASE_URL === undefined) {
+      delete process.env.TEST_DATABASE_URL;
+    } else {
+      process.env.TEST_DATABASE_URL = original.TEST_DATABASE_URL;
     }
   }
 }
@@ -52,3 +77,24 @@ test.each([
     );
   },
 );
+
+test("shares a single safe test database across app and worker servers", async () => {
+  const isolatedDatabaseUrl = "postgresql://127.0.0.1:55432/isolated_test";
+  const config = await loadPlaywrightConfig(undefined, {
+    DATABASE_URL: "postgresql://secret@production/app",
+    TEST_DATABASE_URL: isolatedDatabaseUrl,
+  });
+
+  if (!Array.isArray(config.webServer)) {
+    throw new Error("Expected app and worker Playwright web servers");
+  }
+
+  expect(config.webServer[0]?.env).toMatchObject({
+    DATABASE_URL: isolatedDatabaseUrl,
+    TEST_DATABASE_URL: isolatedDatabaseUrl,
+  });
+  expect(config.webServer[1]?.env).toMatchObject({
+    DATABASE_URL: isolatedDatabaseUrl,
+    TEST_DATABASE_URL: isolatedDatabaseUrl,
+  });
+});
