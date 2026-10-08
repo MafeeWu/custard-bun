@@ -155,7 +155,11 @@ describe("character admin actions", () => {
         { status: "idle" },
         validFormData({ expectedRevision: "5" }),
       ),
-    ).resolves.toEqual({ status: "success", message: "Published version 2." });
+    ).resolves.toEqual({
+      status: "success",
+      message: "Published version 2.",
+      draftRevision: 6,
+    });
     await expect(
       actions.setDefaultCharacterVersionAction(
         "char-1",
@@ -218,5 +222,18 @@ describe("character admin actions", () => {
     expect(result.status).toBe("error");
     expect(result.message).toBe("Unable to update the character. Try again.");
     expect(redirect).not.toHaveBeenCalled();
+  });
+
+  test("returns the confirmed revision on a successful save", async () => {
+    service.saveDraft.mockResolvedValue({ draftRevision: 4 });
+    const { saveCharacterDraftAction } = await import("./actions");
+
+    await expect(
+      saveCharacterDraftAction("char-1", { status: "idle" }, validFormData()),
+    ).resolves.toEqual({
+      status: "success",
+      message: "Saved draft revision 4.",
+      draftRevision: 4,
+    });
   });
 });

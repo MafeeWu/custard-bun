@@ -168,14 +168,14 @@ test("rolls back ban fields and session deletion when audit insertion fails", as
     userId: "ordinary-1",
     expiresAt: new Date("2026-10-09T00:00:00Z"),
   });
-  const missingActor: AdminActor = {
-    userId: "missing-admin",
-    label: "missing-admin@example.com",
+  const invalidAuditActor: AdminActor = {
+    userId: actor.userId,
+    label: null as never,
     operationId: "operation-fails",
   };
 
   await expect(
-    disableOrdinaryUser(database, missingActor, {
+    disableOrdinaryUser(database, invalidAuditActor, {
       userId: "ordinary-1",
       reason: "Repeated abuse of instance rules",
     }),
@@ -217,3 +217,66 @@ test("restores a disabled ordinary user and rejects already-active restores", as
     metadata: { previousState: "disabled", nextState: "active" },
   });
 });
+
+test.each(
+  (["disable", "restore"] as const).flatMap((operation) =>
+    (
+      ["ordinary", "disabled", "demoted", "combined-role", "missing"] as const
+    ).map((actorState) => ({ operation, actorState })),
+  ),
+)(
+  "$operation rejects a $actorState actor without modifying users or sessions",
+  async ({ operation, actorState }) => {
+    const candidate = {
+      userId: "candidate",
+      label: "candidate@example.com",
+      operationId: "untrusted-actor",
+    };
+    if (actorState !== "missing") {
+      await database.insert(user).values({
+        id: candidate.userId,
+        name: "Candidate",
+        email: candidate.label,
+        role:
+          actorState === "ordinary"
+            ? "user"
+            : actorState === "combined-role"
+              ? "admin,user"
+              : "admin",
+        banned: actorState === "disabled",
+      });
+    }
+    if (actorState === "demoted") {
+      await database
+        .update(user)
+        .set({ role: "user" })
+        .where(eq(user.id, candidate.userId));
+    }
+    await database.insert(session).values({
+      id: "preserved-session",
+      token: "preserved-token",
+      userId: "ordinary-1",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    if (operation === "restore") {
+      await database
+        .update(user)
+        .set({ banned: true })
+        .where(eq(user.id, "ordinary-1"));
+    }
+    const beforeUser = await getUser("ordinary-1");
+    const beforeSessions = await database.select().from(session);
+    const result =
+      operation === "disable"
+        ? disableOrdinaryUser(database, candidate, {
+            userId: "ordinary-1",
+            reason: "Valid reason",
+          })
+        : restoreOrdinaryUser(database, candidate, { userId: "ordinary-1" });
+
+    await expect(result).rejects.toThrow("Administrator access required");
+    expect(await getUser("ordinary-1")).toEqual(beforeUser);
+    expect(await database.select().from(session)).toEqual(beforeSessions);
+    expect(await database.select().from(adminAuditEvent)).toHaveLength(0);
+  },
+);

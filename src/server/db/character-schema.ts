@@ -26,28 +26,24 @@ function characterContentColumns() {
     avatarPath: text("avatar_path").notNull(),
     shortDescription: text("short_description").notNull(),
     longDescription: text("long_description").notNull(),
-    personalityPrinciples:
-      jsonb("personality_principles").$type<
-        CharacterContent["personalityPrinciples"]
-      >().notNull(),
+    personalityPrinciples: jsonb("personality_principles")
+      .$type<CharacterContent["personalityPrinciples"]>()
+      .notNull(),
     speakingStyle: text("speaking_style").notNull(),
     responseRhythm: text("response_rhythm").notNull(),
-    relationshipBoundaries:
-      jsonb("relationship_boundaries").$type<
-        CharacterContent["relationshipBoundaries"]
-      >().notNull(),
+    relationshipBoundaries: jsonb("relationship_boundaries")
+      .$type<CharacterContent["relationshipBoundaries"]>()
+      .notNull(),
     openingMessage: text("opening_message").notNull(),
-    exampleConversations:
-      jsonb("example_conversations").$type<
-        CharacterContent["exampleConversations"]
-      >().notNull(),
-    generationParameters:
-      jsonb("generation_parameters").$type<
-        CharacterContent["generationParameters"]
-      >().notNull(),
-    safetyAdditions: jsonb("safety_additions").$type<
-      CharacterContent["safetyAdditions"]
-    >().notNull(),
+    exampleConversations: jsonb("example_conversations")
+      .$type<CharacterContent["exampleConversations"]>()
+      .notNull(),
+    generationParameters: jsonb("generation_parameters")
+      .$type<CharacterContent["generationParameters"]>()
+      .notNull(),
+    safetyAdditions: jsonb("safety_additions")
+      .$type<CharacterContent["safetyAdditions"]>()
+      .notNull(),
   };
 }
 
@@ -113,9 +109,8 @@ export const characterVersion = pgTable(
     versionNumber: integer("version_number").notNull(),
     ...characterContentColumns(),
     contentDigest: varchar("content_digest", { length: 64 }).notNull(),
-    publishedBy: text("published_by").references(() => user.id, {
-      onDelete: "set null",
-    }),
+    // Snapshot attribution survives account deletion without mutating this row.
+    publishedBy: text("published_by"),
     publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
   },
   (table) => [

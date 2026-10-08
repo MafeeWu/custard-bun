@@ -76,3 +76,23 @@ test("returns a bounded admin actor", async () => {
     operationId: expect.any(String),
   });
 });
+
+test("rejects a banned administrator even when a session remains", async () => {
+  mocks.getAuth.mockResolvedValue({
+    api: {
+      getSession: vi.fn().mockResolvedValue({
+        user: {
+          id: "admin-1",
+          email: "a@example.com",
+          role: "admin",
+          banned: true,
+        },
+      }),
+    },
+  });
+  const { requireAdmin } = await import("./require-admin");
+
+  await expect(requireAdmin(new Headers())).rejects.toThrow(
+    "redirect:/auth/sign-in",
+  );
+});

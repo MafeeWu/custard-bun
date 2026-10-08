@@ -11,14 +11,27 @@ import {
 import type { PgBoss } from "pg-boss";
 import { eq, sql } from "drizzle-orm";
 import type { RuntimeConfig } from "@/server/config/schema";
-import { createDatabase } from "@/server/db/client";
-import { account, user } from "@/server/db/auth-schema";
+import { createDatabase, type Database } from "@/server/db/client";
+import { account, session, user } from "@/server/db/auth-schema";
+import { characterVersion } from "@/server/db/character-schema";
+import { disableOrdinaryUser } from "@/server/admin/user-service";
+import { createCharacterService } from "@/server/characters/character-service";
+import { OFFICIAL_CHARACTER_SEEDS } from "@/server/characters/seed-definitions";
 import { createEmailQueue, type EmailQueue } from "@/server/email/email-queue";
 import { createBoss } from "@/server/jobs/boss";
 import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
 import { createAuth } from "./create-auth";
 import { testDatabaseUrl } from "@/test/database-target";
 import { inspect } from "node:util";
+import { getAuth } from "./auth";
+import { requireSession } from "./require-session";
+
+vi.mock("./auth", () => ({ getAuth: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  redirect: (path: string) => {
+    throw new Error(`redirect:${path}`);
+  },
+}));
 
 const databaseUrl = testDatabaseUrl();
 
@@ -126,6 +139,7 @@ function normalizeSignUpResponse(body: Record<string, unknown>) {
 async function createTestAuth(options: {
   registrationOpen: boolean;
   emailQueue?: EmailQueue;
+  database?: Database;
 }) {
   const config = structuredClone(baseConfig);
   config.public.registration.open = options.registrationOpen;
@@ -137,7 +151,7 @@ async function createTestAuth(options: {
   }> = [];
 
   const auth = createAuth({
-    database,
+    database: options.database ?? database,
     config,
     emailQueue:
       options.emailQueue ??
@@ -150,6 +164,23 @@ async function createTestAuth(options: {
   });
 
   return { auth, jobs };
+}
+
+async function waitForDatabaseLock(applicationName: string) {
+  await expect
+    .poll(
+      async () => {
+        const { rows } = await database.$client.query(
+          `SELECT 1 FROM pg_stat_activity
+           WHERE application_name = $1 AND wait_event_type = 'Lock'
+             AND state = 'active'`,
+          [applicationName],
+        );
+        return rows.length;
+      },
+      { timeout: 2_000 },
+    )
+    .toBe(1);
 }
 
 describe("createAuth", () => {
@@ -330,6 +361,228 @@ describe("createAuth", () => {
       .map((cookie) => cookie.split(";")[0])
       .join("; ");
   }
+
+  async function insertAdministrator() {
+    const actor = {
+      userId: "disable-race-admin",
+      label: "disable-race-admin@example.com",
+      operationId: "disable-race",
+    };
+    await database.insert(user).values({
+      id: actor.userId,
+      name: "Administrator",
+      email: actor.label,
+      emailVerified: true,
+      role: "admin",
+    });
+    return actor;
+  }
+
+  test("rejects an in-flight Better Auth session insertion ordered after disabling", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loginDatabase = createDatabase(databaseUrl, {
+      application_name: "login-after-disable",
+      max: 1,
+    });
+    const disableDatabase = createDatabase(databaseUrl, {
+      application_name: "disable-before-login",
+      max: 1,
+    });
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      database: loginDatabase,
+    });
+    await auth.handler(post("/sign-up/email", signUpBody));
+    const [target] = await database
+      .update(user)
+      .set({ emailVerified: true })
+      .where(eq(user.email, signUpBody.email))
+      .returning();
+    const actor = await insertAdministrator();
+    const locker = await database.$client.connect();
+    const operations: Promise<unknown>[] = [];
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query('SELECT id FROM "user" WHERE id = $1 FOR UPDATE', [
+        target.id,
+      ]);
+      const disabling = disableOrdinaryUser(disableDatabase, actor, {
+        userId: target.id,
+        reason: "Account disabled during sign-in",
+      });
+      operations.push(disabling);
+      void disabling.catch(() => undefined);
+      await waitForDatabaseLock("disable-before-login");
+
+      // Better Auth reads the still-active user before its INSERT waits on the row lock.
+      const signingIn = auth.handler(post("/sign-in/email", signUpBody));
+      operations.push(signingIn);
+      void signingIn.catch(() => undefined);
+      await waitForDatabaseLock("login-after-disable");
+      const { rows } = await database.$client.query(
+        "SELECT query FROM pg_stat_activity WHERE application_name = $1",
+        ["login-after-disable"],
+      );
+      expect(rows[0].query).toMatch(/insert into "session"/i);
+
+      await locker.query("COMMIT");
+      await disabling;
+      const response = await signingIn;
+
+      expect(
+        await database
+          .select()
+          .from(session)
+          .where(eq(session.userId, target.id)),
+      ).toHaveLength(0);
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "BANNED_USER",
+      });
+      expect(response.headers.getSetCookie().join(";")).not.toMatch(
+        /session_token=[^;]/,
+      );
+      expect(inspect(errorLog.mock.calls)).not.toMatch(
+        /Failed query|params:|session_token|in-flight-token/,
+      );
+      expect(
+        await database.select().from(user).where(eq(user.id, target.id)),
+      ).toMatchObject([{ banned: true }]);
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+      await Promise.allSettled(operations);
+      await loginDatabase.$client.end();
+      await disableDatabase.$client.end();
+    }
+  });
+
+  test("deletes a session insertion committed before the disable lock is acquired", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    await auth.handler(post("/sign-up/email", signUpBody));
+    const [target] = await database.select().from(user);
+    const actor = await insertAdministrator();
+    const disablingDatabase = createDatabase(databaseUrl, {
+      application_name: "disable-after-session",
+      max: 1,
+    });
+    const inserting = await database.$client.connect();
+    let disabling: Promise<void> | undefined;
+
+    try {
+      await inserting.query("BEGIN");
+      await inserting.query(
+        `INSERT INTO session (id, token, user_id, expires_at, updated_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '1 day', NOW())`,
+        ["in-flight-session", "in-flight-token", target.id],
+      );
+      disabling = disableOrdinaryUser(disablingDatabase, actor, {
+        userId: target.id,
+        reason: "Account disabled after session insertion",
+      });
+      void disabling.catch(() => undefined);
+      await waitForDatabaseLock("disable-after-session");
+      await inserting.query("COMMIT");
+      await disabling;
+
+      expect(await database.select().from(session)).toHaveLength(0);
+      expect(
+        await database.select().from(user).where(eq(user.id, target.id)),
+      ).toMatchObject([{ banned: true }]);
+    } finally {
+      await inserting.query("ROLLBACK");
+      inserting.release();
+      await Promise.allSettled(disabling ? [disabling] : []);
+      await disablingDatabase.$client.end();
+    }
+  });
+
+  test("rejects a retained banned session at the protected-page boundary", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    await database
+      .update(user)
+      .set({ banned: true })
+      .where(eq(user.email, signUpBody.email));
+    expect(await database.select().from(session)).toHaveLength(1);
+    vi.mocked(getAuth).mockResolvedValue(auth);
+
+    await expect(requireSession(new Headers({ cookie }))).rejects.toThrow(
+      "redirect:/auth/sign-in",
+    );
+  });
+
+  test("Better Auth rejects retained banned sessions for API reads and sensitive endpoints", async () => {
+    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    const headers = new Headers({ cookie });
+    expect(await auth.api.getSession({ headers })).not.toBeNull();
+    await database
+      .update(user)
+      .set({ banned: true })
+      .where(eq(user.email, signUpBody.email));
+
+    expect((await auth.api.getSession({ headers })) === null).toBe(true);
+    const deletion = post("/delete-user", { callbackURL: "/goodbye" });
+    deletion.headers.set("cookie", cookie);
+    expect((await auth.handler(deletion)).status).toBe(401);
+    expect(jobs.some((job) => job.kind === "delete-account")).toBe(false);
+  });
+
+  test("a publishing administrator can complete verified account deletion without changing the snapshot", async () => {
+    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    const [administrator] = await database
+      .update(user)
+      .set({ role: "admin" })
+      .where(eq(user.email, signUpBody.email))
+      .returning();
+    const service = createCharacterService({
+      database,
+      actor: {
+        userId: administrator.id,
+        label: administrator.email,
+        operationId: "publish-then-delete",
+      },
+    });
+    const created = await service.createCharacter({
+      slug: "retained-publisher",
+      content: OFFICIAL_CHARACTER_SEEDS[0].content,
+    });
+    const published = await service.publishDraft({
+      characterId: created.characterId,
+      expectedRevision: created.draftRevision,
+    });
+    const [snapshot] = await database
+      .select()
+      .from(characterVersion)
+      .where(eq(characterVersion.id, published.versionId));
+    const request = post("/delete-user", { callbackURL: "/goodbye" });
+    request.headers.set("cookie", cookie);
+    expect((await auth.handler(request)).status).toBe(200);
+    const deletion = jobs.find((job) => job.kind === "delete-account");
+    expect(deletion).toBeDefined();
+
+    const response = await auth.handler(
+      new Request(deletion!.actionUrl, { headers: { cookie } }),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("/goodbye");
+    expect(await countPersistedAuthRecords()).toEqual({
+      userCount: 0,
+      credentialAccountCount: 0,
+    });
+    expect(await database.select().from(session)).toHaveLength(0);
+    expect(
+      await database
+        .select()
+        .from(characterVersion)
+        .where(eq(characterVersion.id, published.versionId)),
+    ).toEqual([snapshot]);
+    expect(snapshot.publishedBy).toBe(administrator.id);
+  });
 
   test("authenticated deletion does not claim dispatch when enqueue fails", async () => {
     const existing = await createTestAuth({ registrationOpen: true });

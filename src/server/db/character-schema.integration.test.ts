@@ -2,10 +2,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { sql } from "drizzle-orm";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import type { CharacterContent } from "@/server/characters/character-content";
 import { characterContentDigest } from "@/server/characters/content-digest";
 import { testDatabaseUrl } from "@/test/database-target";
 import { createDatabase } from "./client";
+import { characterVersion } from "./character-schema";
 
 const database = createDatabase(testDatabaseUrl());
 
@@ -33,20 +35,20 @@ const validContent: CharacterContent = {
     topP: 0.9,
     maxOutputTokens: 800,
   },
-  safetyAdditions: [
-    "Use grounding language when the user sounds overwhelmed.",
-  ],
+  safetyAdditions: ["Use grounding language when the user sounds overwhelmed."],
 };
 
 beforeEach(async () => {
-  await database.execute(sql.raw(`
+  await database.execute(
+    sql.raw(`
     TRUNCATE TABLE
       admin_audit_events,
       character_drafts,
       character_versions,
       characters
     RESTART IDENTITY CASCADE
-  `));
+  `),
+  );
 });
 
 afterAll(async () => {
@@ -186,6 +188,22 @@ async function insertPublishedVersion(options: {
 }
 
 describe("character storage invariants", () => {
+  test("publisher attribution is a durable ID, not a mutable user foreign key", async () => {
+    const foreignKeys = getTableConfig(characterVersion).foreignKeys;
+    expect(
+      foreignKeys.flatMap((key) =>
+        key.reference().columns.map((column) => column.name),
+      ),
+    ).not.toContain("published_by");
+    const { rows } = await database.$client.query(
+      `SELECT conname FROM pg_constraint
+       WHERE conrelid = 'character_versions'::regclass
+         AND contype = 'f'
+         AND pg_get_constraintdef(oid) LIKE '%published_by%'`,
+    );
+    expect(rows).toHaveLength(0);
+  });
+
   test("published versions, default ownership, and slugs are immutable", async () => {
     const characterId = await insertCharacter({ slug: "mira" });
     const otherCharacterId = await insertCharacter({ slug: "sol" });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { recordAdminAudit } from "@/server/admin/audit";
 import type { AdminActor } from "@/server/admin/admin-actor";
+import { requireAdminWrite } from "@/server/admin/require-admin-write";
 import type { Database } from "@/server/db/client";
 import {
   character,
@@ -153,6 +154,7 @@ export function createCharacterService(dependencies: {
       const characterId = randomUUID();
 
       return database.transaction(async (transaction) => {
+        await requireAdminWrite(transaction, actor);
         await transaction.insert(character).values({
           id: characterId,
           slug,
@@ -185,6 +187,7 @@ export function createCharacterService(dependencies: {
       const content = parseContent(input.content);
 
       return database.transaction(async (transaction) => {
+        await requireAdminWrite(transaction, actor);
         const previousDraft = await requireDraft(
           transaction,
           input.characterId,
@@ -230,6 +233,7 @@ export function createCharacterService(dependencies: {
 
     async publishDraft(input) {
       return database.transaction(async (transaction) => {
+        await requireAdminWrite(transaction, actor);
         await transaction.execute(sql`
           SELECT c.id
           FROM characters c
@@ -307,6 +311,7 @@ export function createCharacterService(dependencies: {
 
     async setDefaultVersion(input) {
       await database.transaction(async (transaction) => {
+        await requireAdminWrite(transaction, actor);
         await transaction.execute(sql`
           SELECT id
           FROM characters
@@ -368,6 +373,7 @@ export function createCharacterService(dependencies: {
 
     async setArchived(input) {
       await database.transaction(async (transaction) => {
+        await requireAdminWrite(transaction, actor);
         const action = input.archived
           ? "character.archive"
           : "character.restore";

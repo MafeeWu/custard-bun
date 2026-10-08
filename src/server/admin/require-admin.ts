@@ -8,9 +8,12 @@ import { toAdminActor, type AdminActor } from "./admin-actor";
 export async function requireAdmin(headers: Headers): Promise<AdminActor> {
   const operationId = randomUUID();
   const auth = await getAuth();
-  const session = await auth.api.getSession({ headers });
+  const session = await auth.api.getSession({
+    headers,
+    query: { disableCookieCache: true },
+  });
 
-  if (!session) {
+  if (!session || session.user.banned === true) {
     redirect("/auth/sign-in");
   }
 

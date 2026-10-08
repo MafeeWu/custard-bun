@@ -5,6 +5,7 @@ import { recordAdminAudit } from "@/server/admin/audit";
 import type { AdminActor } from "@/server/admin/admin-actor";
 import type { Database } from "@/server/db/client";
 import { session, user } from "@/server/db/auth-schema";
+import { requireAdminWrite } from "./require-admin-write";
 
 export function validateDisableReason(reason: string): string {
   const trimmed = reason.trim();
@@ -32,6 +33,7 @@ export async function disableOrdinaryUser(
   const reason = validateDisableReason(input.reason);
 
   await database.transaction(async (transaction) => {
+    await requireAdminWrite(transaction, actor);
     const [target] = await transaction
       .select({ id: user.id, role: user.role, banned: user.banned })
       .from(user)
@@ -75,6 +77,7 @@ export async function restoreOrdinaryUser(
   rejectSelfTarget(actor, input.userId);
 
   await database.transaction(async (transaction) => {
+    await requireAdminWrite(transaction, actor);
     const [target] = await transaction
       .select({ id: user.id, role: user.role, banned: user.banned })
       .from(user)

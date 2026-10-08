@@ -7,9 +7,10 @@ export async function requireSession(requestHeaders: Headers) {
   const auth = await getAuth();
   const session = await auth.api.getSession({
     headers: requestHeaders,
+    query: { disableCookieCache: true },
   });
 
-  if (!session) {
+  if (!session || session.user.banned === true) {
     redirect("/auth/sign-in");
   }
 

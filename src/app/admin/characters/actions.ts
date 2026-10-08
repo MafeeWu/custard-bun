@@ -13,6 +13,7 @@ export interface AdminActionState {
   status: "idle" | "success" | "error";
   message?: string;
   fieldErrors?: Record<string, string[]>;
+  draftRevision?: number;
 }
 
 const invalidFormMessage = "Check the highlighted fields and try again.";
@@ -139,6 +140,7 @@ export async function saveCharacterDraftAction(
     return {
       status: "success",
       message: `Saved draft revision ${result.draftRevision}.`,
+      draftRevision: result.draftRevision,
     };
   } catch (error) {
     return mapServiceError(error);
@@ -166,6 +168,7 @@ export async function publishCharacterDraftAction(
     return {
       status: "success",
       message: `Published version ${result.versionNumber}.`,
+      draftRevision: result.draftRevision,
     };
   } catch (error) {
     return mapServiceError(error);

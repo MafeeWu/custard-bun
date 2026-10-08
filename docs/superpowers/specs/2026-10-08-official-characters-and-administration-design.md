@@ -216,6 +216,11 @@ Published versions are append-only snapshots containing:
 - `published_by`
 - `published_at`
 
+`published_by` is a nullable, durable publisher ID, not a live foreign key to
+the authentication user. Account deletion retains this original value without
+updating the published row. This preserves both immutable attribution and the
+existing verified account-deletion workflow.
+
 The pair `(character_id, version_number)` is unique. Published rows cannot be
 updated or deleted through application code, and a database trigger rejects
 `UPDATE` and `DELETE` operations. Foreign keys use restrictive behavior so a
@@ -264,6 +269,12 @@ does not overwrite another administrator's work.
 The audit event records the changed field groups, not full before-and-after
 content.
 
+The editor retains raw input and its base revision as one local snapshot.
+Refreshed server props do not rebase unsaved content; only a confirmed save or
+publication advances the editor revision. Failed submissions retain every
+field. Example conversation controls add and remove complete paired inputs,
+with a minimum of one pair and a maximum of six.
+
 ### 8.3 Publish a version
 
 The service locks the character and draft, validates the complete package,
@@ -302,6 +313,12 @@ the target user's active sessions, and writes an audit event in one database
 transaction. Restoring clears the disabled state and writes its audit event in
 one database transaction. Phase 2 does not expose automatic expiration.
 
+A PostgreSQL session-insertion trigger share-locks the target user and rejects
+disabled users. The disable transaction holds the conflicting user lock until
+session deletion and audit commit, so concurrent sign-in cannot leave a live
+session behind. Authoritative session reads and protected-route guards also
+reject a retained session whose user is banned, without cookie-cache fallback.
+
 ## 9. Authorization and Privacy
 
 The existing deployment command remains responsible for creating the first
@@ -315,6 +332,11 @@ query, and action:
 - authenticated non-administrators receive no administration data; and
 - write services independently verify administrator status even when called
   outside a page.
+
+Each administrative write transaction share-locks and re-reads its actor before
+mutating state, requiring the role to be exactly `admin` and `banned` not to be
+true. Concurrent demotion, disabling, or deletion cannot invalidate this check
+before the write and audit commit.
 
 The administration UI does not expose password data, authentication tokens,
 private messages, memories, or model prompts assembled from user data. Character

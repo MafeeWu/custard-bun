@@ -29,6 +29,13 @@
       "when": 1791430322404,
       "tag": "0003_official_characters",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791439860272,
+      "tag": "0004_admin_session_and_publisher_invariants",
+      "breakpoints": true
     }
   ]
 }

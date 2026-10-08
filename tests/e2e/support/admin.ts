@@ -76,7 +76,7 @@ export async function cleanupAdminTestData(
     if (ids.length) {
       await tx.delete(session).where(inArray(session.userId, ids));
       await tx.delete(account).where(inArray(account.userId, ids));
-      // Keep publisher identities: deleting them would update immutable versions via the FK.
+      // Retire fixture identities so test ownership and history stay inspectable.
       await tx
         .update(user)
         .set({

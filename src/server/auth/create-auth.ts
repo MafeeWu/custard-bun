@@ -1,5 +1,10 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { betterAuth } from "better-auth";
+import {
+  betterAuth,
+  type BetterAuthOptions,
+  type DBAdapter,
+  type DBTransactionAdapter,
+} from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { admin } from "better-auth/plugins";
@@ -24,6 +29,53 @@ export function createAuth({
   emailQueue,
   logger = console,
 }: AuthDependencies) {
+  const adapter = drizzleAdapter(database, {
+    provider: "pg",
+    schema,
+    transaction: true,
+  });
+
+  function rethrowSessionError(error: unknown): never {
+    const cause = error instanceof Error ? error.cause : undefined;
+    if (
+      cause instanceof Error &&
+      "code" in cause &&
+      cause.code === "23514" &&
+      cause.message === "cannot create a session for a disabled user"
+    ) {
+      // Do not let a rejected INSERT expose SQL parameters (including tokens)
+      // through Better Auth's unexpected-error logger.
+      throw new APIError("FORBIDDEN", {
+        code: "BANNED_USER",
+        message: "This account is disabled.",
+      });
+    }
+    throw error;
+  }
+
+  function guardSessions(instance: DBTransactionAdapter): DBTransactionAdapter {
+    return {
+      ...instance,
+      async create(input) {
+        try {
+          return await instance.create(input);
+        } catch (error) {
+          rethrowSessionError(error);
+        }
+      },
+      async findOne<T>(
+        input: Parameters<DBTransactionAdapter["findOne"]>[0],
+      ): Promise<T | null> {
+        const result = await instance.findOne<T>(input);
+        // Better Auth's authoritative session lookup joins the current user.
+        const owner = (result as { user?: { banned?: boolean } } | null)?.user;
+        return input.model === "session" && owner?.banned === true
+          ? null
+          : result;
+      },
+    };
+  }
+
   async function acceptEmail(job: EmailQueueJob) {
     try {
       const id = await emailQueue.enqueue(job);
@@ -55,11 +107,16 @@ export function createAuth({
         logger.error("auth request failed", { name: safeErrorName(error) });
       },
     },
-    database: drizzleAdapter(database, {
-      provider: "pg",
-      schema,
-      transaction: true,
-    }),
+    database: (options: BetterAuthOptions): DBAdapter => {
+      const instance = adapter(options);
+      return {
+        ...guardSessions(instance),
+        transaction: (callback) =>
+          instance.transaction((transaction) =>
+            callback(guardSessions(transaction)),
+          ),
+      };
+    },
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: true,
@@ -154,6 +211,7 @@ export function createAuth({
       }),
     },
     session: {
+      cookieCache: { enabled: false },
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       freshAge: 60 * 10,

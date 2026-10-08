@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useId } from "react";
+import { useActionState, useId, useState, type ChangeEvent } from "react";
 import type { CharacterContent } from "@/server/characters/character-content";
 import type { AdminActionState } from "@/app/admin/characters/actions";
 
@@ -50,6 +50,36 @@ function textAreaValue(values: string[]) {
   return values.join("\n");
 }
 
+function initialEditor(
+  content: CharacterContent,
+  slug: string | undefined,
+  revision: number | undefined,
+) {
+  return {
+    revision,
+    fields: {
+      slug: slug ?? "",
+      displayName: content.displayName,
+      avatarPath: content.avatarPath,
+      shortDescription: content.shortDescription,
+      longDescription: content.longDescription,
+      personalityPrinciples: textAreaValue(content.personalityPrinciples),
+      speakingStyle: content.speakingStyle,
+      responseRhythm: content.responseRhythm,
+      relationshipBoundaries: textAreaValue(content.relationshipBoundaries),
+      openingMessage: content.openingMessage,
+      temperature: String(content.generationParameters.temperature),
+      topP: String(content.generationParameters.topP),
+      maxOutputTokens: String(content.generationParameters.maxOutputTokens),
+      safetyAdditions: textAreaValue(content.safetyAdditions),
+    },
+    examples:
+      content.exampleConversations.length > 0
+        ? content.exampleConversations.map((example) => ({ ...example }))
+        : [{ user: "", assistant: "" }],
+  };
+}
+
 function ActionFeedback({
   state,
   showFieldErrors = false,
@@ -94,17 +124,77 @@ export function CharacterEditor({
   publishState = { status: "idle" },
 }: CharacterEditorProps) {
   const formId = useId();
-  const [actionState, formAction, pending] = useActionState(action, state);
+  // Refreshed props must never rebase locally edited fields onto a newer draft.
+  const [editor, setEditor] = useState(() =>
+    initialEditor(content, slug, draftRevision),
+  );
+
+  function advanceRevision(result: AdminActionState, submitted: FormData) {
+    const revision = result.draftRevision;
+    if (result.status === "success" && revision !== undefined) {
+      const expectedRevision = Number(submitted.get("expectedRevision"));
+      setEditor((current) =>
+        current.revision === expectedRevision
+          ? { ...current, revision }
+          : current,
+      );
+    }
+  }
+
+  const [actionState, formAction, pending] = useActionState(
+    async (previous: AdminActionState, submitted: FormData) => {
+      const result = await action(previous, submitted);
+      advanceRevision(result, submitted);
+      return result;
+    },
+    state,
+  );
   const [publishActionState, publishFormAction, publishPending] =
-    useActionState(publishAction ?? noopAction, publishState);
-  const examples =
-    content.exampleConversations.length > 0
-      ? content.exampleConversations
-      : [{ user: "", assistant: "" }];
+    useActionState(async (previous: AdminActionState, submitted: FormData) => {
+      const result = await (publishAction ?? noopAction)(previous, submitted);
+      advanceRevision(result, submitted);
+      return result;
+    }, publishState);
+  const { examples } = editor;
+
+  function field(name: keyof typeof editor.fields) {
+    return {
+      value: editor.fields[name],
+      onChange(event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
+        const value = event.currentTarget.value;
+        setEditor((current) => ({
+          ...current,
+          fields: { ...current.fields, [name]: value },
+        }));
+      },
+    };
+  }
+
+  function changeExample(
+    index: number,
+    side: "user" | "assistant",
+    value: string,
+  ) {
+    setEditor((current) => ({
+      ...current,
+      examples: current.examples.map((example, position) =>
+        position === index ? { ...example, [side]: value } : example,
+      ),
+    }));
+  }
 
   return (
     <div className="page-stack">
       <ActionFeedback state={actionState} />
+      {draftRevision !== undefined &&
+      editor.revision !== undefined &&
+      draftRevision > editor.revision ? (
+        <p role="note">
+          A newer draft is available. Your changes still use revision{" "}
+          {editor.revision}. Copy your changes and reload before editing the
+          newer draft.
+        </p>
+      ) : null}
 
       <form
         action={formAction}
@@ -117,18 +207,18 @@ export function CharacterEditor({
             <input
               id={`${formId}-slug`}
               name="slug"
-              defaultValue={slug}
+              {...field("slug")}
               required
             />
             <FieldError messages={actionState.fieldErrors?.slug} />
           </>
         ) : null}
 
-        {draftRevision === undefined ? null : (
+        {editor.revision === undefined ? null : (
           <input
             type="hidden"
             name="expectedRevision"
-            value={draftRevision}
+            value={editor.revision}
             readOnly
           />
         )}
@@ -137,7 +227,7 @@ export function CharacterEditor({
         <input
           id={`${formId}-displayName`}
           name="displayName"
-          defaultValue={content.displayName}
+          {...field("displayName")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.displayName} />
@@ -146,7 +236,7 @@ export function CharacterEditor({
         <input
           id={`${formId}-avatarPath`}
           name="avatarPath"
-          defaultValue={content.avatarPath}
+          {...field("avatarPath")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.avatarPath} />
@@ -155,7 +245,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-shortDescription`}
           name="shortDescription"
-          defaultValue={content.shortDescription}
+          {...field("shortDescription")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.shortDescription} />
@@ -164,7 +254,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-longDescription`}
           name="longDescription"
-          defaultValue={content.longDescription}
+          {...field("longDescription")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.longDescription} />
@@ -175,7 +265,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-personalityPrinciples`}
           name="personalityPrinciples"
-          defaultValue={textAreaValue(content.personalityPrinciples)}
+          {...field("personalityPrinciples")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.personalityPrinciples} />
@@ -184,7 +274,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-speakingStyle`}
           name="speakingStyle"
-          defaultValue={content.speakingStyle}
+          {...field("speakingStyle")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.speakingStyle} />
@@ -193,7 +283,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-responseRhythm`}
           name="responseRhythm"
-          defaultValue={content.responseRhythm}
+          {...field("responseRhythm")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.responseRhythm} />
@@ -204,7 +294,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-relationshipBoundaries`}
           name="relationshipBoundaries"
-          defaultValue={textAreaValue(content.relationshipBoundaries)}
+          {...field("relationshipBoundaries")}
           required
         />
         <FieldError
@@ -215,7 +305,7 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-openingMessage`}
           name="openingMessage"
-          defaultValue={content.openingMessage}
+          {...field("openingMessage")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.openingMessage} />
@@ -230,7 +320,10 @@ export function CharacterEditor({
               <textarea
                 id={`${formId}-exampleUser-${index}`}
                 name="exampleUser"
-                defaultValue={example.user}
+                value={example.user}
+                onChange={(event) =>
+                  changeExample(index, "user", event.currentTarget.value)
+                }
               />
               <label htmlFor={`${formId}-exampleAssistant-${index}`}>
                 Example assistant {index + 1}
@@ -238,10 +331,54 @@ export function CharacterEditor({
               <textarea
                 id={`${formId}-exampleAssistant-${index}`}
                 name="exampleAssistant"
-                defaultValue={example.assistant}
+                value={example.assistant}
+                onChange={(event) =>
+                  changeExample(index, "assistant", event.currentTarget.value)
+                }
               />
+              <button
+                type="button"
+                aria-label={`Remove example ${index + 1}`}
+                disabled={examples.length <= 1}
+                onClick={() =>
+                  setEditor((current) =>
+                    current.examples.length <= 1
+                      ? current
+                      : {
+                          ...current,
+                          examples: current.examples.filter(
+                            (_, position) => position !== index,
+                          ),
+                        },
+                  )
+                }
+              >
+                Remove example {index + 1}
+              </button>
             </div>
           ))}
+          <button
+            type="button"
+            disabled={examples.length >= 6}
+            onClick={() =>
+              setEditor((current) =>
+                current.examples.length >= 6
+                  ? current
+                  : {
+                      ...current,
+                      examples: [
+                        ...current.examples,
+                        { user: "", assistant: "" },
+                      ],
+                    },
+              )
+            }
+          >
+            Add example conversation
+          </button>
+          <p aria-live="polite">
+            {examples.length} of 6 example conversations.
+          </p>
           <FieldError messages={actionState.fieldErrors?.exampleUser} />
           <FieldError messages={actionState.fieldErrors?.exampleAssistant} />
           <FieldError
@@ -255,7 +392,7 @@ export function CharacterEditor({
           name="temperature"
           type="number"
           step="0.01"
-          defaultValue={content.generationParameters.temperature}
+          {...field("temperature")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.temperature} />
@@ -266,7 +403,7 @@ export function CharacterEditor({
           name="topP"
           type="number"
           step="0.01"
-          defaultValue={content.generationParameters.topP}
+          {...field("topP")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.topP} />
@@ -277,7 +414,7 @@ export function CharacterEditor({
           name="maxOutputTokens"
           type="number"
           step="1"
-          defaultValue={content.generationParameters.maxOutputTokens}
+          {...field("maxOutputTokens")}
           required
         />
         <FieldError messages={actionState.fieldErrors?.maxOutputTokens} />
@@ -286,11 +423,11 @@ export function CharacterEditor({
         <textarea
           id={`${formId}-safetyAdditions`}
           name="safetyAdditions"
-          defaultValue={textAreaValue(content.safetyAdditions)}
+          {...field("safetyAdditions")}
         />
         <FieldError messages={actionState.fieldErrors?.safetyAdditions} />
 
-        <button type="submit" disabled={pending}>
+        <button type="submit" disabled={pending || publishPending}>
           {mode === "create" ? "Create draft" : "Save draft"}
         </button>
       </form>
@@ -305,10 +442,10 @@ export function CharacterEditor({
             <input
               type="hidden"
               name="expectedRevision"
-              value={draftRevision}
+              value={editor.revision}
               readOnly
             />
-            <button type="submit" disabled={publishPending}>
+            <button type="submit" disabled={pending || publishPending}>
               Publish draft
             </button>
           </form>

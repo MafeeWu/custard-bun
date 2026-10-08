@@ -682,3 +682,156 @@ describe("transaction boundaries", () => {
     expect(await database.select().from(adminAuditEvent)).toHaveLength(0);
   });
 });
+
+describe("authoritative actor eligibility", () => {
+  const operations = [
+    "create",
+    "save",
+    "publish",
+    "default",
+    "archive",
+    "restore",
+  ] as const;
+  const actorStates = [
+    "ordinary",
+    "disabled",
+    "demoted",
+    "combined-role",
+    "missing",
+  ] as const;
+
+  test.each(
+    operations.flatMap((operation) =>
+      actorStates.map((actorState) => ({ operation, actorState })),
+    ),
+  )(
+    "$operation rejects a $actorState actor without any writes",
+    async ({ operation, actorState }) => {
+      const setup = createService();
+      const created = await setup.createCharacter({
+        slug: "mira",
+        content: validContent,
+      });
+      const published = await setup.publishDraft({
+        characterId: created.characterId,
+        expectedRevision: 1,
+      });
+      const saved = await setup.saveDraft({
+        characterId: created.characterId,
+        expectedRevision: published.draftRevision,
+        content: contentWith({ displayName: "Ready to publish" }),
+      });
+      if (operation === "restore") {
+        await setup.setArchived({
+          characterId: created.characterId,
+          archived: true,
+        });
+      }
+      const candidate = {
+        userId: "candidate",
+        label: "candidate@example.com",
+        operationId: "untrusted-actor",
+      };
+      if (actorState !== "missing") {
+        await database.insert(user).values({
+          id: candidate.userId,
+          name: "Candidate",
+          email: candidate.label,
+          role:
+            actorState === "ordinary"
+              ? "user"
+              : actorState === "combined-role"
+                ? "admin,user"
+                : "admin",
+          banned: actorState === "disabled",
+        });
+      }
+      const service = createService({ serviceActor: candidate });
+      if (actorState === "demoted") {
+        await database
+          .update(user)
+          .set({ role: "user" })
+          .where(eq(user.id, candidate.userId));
+      }
+      const readState = async () => ({
+        characters: await database.select().from(character),
+        drafts: await database.select().from(characterDraft),
+        versions: await database.select().from(characterVersion),
+        audits: await database.select().from(adminAuditEvent),
+      });
+      const before = await readState();
+      const writes = {
+        create: () =>
+          service.createCharacter({ slug: "another", content: validContent }),
+        save: () =>
+          service.saveDraft({
+            characterId: created.characterId,
+            expectedRevision: saved.draftRevision,
+            content: contentWith({ displayName: "Unauthorized edit" }),
+          }),
+        publish: () =>
+          service.publishDraft({
+            characterId: created.characterId,
+            expectedRevision: saved.draftRevision,
+          }),
+        default: () =>
+          service.setDefaultVersion({
+            characterId: created.characterId,
+            versionId: published.versionId,
+          }),
+        archive: () =>
+          service.setArchived({
+            characterId: created.characterId,
+            archived: true,
+          }),
+        restore: () =>
+          service.setArchived({
+            characterId: created.characterId,
+            archived: false,
+          }),
+      };
+
+      await expect(writes[operation]()).rejects.toThrow(
+        "Administrator access required",
+      );
+      expect(await readState()).toEqual(before);
+    },
+  );
+
+  test("rechecks actor eligibility after an in-flight demotion commits", async () => {
+    const waitingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "admin-write-after-demotion",
+      max: 1,
+    });
+    const service = createCharacterService({
+      database: waitingDatabase,
+      actor,
+    });
+    const locker = await database.$client.connect();
+    let writing: Promise<unknown> | undefined;
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query('UPDATE "user" SET role = $1 WHERE id = $2', [
+        "user",
+        actor.userId,
+      ]);
+      writing = service.createCharacter({
+        slug: "forbidden",
+        content: validContent,
+      });
+      void writing.catch(() => undefined);
+      await waitForApplicationLockWait("admin-write-after-demotion");
+      await locker.query("COMMIT");
+
+      await expect(writing).rejects.toThrow("Administrator access required");
+      expect(await database.select().from(character)).toHaveLength(0);
+      expect(await database.select().from(adminAuditEvent)).toHaveLength(0);
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+      await Promise.allSettled(writing ? [writing] : []);
+      await waitingDatabase.$client.end();
+    }
+  });
+});

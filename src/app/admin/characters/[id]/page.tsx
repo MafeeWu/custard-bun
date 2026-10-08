@@ -32,23 +32,12 @@ export default async function EditCharacterPage({
   }
   const detail = character;
 
-  async function publishAction(
-    state: AdminActionState,
-    formData: FormData,
-  ) {
+  async function publishAction(state: AdminActionState, formData: FormData) {
     "use server";
-    return publishCharacterDraftAction(
-      detail.id,
-      detail.slug,
-      state,
-      formData,
-    );
+    return publishCharacterDraftAction(detail.id, detail.slug, state, formData);
   }
 
-  async function setDefaultAction(
-    state: AdminActionState,
-    formData: FormData,
-  ) {
+  async function setDefaultAction(state: AdminActionState, formData: FormData) {
     "use server";
     return setDefaultCharacterVersionAction(
       detail.id,
@@ -58,36 +47,21 @@ export default async function EditCharacterPage({
     );
   }
 
-  async function archiveAction(
-    state: AdminActionState,
-    formData: FormData,
-  ) {
+  async function archiveAction(state: AdminActionState, formData: FormData) {
     "use server";
-    return archiveCharacterAction(
-      detail.id,
-      detail.slug,
-      state,
-      formData,
-    );
+    return archiveCharacterAction(detail.id, detail.slug, state, formData);
   }
 
-  async function restoreAction(
-    state: AdminActionState,
-    formData: FormData,
-  ) {
+  async function restoreAction(state: AdminActionState, formData: FormData) {
     "use server";
-    return restoreCharacterAction(
-      detail.id,
-      detail.slug,
-      state,
-      formData,
-    );
+    return restoreCharacterAction(detail.id, detail.slug, state, formData);
   }
 
   return (
     <section className="page-stack">
       <h1>Edit {detail.draft.displayName}</h1>
       <CharacterEditor
+        key={detail.id}
         mode="edit"
         characterId={detail.id}
         slug={detail.slug}

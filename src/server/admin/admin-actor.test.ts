@@ -22,3 +22,19 @@ test("rejects a signed-in non-administrator", () => {
     ),
   ).toThrow("Administrator access required");
 });
+
+test("rejects a disabled administrator session", () => {
+  expect(() =>
+    toAdminActor(
+      {
+        user: {
+          id: "admin-1",
+          email: "a@example.com",
+          role: "admin",
+          banned: true,
+        },
+      },
+      "op-disabled",
+    ),
+  ).toThrow("Administrator access required");
+});

@@ -145,8 +145,12 @@ pnpm exec auth create-admin --config src/server/auth/auth-cli.ts \
 
 Each stable character has at most one mutable draft. Save the complete package
 before previewing or publishing. Saving uses a draft revision: if another
-administrator saves first, reload and reconcile the changes rather than
-overwriting them.
+administrator saves first, copy your edits, reload, and reconcile the changes
+rather than overwriting them. Server refreshes never silently advance the base
+revision of local edits. Validation, database, and conflict errors retain all
+entered fields; only confirmed saves or publications advance that editor's
+revision. Example conversations have paired user/assistant inputs with labeled
+add/remove controls, bounded to one through six pairs.
 
 Publishing validates the content and the avatar's availability, rejects an
 unchanged package, and appends an immutable numbered snapshot. It retains the
@@ -155,6 +159,11 @@ Use the version-history controls to explicitly choose a published version.
 Public reads then use that version; older snapshots remain loadable by ID.
 The Phase 3 integration contracts are `resolveDefaultCharacterVersion` for a
 new conversation and `getPublishedCharacterVersion` for an existing version.
+Publisher attribution is a durable, nullable user ID in the immutable snapshot,
+not a live foreign key. An administrator can complete the normal verified
+account-deletion flow without changing a version's content, attribution, or
+digest. Mutable references and audit actor links may become null; durable audit
+labels remain.
 
 Archive hides a character from the public catalog and makes its public detail
 URL return 404. It does not delete the draft, versions, or default pointer.
@@ -170,13 +179,21 @@ deploy a new filename and publish a version referencing that path.
 ### User controls and audit privacy
 
 Disabling an ordinary account requires a reason and confirmation. It immediately
-revokes **all** active sessions and rejects subsequent sign-ins. Restoring
+revokes **all** active sessions and rejects subsequent sign-ins. PostgreSQL
+serializes session insertion with disabling: an in-flight sign-in either
+creates its session first and has it revoked, or is rejected after disabling.
+Authoritative session reads and protected routes also reject retained sessions
+for banned users; signed-cookie caching is disabled. Restoring
 clears the disabled state; the user must sign in again. There is no timed ban
 or automatic expiration. Administrators cannot disable themselves or other
 administrators through these controls.
 
 Character creation, draft saves, publication, default changes, archive/restore,
 and user disable/restore write audit events atomically with their state changes.
+Each service also re-reads and share-locks the acting user inside its write
+transaction, requiring the current role to be exactly `admin` and the user not
+to be banned. Server-action guards remain in place; a stale or forged actor
+object cannot authorize a write after demotion or disabling.
 Events retain the actor label, target, operation ID, timestamp, and small
 metadata such as version numbers, lifecycle state, and changed field names.
 Audit pages and operational logs must not copy full character packages,
