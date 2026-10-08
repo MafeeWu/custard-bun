@@ -24,3 +24,5 @@ export function createDatabase(
 
   return drizzle(pool, { schema });
 }
+
+export type Database = ReturnType<typeof createDatabase>;
