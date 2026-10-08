@@ -9,6 +9,11 @@ foundation.
 Chat and long-term memory arrive in later phases. Model credentials will remain
 server-only when model integrations are added.
 
+The anonymous official character catalog is available at `/characters`, with
+public detail pages at `/characters/<slug>`. Both pages show only active
+characters that have a default published version, and they render fields from
+that default version only.
+
 ## Prerequisites
 
 Use either:

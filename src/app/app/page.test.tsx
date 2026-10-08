@@ -15,7 +15,7 @@ vi.mock("@/components/auth/sign-out-button", () => ({
   SignOutButton: () => <button type="button">Sign out</button>,
 }));
 
-test("renders the account navigation link from the application page", async () => {
+test("renders account and character catalog navigation from the application page", async () => {
   vi.mocked(requireSession).mockResolvedValue({
     user: {
       name: "Person",
@@ -34,4 +34,7 @@ test("renders the account navigation link from the application page", async () =
     "href",
     "/account",
   );
+  expect(
+    screen.getByRole("link", { name: /browse characters/i }),
+  ).toHaveAttribute("href", "/characters");
 });

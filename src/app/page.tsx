@@ -8,16 +8,21 @@ const config = await getPublicConfig();
 
 export default function HomePage() {
   return (
-    <main>
+    <main className="page-shell">
       <BrandMark branding={config.branding} />
       <h1>{config.branding.name}</h1>
       <p>{config.branding.description}</p>
-      <Link
-        className="brand-primary"
-        href={config.registration.open ? "/auth/sign-up" : "/auth/sign-in"}
-      >
-        Get started
-      </Link>
+      <div className="page-actions">
+        <Link
+          className="brand-primary"
+          href={config.registration.open ? "/auth/sign-up" : "/auth/sign-in"}
+        >
+          Get started
+        </Link>
+        <Link className="brand-link" href="/characters">
+          Browse characters
+        </Link>
+      </div>
     </main>
   );
 }

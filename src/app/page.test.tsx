@@ -21,7 +21,7 @@ vi.mock("@/server/config/public-config", () => ({
   }),
 }));
 
-test("renders a single primary action", async () => {
+test("renders public entry links for signup and character browsing", async () => {
   const element = await HomePage();
   render(element);
 
@@ -30,4 +30,7 @@ test("renders a single primary action", async () => {
     "href",
     "/auth/sign-up",
   );
+  expect(
+    screen.getByRole("link", { name: /browse characters/i }),
+  ).toHaveAttribute("href", "/characters");
 });

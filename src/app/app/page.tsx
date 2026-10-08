@@ -8,10 +8,17 @@ export default async function ApplicationHomePage() {
   const displayName = session.user.name || session.user.email;
 
   return (
-    <main>
+    <main className="page-shell page-stack">
       <h1>Welcome, {displayName}</h1>
-      <p>Your characters will appear here in the next delivery phase.</p>
-      <Link href="/account">Account</Link>
+      <p>Browse the official character catalog before you start a conversation.</p>
+      <div className="page-actions">
+        <Link className="brand-primary" href="/characters">
+          Browse characters
+        </Link>
+        <Link className="brand-link" href="/account">
+          Account
+        </Link>
+      </div>
       <SignOutButton />
     </main>
   );
