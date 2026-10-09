@@ -8,12 +8,17 @@ import {
   cleanupAdminTestData,
   createAdminTestDatabase,
 } from "./support/admin";
+import {
+  fakeModelRequests,
+  registerAndSignIn,
+  resetFakeModel,
+  sendChatMessage,
+  startCharacterConversation,
+} from "./support/chat";
 import { e2eEnvironment } from "./support/environment";
 
 async function expectBrowseOnly(page: Page) {
-  await expect(
-    page.getByRole("link", { name: /chat|start.*conversation/i }),
-  ).toHaveCount(0);
+  await expect(page.locator('a[href^="/app/conversations/"]')).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: /chat|start.*conversation|version/i }),
   ).toHaveCount(0);
@@ -57,14 +62,22 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
   const database = createAdminTestDatabase(e2eEnvironment.TEST_DATABASE_URL!);
   const token = randomUUID();
   const email = `character-admin-${token}@example.com`;
+  const userEmail = `character-user-${token}@example.com`;
   const slug = `e2e-${token}`;
   const v1Name = `E2E v1 ${token}`;
   const v2Name = `E2E v2 ${token}`;
+  const v1Instruction = `Pinned v1 instruction ${token}`;
+  const v2Instruction = `Pinned v2 instruction ${token}`;
   const anonymous = await browser.newContext({
     baseURL: e2eEnvironment.BETTER_AUTH_URL,
   });
+  const userContext = await browser.newContext({
+    baseURL: e2eEnvironment.BETTER_AUTH_URL,
+  });
   const publicPage = await anonymous.newPage();
+  const userPage = await userContext.newPage();
   try {
+    await resetFakeModel();
     await database.delete(rateLimit);
     await bootstrapAdmin(page, email, "correct horse battery staple", database);
     await page.goto("/admin/characters/new");
@@ -78,8 +91,7 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
       "Short description": "An isolated browser acceptance character.",
       "Long description":
         "A patient test companion who explores ideas without replacing human relationships.",
-      "Personality principles":
-        "Listen before suggesting.\nRespect the user's choices.",
+      "Personality principles": `${v1Instruction}\nRespect the user's choices.`,
       "Speaking style": "Warm, concrete language.",
       "Response rhythm": "One concise reflection and a question.",
       "Relationship boundaries":
@@ -174,7 +186,30 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
       publicPage.getByRole("heading", { level: 1, name: v1Name, exact: true }),
     ).toBeVisible();
 
+    await registerAndSignIn(userPage, {
+      email: userEmail,
+      name: "Pinned version user",
+    });
+    await startCharacterConversation(userPage, slug);
+    const v1ConversationUrl = userPage.url();
+    await expect(
+      userPage.getByText("What would you like to explore today?", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await sendChatMessage(userPage, "Use the pinned v1 prompt [stream]");
+    await expect(
+      userPage.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    let promptRequests = await fakeModelRequests();
+    expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
+      v1Instruction,
+    );
+
     await page.getByLabel("Display name", { exact: true }).fill(v2Name);
+    await page
+      .getByLabel("Personality principles", { exact: true })
+      .fill(`${v2Instruction}\nRespect the user's choices.`);
     await page
       .getByLabel("Opening message", { exact: true })
       .fill("A different opening for version two.");
@@ -218,6 +253,68 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     ).toBeVisible();
     await expectBrowseOnly(publicPage);
 
+    await userPage.reload();
+    await expect(
+      userPage.getByRole("heading", { level: 1, name: v1Name, exact: true }),
+    ).toBeVisible();
+    await expect(
+      userPage.getByText("What would you like to explore today?", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(userPage.getByRole("note")).toContainText(
+      "keeps the character version it started with",
+    );
+    await sendChatMessage(userPage, "Existing chat remains v1 [stream]");
+    await expect(
+      userPage.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    promptRequests = await fakeModelRequests();
+    expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
+      v1Instruction,
+    );
+    expect(JSON.stringify(promptRequests.at(-1)?.body)).not.toContain(
+      v2Instruction,
+    );
+
+    await userPage
+      .getByRole("button", { name: "Conversation actions", exact: true })
+      .click();
+    await userPage
+      .getByText("Archive this conversation and start over.")
+      .click();
+    await userPage
+      .getByRole("button", { name: "Start over", exact: true })
+      .click();
+    await userPage.waitForURL((url) => url.href !== v1ConversationUrl);
+    const v2ConversationUrl = userPage.url();
+    await expect(
+      userPage.getByRole("heading", { level: 1, name: v2Name, exact: true }),
+    ).toBeVisible();
+    await expect(
+      userPage.getByText("A different opening for version two.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await sendChatMessage(userPage, "New chat uses v2 [stream]");
+    await expect(
+      userPage.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    promptRequests = await fakeModelRequests();
+    expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
+      v2Instruction,
+    );
+    expect(JSON.stringify(promptRequests.at(-1)?.body)).not.toContain(
+      v1Instruction,
+    );
+    await userPage.goto(v1ConversationUrl);
+    await expect(
+      userPage.getByText("This archived conversation is read-only.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await userPage.goto(v2ConversationUrl);
+
     await page
       .getByRole("button", { name: "Archive character", exact: true })
       .click();
@@ -229,6 +326,25 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     await expect(
       publicPage.locator(`a[href="/characters/${slug}"]`),
     ).toHaveCount(0);
+
+    await userPage.reload();
+    await sendChatMessage(userPage, "Archived character remains usable [stream]");
+    await expect(
+      userPage.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    await userPage
+      .getByRole("button", { name: "Conversation actions", exact: true })
+      .click();
+    await userPage
+      .getByText("Archive this conversation and start over.")
+      .click();
+    await userPage
+      .getByRole("button", { name: "Start over", exact: true })
+      .click();
+    await expect(
+      userPage.getByText("This chat is read-only.", { exact: true }),
+    ).toBeVisible();
+    await expect(userPage).toHaveURL(v2ConversationUrl);
 
     await page
       .getByRole("button", { name: "Restore character", exact: true })
@@ -275,8 +391,9 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     );
   } finally {
     await anonymous.close();
+    await userContext.close();
     try {
-      await cleanupAdminTestData(database, [email], [slug]);
+      await cleanupAdminTestData(database, [email, userEmail], [slug]);
     } finally {
       await database.$client.end();
     }

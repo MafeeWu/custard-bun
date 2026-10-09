@@ -44,7 +44,7 @@ test("returns 200 only when database and worker are ready", async () => {
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({
     ready: true,
-    checks: { database: "ok", worker: "ok" },
+    checks: { database: "ok", worker: "ok", modelConfiguration: "ok" },
   });
   expect(mocks.query).toHaveBeenCalledWith("select 1");
   expect(mocks.requireRecentWorkerHeartbeat).toHaveBeenCalledWith(
@@ -79,7 +79,11 @@ test("returns a redacted 503 when runtime configuration cannot load", async () =
   expect(response.status).toBe(503);
   expect(body).toEqual({
     ready: false,
-    checks: { database: "error", worker: "error" },
+    checks: {
+      database: "error",
+      worker: "error",
+      modelConfiguration: "error",
+    },
   });
   expect(JSON.stringify(body)).not.toContain("private-value");
   expect(mocks.end).not.toHaveBeenCalled();
@@ -93,7 +97,11 @@ test("reports database failure when closing the readiness pool fails", async () 
   expect(response.status).toBe(503);
   expect(await response.json()).toEqual({
     ready: false,
-    checks: { database: "error", worker: "ok" },
+    checks: {
+      database: "error",
+      worker: "ok",
+      modelConfiguration: "ok",
+    },
   });
 });
 
@@ -108,8 +116,23 @@ test("returns 503 and closes the database when a dependency fails", async () => 
   expect(response.status).toBe(503);
   expect(body).toEqual({
     ready: false,
-    checks: { database: "error", worker: "ok" },
+    checks: {
+      database: "error",
+      worker: "ok",
+      modelConfiguration: "ok",
+    },
   });
   expect(JSON.stringify(body)).not.toContain("secret");
   expect(mocks.end).toHaveBeenCalledOnce();
+});
+
+test("does not contact the model provider during readiness", async () => {
+  const providerFetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("provider unavailable"));
+
+  const response = await GET();
+
+  expect(response.status).toBe(200);
+  expect(providerFetch).not.toHaveBeenCalled();
 });

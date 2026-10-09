@@ -19,7 +19,7 @@ export function createE2eEnvironment(
 
   return Object.fromEntries([
     ...definedEnvironmentEntries(env),
-    ["APP_CONFIG_PATH", "app.config.yml"],
+    ["APP_CONFIG_PATH", "tests/e2e/app.config.yml"],
     ["NODE_ENV", "test"],
     ["DATABASE_URL", databaseUrl],
     ["TEST_DATABASE_URL", databaseUrl],
@@ -31,6 +31,9 @@ export function createE2eEnvironment(
     ["SMTP_USER", "test"],
     ["SMTP_PASSWORD", "test"],
     ["SMTP_FROM", "Custard Bun <noreply@example.com>"],
+    ["MODEL_API_BASE_URL", "http://127.0.0.1:3102/v1"],
+    ["MODEL_API_KEY", "e2e-model-key"],
+    ["MODEL_ID", "e2e-chat-model"],
   ]) as E2eEnvironment;
 }
 

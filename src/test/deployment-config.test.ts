@@ -69,9 +69,43 @@ test("deployment command migrates and seeds official characters and chat setting
   expect(packageJson.scripts["db:deploy"]).toBe(
     "pnpm db:migrate && pnpm db:seed:characters && pnpm db:seed:chat-settings",
   );
-  expect(compose["x-application"].image).toBe("ai-companion-web:phase-2");
+  expect(compose["x-application"].image).toBe("ai-companion-web:phase-3");
   expect(compose["x-application"].volumes).toContain(
     "./public/characters:/app/public/characters:ro",
   );
   expect(compose.services.migrate.command).toEqual(["pnpm", "db:deploy"]);
+});
+
+test("production model secrets reach runtime services without becoming build arguments", async () => {
+  const dockerfile = await readFile("Dockerfile", "utf8");
+  const composeSource = await readFile("docker-compose.yml", "utf8");
+  const compose = parse(composeSource) as {
+    "x-application": {
+      environment?: Record<string, string>;
+    };
+  };
+
+  expect(compose["x-application"].environment).toMatchObject({
+    MODEL_API_BASE_URL:
+      "${MODEL_API_BASE_URL:?set MODEL_API_BASE_URL}",
+    MODEL_API_KEY: "${MODEL_API_KEY:?set MODEL_API_KEY}",
+    MODEL_ID: "${MODEL_ID:?set MODEL_ID}",
+  });
+  expect(dockerfile).not.toMatch(/^ARG MODEL_/m);
+  expect(dockerfile).not.toContain("NEXT_PUBLIC_MODEL_");
+  expect(composeSource).not.toContain("NEXT_PUBLIC_MODEL_");
+});
+
+test("the deterministic model provider remains Playwright-only", async () => {
+  const composeSource = await readFile("compose.test.yml", "utf8");
+  const compose = parse(composeSource) as {
+    services: Record<string, unknown>;
+  };
+
+  expect(Object.keys(compose.services).sort()).toEqual(["mailpit", "postgres"]);
+  expect(composeSource).toContain(
+    "Playwright owns the loopback-only fake model server",
+  );
+  expect(composeSource).not.toContain("3102:3102");
+  expect(composeSource).not.toContain("__e2e__");
 });

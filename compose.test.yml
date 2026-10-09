@@ -1,3 +1,4 @@
+# Playwright owns the loopback-only fake model server; Compose never exposes it.
 services:
   postgres:
     image: postgres:16-alpine

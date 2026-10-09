@@ -11,7 +11,8 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "pnpm build && pnpm start",
+      command:
+        "pnpm build && mkdir -p test-results && : > test-results/e2e-app.log && exec pnpm start >> test-results/e2e-app.log 2>&1",
       url: "http://127.0.0.1:3000/",
       reuseExistingServer: false,
       env: e2eEnvironment,
@@ -19,6 +20,12 @@ export default defineConfig({
     {
       command: "pnpm exec tsx tests/e2e/support/worker-harness.ts",
       url: "http://127.0.0.1:3101/",
+      reuseExistingServer: false,
+      env: e2eEnvironment,
+    },
+    {
+      command: "pnpm exec tsx tests/e2e/support/fake-model-server.ts",
+      url: "http://127.0.0.1:3102/",
       reuseExistingServer: false,
       env: e2eEnvironment,
     },

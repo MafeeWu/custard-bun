@@ -1,13 +1,10 @@
 # Custard Bun
 
-Custard Bun is a self-hosted foundation for private AI companion
-conversations. Phase 2 provides runtime branding, account registration,
-email verification, password recovery, account deletion, deployable
-application and worker processes, the official character catalog, and
-administrator character and ordinary-user controls.
-
-Chat and long-term memory arrive in later phases. Model credentials will remain
-server-only when model integrations are added.
+Custard Bun is a self-hosted application for private, streamed AI companion
+conversations. Phase 3 includes runtime branding, account lifecycle, official
+character administration, version-pinned conversations, an OpenAI-compatible
+model gateway, explicit interruption/retry states, transactional quotas, and
+aggregate-only usage administration. Long-term memory remains a later phase.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -42,9 +39,24 @@ primary color, registration policy, and public links. The Compose deployment
 mounts this file at runtime, so branding changes require a service restart but
 not an image rebuild.
 
-Keep `.env` private. It contains the database, authentication, and SMTP
-credentials. Mailpit is used only by the automated test stack and is not a
-production dependency.
+Keep `.env` private. It contains the database, authentication, SMTP, and model
+provider credentials. Configure:
+
+- `MODEL_API_BASE_URL`: the provider's OpenAI-compatible API root, ending
+  before `chat/completions` (for example `https://provider.example/v1`);
+- `MODEL_API_KEY`: the server-side bearer credential; and
+- `MODEL_ID`: the provider model identifier used for chat completions.
+
+Trusted loopback or private-network HTTP model servers are supported for
+self-hosting. Only configure a server you control and trust: prompts include
+character instructions and the user's current/recent conversation content.
+The deployer is responsible for the provider's retention, training, residency,
+access-control, and privacy terms. Model values are runtime-only Compose
+environment variables; they are not public build arguments or browser
+configuration.
+
+Mailpit is used only by the automated test stack and is not a production
+dependency.
 
 `POSTGRES_PASSWORD` may contain URI delimiters such as `/`, `?`, `#`, `@`,
 literal `%2F`, `$`, and spaces. Use **single quotes** in `.env`, for example
@@ -101,13 +113,14 @@ docker compose run --rm migrate
 ```
 
 The migration job runs `pnpm db:deploy`, which applies database migrations and
-then idempotently seeds the five official character packages. For local or
-standalone operations, run the same steps directly:
+then idempotently seeds the five official character packages and initial chat
+settings. For local or standalone operations, run the same steps directly:
 
 ```bash
 pnpm db:migrate
 pnpm db:seed:characters
-# or both:
+pnpm db:seed:chat-settings
+# or all three:
 pnpm db:deploy
 ```
 
@@ -125,12 +138,56 @@ files are immutable operational assets: add a new file and publish a new
 character version instead of overwriting a file that an existing version
 references.
 
+## Chat behavior and safety bounds
+
+Signed-in users can start one active conversation per character. The opening
+message is persisted locally and does not call the provider. Each conversation
+pins the immutable character version selected at creation:
+
+- publishing or selecting a new default does not change an existing chat;
+- **Start over** archives the current chat and creates a new chat using the
+  current default version;
+- archived history is read-only and can be deleted independently; and
+- deleting an active chat removes it permanently and returns to the app home.
+
+Archiving a character removes it from new/public selection. Existing active
+conversations remain usable, but they cannot be restarted until the character
+is restored with a selected default.
+
+Responses stream into the timeline. **Stop** retains received partial text and
+marks the attempt interrupted. A browser disconnect, provider disconnect, or
+incomplete stream remains visibly interrupted rather than being presented as
+complete. Retry replaces the incomplete generated attempt without duplicating
+the source user message. Only one generation may run for a user across all
+their conversations at a time.
+
+`app.config.yml` defines deployer safety ceilings and first-deploy defaults:
+
+- first-token and total request timeouts;
+- prompt-token budget, maximum input characters, and maximum output tokens;
+- initial per-user UTC-day request/token limits;
+- initial instance UTC-month request/token budgets; and
+- maximum concurrent generations.
+
+`pnpm db:deploy` stores the initial quota values idempotently. Later
+administrator edits are authoritative and are not overwritten by another
+deploy. Administrators can update/reset global settings at `/admin/usage` and
+set a per-user daily override at `/admin/users`. A reset restores the stored
+deployment defaults. User limits reset at the next UTC day; instance budgets
+reset at the next UTC month. Request and token exhaustion are reported
+separately for both scopes.
+
+Administration exposes counts, token totals, outcomes, retry counts, latency,
+model IDs, and provider failure categories only. It never exposes prompts,
+message text, provider credentials, or raw provider bodies.
+
 ## Characters and administration
 
 Anonymous visitors can browse `/characters` and `/characters/<slug>`.
 Only active characters with an explicitly selected default published version
 are public. Unknown, archived, and not-yet-defaulted character URLs return 404.
-Neither page offers chat or historical-version selection in Phase 2.
+Anonymous pages do not expose chat or historical-version selection. Signed-in
+users can start or continue a conversation from an active character detail.
 
 Sign in with the CLI-created administrator account, then use:
 
@@ -140,7 +197,9 @@ Sign in with the CLI-created administrator account, then use:
 - `/admin/characters/<id>`: edit, publish, select a default, archive, or restore;
 - `/admin/characters/<id>/preview`: preview the **saved** draft's real catalog
   card, detail view, and structured character package;
-- `/admin/users`: search ordinary users and disable or restore access; and
+- `/admin/users`: search ordinary users, manage quota overrides, and disable or
+  restore access;
+- `/admin/usage`: manage global chat settings and inspect aggregate usage; and
 - `/admin/audit`: read-only, paginated administrative history.
 
 Unauthenticated requests redirect to sign-in; ordinary accounts receive no
@@ -213,8 +272,7 @@ disable-reason text, passwords, tokens, or private user content. A disable
 reason is stored in the authentication ban record, not displayed in the audit
 view; audit is not a private-message inspection interface.
 
-Phase 2 deliberately excludes model calls/test chats, conversations/messages,
-actual conversation-version pinning, memory, user-created/shared characters,
+Phase 3 deliberately excludes long-term memory, user-created/shared characters,
 marketplace/social features, avatar uploads/object storage, public history
 browsing, web administrator-role management, automatic ban expiry, voice,
 image generation, RAG, plugins, billing, and relationship levels.
@@ -226,11 +284,15 @@ Health endpoints:
 - Liveness: `http://127.0.0.1:3000/api/health/live`
 - Readiness: `http://127.0.0.1:3000/api/health/ready`
 
-Readiness includes a fresh worker heartbeat and persisted SMTP delivery health.
-A failed delivery makes `worker: "error"` even while the worker is alive. Jobs
-remain retryable; a later successful SMTP delivery restores health. Heartbeats,
-restarts, and synthetic no-op jobs do not clear a recorded delivery failure.
-The public response never includes infrastructure or email details.
+Readiness reports `database`, `worker`, and `modelConfiguration` checks. Model
+readiness validates the already-local URL/key/model configuration shape only;
+it never calls the provider. A provider outage can fail chat requests without
+making the non-chat site unready. Readiness also includes a fresh worker
+heartbeat and persisted SMTP delivery health. A failed delivery makes
+`worker: "error"` even while the worker is alive. Jobs remain retryable; a
+later successful SMTP delivery restores health. Heartbeats, restarts, and
+synthetic no-op jobs do not clear a recorded delivery failure. The public
+response never includes infrastructure, email, or model-provider details.
 
 Auth callbacks await durable queue acceptance, not SMTP. Failed signup acceptance
 rolls back user/credential creation. Duplicate signup and unknown-account recovery
@@ -265,7 +327,13 @@ An unsafe ordinary `DATABASE_URL` is rejected before opening a pool or running
 destructive SQL. Vitest files run serially, and queue suites remove their jobs
 on exit; do not run multiple test commands against the same test database.
 Playwright supplies the same fixed test environment to its app, worker, and
-owned branding server, independently of your shell's SMTP/auth variables.
+loopback-only deterministic model server, independently of your shell's
+SMTP/auth/model variables. The fake model listens only on `127.0.0.1:3102`,
+exists only under `tests/e2e`, and has no production service or control
+surface. Scenario markers include `[stream]`, `[slow]`, `[interrupt]`,
+`[rate-limit]`, and `[auth-fail]`; `[stall]` supports deterministic stop and
+refresh acceptance. Playwright uses `tests/e2e/app.config.yml` to keep timeout
+tests fast while the fake provider's slow scenario remains deterministic.
 
 ```bash
 pnpm db:test:up
@@ -282,7 +350,7 @@ tests share that database and may truncate the seeded catalog: **rerun
 `pnpm db:deploy` immediately before every Playwright run**, even if migrations
 and seeds ran earlier. Do not point this sequence at a production database.
 
-Phase 2 E2E tests use one worker and unique public registrations verified through
+Phase 3 E2E tests use one worker and unique public registrations verified through
 Mailpit. A test-only, loopback/`_test`-guarded helper promotes only the newly
 verified account, revokes its sessions, and signs in through the public UI.
 It is not a production bootstrap bypass. Tests never edit seed characters.
@@ -294,6 +362,7 @@ by disabling integrity triggers. Do not run concurrent suites on this database.
 Full release gate (with the test database configured as above):
 
 ```bash
+pnpm install --frozen-lockfile
 pnpm db:test:up
 pnpm db:deploy
 pnpm test
@@ -302,17 +371,22 @@ pnpm lint
 pnpm build
 pnpm db:deploy
 pnpm test:e2e
-pnpm exec drizzle-kit generate --name final_schema_drift_check
-git status --short
+pnpm db:generate
+git diff --exit-code -- drizzle
+git diff --check
+pnpm exec tsc --version
+node -e 'import("typescript").then((ts) => console.log(ts.version))'
 ```
 
 Every command must pass; Drizzle must report no schema changes and create no
-migration. The lint toolchain uses the TypeScript 7 compiler plus the official
+migration. Run `db:deploy` immediately before Playwright because integration
+tests can truncate seeds. The compiler commands must print `Version 7.0.2` and
+`6.0.3`. The lint toolchain uses the TypeScript 7 compiler plus the official
 TypeScript 6 API compatibility package, so `pnpm lint` runs the full source
 lint without a TypeScript 7 compiler-API startup exception. Do not downgrade
-the compiler, bypass its parser, or disable lint rules to claim a green gate.
-`pnpm build` now reports both stages: it runs native TypeScript 7 preflight
-typechecking first, then `next build` with Next's own checks intact.
+the compiler, bypass preflight, disable lint rules, or substitute a different
+tooling API to claim a green gate. `pnpm build` runs native TypeScript 7
+preflight typechecking before `next build`.
 
 Next 16 automatically maintains both production and development route-type
 includes in `tsconfig.json` during `next typegen`/build; these generated-directory

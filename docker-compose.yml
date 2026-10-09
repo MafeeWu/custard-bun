@@ -1,6 +1,6 @@
 x-application: &application
   build: .
-  image: ai-companion-web:phase-2
+  image: ai-companion-web:phase-3
   entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
   env_file: .env
   environment:
@@ -9,6 +9,9 @@ x-application: &application
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     POSTGRES_PORT: "5432"
     POSTGRES_USER: companion
+    MODEL_API_BASE_URL: ${MODEL_API_BASE_URL:?set MODEL_API_BASE_URL}
+    MODEL_API_KEY: ${MODEL_API_KEY:?set MODEL_API_KEY}
+    MODEL_ID: ${MODEL_ID:?set MODEL_ID}
   volumes:
     - ./app.config.yml:/app/app.config.yml:ro
     - ./public/characters:/app/public/characters:ro

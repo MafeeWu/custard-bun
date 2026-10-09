@@ -59,9 +59,10 @@ test.each([
       throw new Error("Expected app and worker Playwright web servers");
     }
 
-    expect(config.webServer).toHaveLength(2);
+    expect(config.webServer).toHaveLength(3);
     expect(config.webServer[0]).toMatchObject({
-      command: "pnpm build && pnpm start",
+      command:
+        "pnpm build && mkdir -p test-results && : > test-results/e2e-app.log && exec pnpm start >> test-results/e2e-app.log 2>&1",
       reuseExistingServer: false,
       url: "http://127.0.0.1:3000/",
     });
@@ -70,11 +71,23 @@ test.each([
       reuseExistingServer: false,
       url: "http://127.0.0.1:3101/",
     });
-    expect(config.webServer[0]?.env?.APP_CONFIG_PATH).toBe("app.config.yml");
+    expect(config.webServer[2]).toMatchObject({
+      command: "pnpm exec tsx tests/e2e/support/fake-model-server.ts",
+      reuseExistingServer: false,
+      url: "http://127.0.0.1:3102/",
+    });
+    expect(config.webServer[0]?.env?.APP_CONFIG_PATH).toBe(
+      "tests/e2e/app.config.yml",
+    );
     expect(config.webServer[1]?.env?.NODE_ENV).toBe("test");
     expect(config.webServer[1]?.env?.BETTER_AUTH_URL).toBe(
       "http://127.0.0.1:3000",
     );
+    expect(config.webServer[0]?.env).toMatchObject({
+      MODEL_API_BASE_URL: "http://127.0.0.1:3102/v1",
+      MODEL_API_KEY: "e2e-model-key",
+      MODEL_ID: "e2e-chat-model",
+    });
   },
 );
 
@@ -94,6 +107,10 @@ test("shares a single safe test database across app and worker servers", async (
     TEST_DATABASE_URL: isolatedDatabaseUrl,
   });
   expect(config.webServer[1]?.env).toMatchObject({
+    DATABASE_URL: isolatedDatabaseUrl,
+    TEST_DATABASE_URL: isolatedDatabaseUrl,
+  });
+  expect(config.webServer[2]?.env).toMatchObject({
     DATABASE_URL: isolatedDatabaseUrl,
     TEST_DATABASE_URL: isolatedDatabaseUrl,
   });

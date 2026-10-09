@@ -27,6 +27,7 @@ const ready = () =>
         worker,
         new Date(Date.now() - 60_000),
       ),
+    checkModelConfiguration: async () => undefined,
   });
 
 beforeAll(async () => {
@@ -80,7 +81,11 @@ test("SMTP failure degrades readiness with retry retained; success restores deli
   const failure = await ready();
   expect(failure).toEqual({
     ready: false,
-    checks: { database: "ok", worker: "error" },
+    checks: {
+      database: "ok",
+      worker: "error",
+      modelConfiguration: "ok",
+    },
   });
   const persisted = await boss.getJobById(AUTH_EMAIL_QUEUE, id!);
   expect(JSON.stringify(persisted?.output)).not.toContain(
@@ -105,7 +110,7 @@ test("SMTP failure degrades readiness with retry retained; success restores deli
     .toBe("completed");
   expect(await ready()).toEqual({
     ready: true,
-    checks: { database: "ok", worker: "ok" },
+    checks: { database: "ok", worker: "ok", modelConfiguration: "ok" },
   });
 }, 25_000);
 

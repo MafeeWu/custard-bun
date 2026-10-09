@@ -27,6 +27,9 @@ ENV SMTP_SECURE=false
 ENV SMTP_USER=build-only
 ENV SMTP_PASSWORD=build-only
 ENV SMTP_FROM="Build Only <build@example.com>"
+ENV MODEL_API_BASE_URL=http://127.0.0.1:1/v1
+ENV MODEL_API_KEY=build-only-model-key
+ENV MODEL_ID=build-only-model
 RUN pnpm build && rm -rf .next/cache
 
 FROM base AS runner

@@ -12,7 +12,11 @@ export async function GET(): Promise<Response> {
   let database: ReturnType<typeof createDatabase> | undefined;
   let result: ReadinessResult = {
     ready: false,
-    checks: { database: "error", worker: "error" },
+    checks: {
+      database: "error",
+      worker: "error",
+      modelConfiguration: "error",
+    },
   };
 
   try {
@@ -34,6 +38,7 @@ export async function GET(): Promise<Response> {
           new Date(Date.now() - 60_000),
         );
       },
+      checkModelConfiguration: async () => undefined,
     });
   } catch {
     // Readiness responses intentionally contain no dependency error details.

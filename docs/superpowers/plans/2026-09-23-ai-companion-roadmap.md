@@ -56,7 +56,11 @@ and privacy-safe audit events. Actual conversation pinning belongs to Phase 3.
 
 ## Phase 3: Streaming Chat, Model Gateway, and Quotas
 
-Create a separate implementation plan after Phase 2 is accepted.
+**Detailed plan:** `docs/superpowers/plans/2026-10-09-streaming-chat-model-gateway-and-quotas.md`
+
+**Status:** Complete. Implementation, browser acceptance, secure deployment
+and readiness wiring, operator documentation, and the full release gate are
+delivered.
 
 Deliver:
 

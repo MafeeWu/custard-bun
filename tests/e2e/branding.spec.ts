@@ -32,6 +32,17 @@ test("loads name, logo, favicon, and visible primary color from runtime YAML", a
     "  privacyUrl: https://example.com/privacy",
     "  termsUrl: https://example.com/terms",
     "  supportUrl: mailto:support@example.com",
+    "chat:",
+    "  firstTokenTimeoutMs: 1000",
+    "  requestTimeoutMs: 5000",
+    "  promptTokenBudget: 8192",
+    "  maxInputCharacters: 12000",
+    "  maxOutputTokens: 1024",
+    "  defaultUserDailyRequestLimit: 100",
+    "  defaultUserDailyTokenLimit: 100000",
+    "  defaultInstanceMonthlyRequestLimit: 10000",
+    "  defaultInstanceMonthlyTokenBudget: 10000000",
+    "  maxConcurrentGenerations: 4",
     "",
   ].join("\n");
   await withBrandingServer(configPath, yaml, async (url) => {
