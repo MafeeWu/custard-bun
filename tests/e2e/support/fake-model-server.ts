@@ -21,6 +21,7 @@ interface FakeModelState {
   missingUsage: boolean;
   requests: FakeModelRequest[];
   interruptedPrompts: Map<string, number>;
+  heldResponses: Map<string, ServerResponse>;
   sequence: number;
 }
 
@@ -111,6 +112,10 @@ function resetState(state: FakeModelState): void {
   state.missingUsage = false;
   state.requests.splice(0);
   state.interruptedPrompts.clear();
+  for (const response of state.heldResponses.values()) {
+    response.destroy();
+  }
+  state.heldResponses.clear();
 }
 
 async function handleProviderRequest(
@@ -171,6 +176,13 @@ async function handleProviderRequest(
     response.once("close", () => clearTimeout(timer));
     return;
   }
+  if (text.includes("[replay-recovery]")) {
+    beginStream(response, id);
+    response.write(delta(id, "Recovery partial"));
+    state.heldResponses.set(id, response);
+    response.once("close", () => state.heldResponses.delete(id));
+    return;
+  }
   if (text.includes("[slow]")) {
     beginStream(response, id);
     response.flushHeaders();
@@ -210,6 +222,7 @@ export function createFakeModelServer() {
     missingUsage: false,
     requests: [],
     interruptedPrompts: new Map(),
+    heldResponses: new Map(),
     sequence: 0,
   };
 
@@ -243,8 +256,22 @@ export function createFakeModelServer() {
       if (request.method === "POST" && url.pathname === "/__e2e__/control") {
         const control = (await requestJson(request)) as {
           missingUsage?: unknown;
+          completeRequestId?: unknown;
         };
         state.missingUsage = control.missingUsage === true;
+        if (typeof control.completeRequestId === "string") {
+          const held = state.heldResponses.get(control.completeRequestId);
+          if (!held) {
+            json(response, 404, { error: "held request not found" });
+            return;
+          }
+          held.write(delta(control.completeRequestId, " and final content"));
+          if (!state.missingUsage) {
+            held.write(usage(20, 4));
+          }
+          held.end("data: [DONE]\n\n");
+          state.heldResponses.delete(control.completeRequestId);
+        }
         response.writeHead(204);
         response.end();
         return;

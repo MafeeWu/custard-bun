@@ -179,6 +179,7 @@ export function ChatScreen({
           <ChatComposer
             conversationId={conversation.id}
             messages={messages}
+            authoritativeMessages={conversation.messages}
             onGeneratingChange={setGenerating}
             onMessagesChange={setMessages}
             onAuthoritativeRefresh={() => router.refresh()}

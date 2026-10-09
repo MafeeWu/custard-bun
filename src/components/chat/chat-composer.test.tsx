@@ -1,7 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { UserConversationDetail } from "@/server/chat/conversation-queries";
 import {
   ChatComposer,
@@ -37,6 +43,10 @@ beforeEach(() => {
   );
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 test("parses NDJSON split across chunks and reports only parsed terminal events", async () => {
   const events: unknown[] = [];
   const result = await consumeChatEventStream(
@@ -66,27 +76,258 @@ test("parses NDJSON split across chunks and reports only parsed terminal events"
 function ComposerHarness({
   initialMessages = [],
   refreshedMessages,
+  onRefresh,
 }: {
   initialMessages?: ChatClientMessage[];
   refreshedMessages?: ChatClientMessage[];
+  onRefresh?: () => ChatClientMessage[] | undefined;
 }) {
   const [messages, setMessages] = useState(initialMessages);
+  const [authoritativeMessages, setAuthoritativeMessages] =
+    useState(initialMessages);
   return (
     <>
       <ChatTimeline messages={messages} />
       <ChatComposer
         conversationId="conversation-1"
         messages={messages}
+        authoritativeMessages={authoritativeMessages}
         onMessagesChange={setMessages}
         onAuthoritativeRefresh={() => {
-          if (refreshedMessages) {
-            setMessages(refreshedMessages);
+          const refreshed = onRefresh?.() ?? refreshedMessages;
+          if (refreshed) {
+            setAuthoritativeMessages(refreshed);
+            setMessages(refreshed);
           }
         }}
       />
     </>
   );
 }
+
+function recoveringTranscript(
+  status: "streaming" | "complete" | "failed" | "interrupted",
+  content: string,
+): ChatClientMessage[] {
+  return [
+    {
+      id: "persisted-user",
+      role: "user",
+      kind: "user",
+      content: "Lost before started",
+    },
+    {
+      id: "persisted-assistant",
+      role: "assistant",
+      kind: "generated",
+      attemptId,
+      status,
+      content,
+      errorCode:
+        status === "failed" || status === "interrupted"
+          ? "CHAT_STREAM_INTERRUPTED"
+          : null,
+      retryable: status === "failed" || status === "interrupted",
+    },
+  ];
+}
+
+function activeReplayResponse(includeAttemptId = true) {
+  return Response.json(
+    {
+      error: {
+        code: "CHAT_GENERATION_IN_PROGRESS",
+        message: "A response is already being generated for this chat.",
+        retryable: true,
+        metadata: {
+          conversationId: "conversation-1",
+          ...(includeAttemptId ? { attemptId } : {}),
+        },
+      },
+    },
+    { status: 409 },
+  );
+}
+
+test.each(["complete", "failed", "interrupted"] as const)(
+  "recovers an active identical replay after pre-start transport loss and re-enables on authoritative %s",
+  async (terminalStatus) => {
+    const user = userEvent.setup();
+    const bodies: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      bodies.push(String(init?.body));
+      if (bodies.length === 1) {
+        throw new TypeError("admitted response lost before started");
+      }
+      return activeReplayResponse();
+    });
+    let transcript = recoveringTranscript("streaming", "Durable partial");
+    const refresh = vi.fn(() => transcript);
+    render(<ComposerHarness onRefresh={refresh} />);
+
+    await user.type(screen.getByLabelText("Message"), "Lost before started");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    expect(screen.getByLabelText("Message")).toBeEnabled();
+    expect(screen.getByLabelText("Message")).toHaveValue("Lost before started");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+
+    expect(screen.getByText("Durable partial")).toBeVisible();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+    transcript = recoveringTranscript(terminalStatus, "Durable final content");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(screen.getByText("Durable final content")).toBeVisible();
+    expect(screen.queryByText("Durable partial")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Lost before started")).toHaveLength(1);
+    expect(screen.getByLabelText("Message")).toBeEnabled();
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(
+      screen.queryByRole("button", { name: "Stop" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Recovering the active response/),
+    ).not.toBeInTheDocument();
+    const refreshCount = refresh.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(refresh).toHaveBeenCalledTimes(refreshCount);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  },
+);
+
+test("bounds replay recovery, waits for authoritative identity before offering stop, and cancels polling on unmount", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetch).mockResolvedValue(activeReplayResponse(false));
+  const refresh = vi.fn(() => undefined);
+  const { unmount } = render(<ComposerHarness onRefresh={refresh} />);
+
+  await user.type(screen.getByLabelText("Message"), "Lost before started");
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  });
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+  expect(
+    screen.queryByRole("button", { name: "Stop" }),
+  ).not.toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+  });
+  expect(
+    screen.getByRole("button", { name: "Refresh response" }),
+  ).toBeEnabled();
+  const boundedRefreshCount = refresh.mock.calls.length;
+  expect(boundedRefreshCount).toBeGreaterThan(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+  });
+  expect(refresh).toHaveBeenCalledTimes(boundedRefreshCount);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Refresh response" }));
+  });
+  expect(refresh).toHaveBeenCalledTimes(boundedRefreshCount + 1);
+  unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(refresh).toHaveBeenCalledTimes(boundedRefreshCount + 1);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test("stopping a recovered attempt keeps recovery blocked until authoritative terminal content arrives", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetch).mockImplementation(async (url) =>
+    String(url).endsWith("/stop")
+      ? new Response(null, { status: 202 })
+      : activeReplayResponse(),
+  );
+  let transcript = recoveringTranscript("streaming", "Checkpoint partial");
+  render(<ComposerHarness onRefresh={() => transcript} />);
+
+  await user.type(screen.getByLabelText("Message"), "Lost before started");
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  });
+  expect(screen.getByText("Checkpoint partial")).toBeVisible();
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+
+  transcript = recoveringTranscript(
+    "interrupted",
+    "Checkpoint partial plus final flush",
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  expect(screen.getByText("Checkpoint partial plus final flush")).toBeVisible();
+  expect(screen.getByLabelText("Message")).toBeEnabled();
+  expect(fetch).toHaveBeenCalledWith(`/api/chat/attempts/${attemptId}/stop`, {
+    method: "POST",
+  });
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+});
+
+test("ignores admitted stream events arriving after the composer unmounts", async () => {
+  const user = userEvent.setup();
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  vi.mocked(fetch).mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(
+            encoder.encode(`{"type":"started","attemptId":"${attemptId}"}\n`),
+          );
+        },
+      }),
+    ),
+  );
+  const refresh = vi.fn();
+  const changeMessages = vi.fn();
+  const changeGenerating = vi.fn();
+  const { unmount } = render(
+    <ChatComposer
+      conversationId="conversation-1"
+      messages={[]}
+      onMessagesChange={changeMessages}
+      onGeneratingChange={changeGenerating}
+      onAuthoritativeRefresh={refresh}
+    />,
+  );
+  await user.type(screen.getByLabelText("Message"), "Lost before started");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  const generatingChanges = changeGenerating.mock.calls.length;
+  const messageChanges = changeMessages.mock.calls.length;
+  expect(messageChanges).toBe(1);
+  unmount();
+  await act(async () => {
+    streamController?.enqueue(
+      encoder.encode(
+        `{"type":"delta","attemptId":"${attemptId}","text":"Too late"}\n{"type":"completed","attemptId":"${attemptId}","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n`,
+      ),
+    );
+    streamController?.close();
+  });
+  expect(changeGenerating).toHaveBeenCalledTimes(generatingChanges);
+  expect(changeMessages).toHaveBeenCalledTimes(messageChanges);
+  expect(refresh).not.toHaveBeenCalled();
+});
 
 test.each([
   "network",

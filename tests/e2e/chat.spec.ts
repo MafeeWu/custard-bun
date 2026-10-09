@@ -20,6 +20,143 @@ import {
   startCharacterConversation,
 } from "./support/chat";
 
+async function assertLiveComposerReplayRecovery(
+  page: Page,
+  database: ReturnType<typeof createAdminTestDatabase>,
+  conversationId: string,
+) {
+  const content = "Lost before started while active [replay-recovery]";
+  const bodies: Array<{ clientRequestId: string; content: string }> = [];
+  let admittedResponse: Response | undefined;
+  const messageRoute = "**/api/chat/conversations/*/messages";
+  await page.unroute(messageRoute);
+  await page.route(messageRoute, async (route) => {
+    bodies.push(route.request().postDataJSON());
+    if (bodies.length === 1) {
+      admittedResponse = await fetch(route.request().url(), {
+        method: "POST",
+        headers: await route.request().allHeaders(),
+        body: route.request().postData(),
+      });
+      expect(admittedResponse.status).toBe(200);
+      await route.abort("failed");
+    } else {
+      await route.continue();
+    }
+  });
+  try {
+    await sendChatMessage(page, content);
+    await expect(
+      page.getByRole("region", { name: "Conversation" }).getByRole("alert"),
+    ).toContainText("Unable to reach the chat service.");
+    await expect(page.getByLabel("Message", { exact: true })).toHaveValue(
+      content,
+    );
+    await expect
+      .poll(async () => {
+        const [attempt] = await database
+          .select({ content: generationAttempt.content })
+          .from(generationAttempt)
+          .innerJoin(
+            conversationMessage,
+            eq(conversationMessage.id, generationAttempt.assistantMessageId),
+          )
+          .where(eq(conversationMessage.conversationId, conversationId))
+          .orderBy(sql`${generationAttempt.createdAt} desc`)
+          .limit(1);
+        return attempt?.content;
+      })
+      .toBe("Recovery partial");
+    const replayResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/conversations/${conversationId}/messages`) &&
+        response.status() === 409,
+    );
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const replay = await (await replayResponse).json();
+    expect(replay.error).toMatchObject({
+      code: "CHAT_GENERATION_IN_PROGRESS",
+      metadata: { conversationId },
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    await expect(page.getByLabel("Message", { exact: true })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.locator('li[data-status="streaming"]').last(),
+    ).toContainText("Recovery partial");
+
+    const providerCalls = (await fakeModelRequests()).filter(
+      (request) => request.body.messages?.at(-1)?.content === content,
+    );
+    expect(providerCalls).toHaveLength(1);
+    const completed = await fetch("http://127.0.0.1:3102/__e2e__/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ completeRequestId: providerCalls[0]!.id }),
+    });
+    expect(completed.status).toBe(204);
+    expect(await admittedResponse!.text()).toContain('"type":"completed"');
+    await expect(
+      page.locator('li[data-status="complete"]').last(),
+    ).toContainText("Recovery partial and final content", { timeout: 10_000 });
+    await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
+    await expect(page.getByLabel("Message", { exact: true })).toHaveValue("");
+    await expect(page.getByText(content, { exact: true })).toHaveCount(1);
+    await expect(
+      page.getByText("Recovery partial and final content", { exact: true }),
+    ).toHaveCount(1);
+    await expect(page.getByText("Recovering the active response…")).toHaveCount(
+      0,
+    );
+    expect(bodies).toHaveLength(2);
+    expect(
+      (await fakeModelRequests()).filter(
+        (request) => request.body.messages?.at(-1)?.content === content,
+      ),
+    ).toHaveLength(1);
+    expect(
+      await database
+        .select()
+        .from(conversationMessage)
+        .where(
+          and(
+            eq(conversationMessage.conversationId, conversationId),
+            eq(conversationMessage.kind, "user"),
+            eq(conversationMessage.content, content),
+          ),
+        ),
+    ).toHaveLength(1);
+    expect(
+      await database
+        .select()
+        .from(usageLedger)
+        .where(eq(usageLedger.attemptId, replay.error.metadata.attemptId)),
+    ).toMatchObject([
+      {
+        userRequestUnits: 1,
+        inputTokens: 20,
+        outputTokens: 4,
+        outcome: "complete",
+      },
+    ]);
+
+    await sendChatMessage(page, "Can send again after live replay [stream]");
+    await expect(
+      page.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
+    expect(bodies[2]?.clientRequestId).not.toBe(bodies[0]?.clientRequestId);
+  } finally {
+    await page.unroute(messageRoute);
+    if (admittedResponse && !admittedResponse.bodyUsed) {
+      await admittedResponse.body?.cancel();
+    }
+  }
+}
+
 async function assertComposerReplayAndCrashRecovery(page: Page) {
   const database = createAdminTestDatabase(e2eEnvironment.DATABASE_URL!);
   try {
@@ -78,6 +215,7 @@ async function assertComposerReplayAndCrashRecovery(page: Page) {
     ).toContainText("Hello there");
     await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
     expect(bodies[2]?.clientRequestId).not.toBe(bodies[0]?.clientRequestId);
+    await assertLiveComposerReplayRecovery(page, database, conversationId);
 
     const crashedAttemptId = randomUUID();
     const assistantMessageId = randomUUID();

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
   type Dispatch,
@@ -96,6 +97,15 @@ interface PendingSubmission {
   body: string;
 }
 
+const RECOVERY_REFRESH_INTERVAL_MS = 5_000;
+// Covers the maximum ten-minute generation timeout plus a five-minute lease.
+const MAX_RECOVERY_REFRESHES = 181;
+
+interface AttemptRecovery {
+  attemptId?: string;
+  beforeRefresh: ChatClientMessage[];
+}
+
 function generatedMessage(
   attemptId: string,
 ): Extract<ChatClientMessage, { kind: "generated" }> {
@@ -127,12 +137,14 @@ function activeAttemptFrom(messages: ChatClientMessage[]): string | undefined {
 export function ChatComposer({
   conversationId,
   messages,
+  authoritativeMessages = messages,
   onMessagesChange,
   onGeneratingChange,
   onAuthoritativeRefresh,
 }: {
   conversationId: string;
   messages: ChatClientMessage[];
+  authoritativeMessages?: ChatClientMessage[];
   onMessagesChange: Dispatch<SetStateAction<ChatClientMessage[]>>;
   onGeneratingChange?: (generating: boolean) => void;
   onAuthoritativeRefresh?: () => void;
@@ -140,7 +152,30 @@ export function ChatComposer({
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [activeStreamAttemptId, setActiveAttemptId] = useState<string>();
-  const activeAttemptId = activeStreamAttemptId ?? activeAttemptFrom(messages);
+  const [recovery, setRecovery] = useState<AttemptRecovery>();
+  const [recoveryPollingExpired, setRecoveryPollingExpired] = useState(false);
+  const recoveredAttempt = recovery
+    ? [...authoritativeMessages]
+        .reverse()
+        .find(
+          (message) =>
+            message.kind === "generated" &&
+            (recovery.attemptId
+              ? message.attemptId === recovery.attemptId
+              : authoritativeMessages !== recovery.beforeRefresh),
+        )
+    : undefined;
+  const recovering =
+    recovery !== undefined &&
+    (recoveredAttempt?.kind !== "generated" ||
+      recoveredAttempt.status === "pending" ||
+      recoveredAttempt.status === "streaming");
+  const activeAttemptId =
+    activeStreamAttemptId ??
+    activeAttemptFrom(messages) ??
+    (recovering && recoveredAttempt?.kind === "generated"
+      ? recoveredAttempt.attemptId
+      : undefined);
   const [generationOwnerConversationId, setGenerationOwnerConversationId] =
     useState<string>();
   const [error, setError] = useState<PublicChatError>();
@@ -151,7 +186,36 @@ export function ChatComposer({
   const generating =
     submitting ||
     Boolean(activeAttemptId) ||
+    recovering ||
     generationOwnerConversationId !== undefined;
+  const refreshAuthoritative = useEffectEvent(() => onAuthoritativeRefresh?.());
+  const canRefresh = Boolean(onAuthoritativeRefresh);
+
+  useEffect(() => {
+    if (!recovery || !recovering || !canRefresh) {
+      return;
+    }
+    let cancelled = false;
+    let refreshes = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function refresh() {
+      if (cancelled || !mountedRef.current) {
+        return;
+      }
+      refreshAuthoritative();
+      refreshes += 1;
+      if (refreshes < MAX_RECOVERY_REFRESHES) {
+        timer = setTimeout(refresh, RECOVERY_REFRESH_INTERVAL_MS);
+      } else {
+        setRecoveryPollingExpired(true);
+      }
+    }
+    refresh();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [recovery, recovering, canRefresh]);
 
   useEffect(() => {
     onGeneratingChange?.(generating);
@@ -205,6 +269,7 @@ export function ChatComposer({
     stoppingRef.current = false;
     setSubmitting(true);
     setError(undefined);
+    setRecovery(undefined);
     let currentAttemptId: string | undefined;
     let started = false;
 
@@ -218,8 +283,14 @@ export function ChatComposer({
           signal: controller.signal,
         },
       );
+      if (!mountedRef.current) {
+        return;
+      }
       if (!response.ok) {
         const nextError = await responseError(response);
+        if (!mountedRef.current) {
+          return;
+        }
         if (nextError && nextError.code !== "CHAT_INTERNAL") {
           pendingSubmissionRef.current = undefined;
         }
@@ -228,12 +299,27 @@ export function ChatComposer({
           nextError?.code === "CHAT_GENERATION_IN_PROGRESS" &&
           typeof nextError.metadata?.conversationId === "string"
         ) {
-          setGenerationOwnerConversationId(nextError.metadata.conversationId);
+          if (nextError.metadata.conversationId === conversationId) {
+            const attemptId = nextError.metadata.attemptId;
+            setRecovery({
+              attemptId: typeof attemptId === "string" ? attemptId : undefined,
+              beforeRefresh: authoritativeMessages,
+            });
+            setRecoveryPollingExpired(!canRefresh);
+            if (typeof attemptId === "string" && input.content !== undefined) {
+              setContent("");
+            }
+          } else {
+            setGenerationOwnerConversationId(nextError.metadata.conversationId);
+          }
         }
         return;
       }
 
       const result = await consumeChatEventStream(response, (event) => {
+        if (!mountedRef.current) {
+          return;
+        }
         currentAttemptId = event.attemptId;
         if (event.type === "started") {
           started = true;
@@ -303,6 +389,9 @@ export function ChatComposer({
         setActiveAttemptId(undefined);
       });
 
+      if (!mountedRef.current) {
+        return;
+      }
       if (result.attemptId && !result.terminal) {
         updateAttempt(result.attemptId, (message) => ({
           ...message,
@@ -315,7 +404,11 @@ export function ChatComposer({
         setError(transportError);
       }
     } catch {
-      if (!stoppingRef.current && !controller.signal.aborted) {
+      if (
+        mountedRef.current &&
+        !stoppingRef.current &&
+        !controller.signal.aborted
+      ) {
         if (currentAttemptId) {
           updateAttempt(currentAttemptId, (message) => ({
             ...message,
@@ -363,8 +456,15 @@ export function ChatComposer({
       const response = await fetch(`/api/chat/attempts/${attemptId}/stop`, {
         method: "POST",
       });
+      if (!mountedRef.current) {
+        return;
+      }
       if (response.status !== 202) {
-        setError((await responseError(response)) ?? transportError);
+        const nextError = await responseError(response);
+        if (!mountedRef.current) {
+          return;
+        }
+        setError(nextError ?? transportError);
         stoppingRef.current = false;
         return;
       }
@@ -378,6 +478,9 @@ export function ChatComposer({
       controller?.abort();
       setActiveAttemptId(undefined);
     } catch {
+      if (!mountedRef.current) {
+        return;
+      }
       stoppingRef.current = false;
       setError({
         code: "CHAT_INTERNAL",
@@ -393,9 +496,35 @@ export function ChatComposer({
       message.retryable &&
       (message.status === "failed" || message.status === "interrupted"),
   );
+  const visibleError =
+    recovery && error?.code === "CHAT_GENERATION_IN_PROGRESS"
+      ? undefined
+      : error;
 
   return (
     <div className="chat-composer-shell">
+      {recovering ? (
+        <div role="status">
+          <p>Recovering the active response…</p>
+          {recoveryPollingExpired ? (
+            <button
+              onClick={() => {
+                setRecoveryPollingExpired(false);
+                setRecovery((current) => current && { ...current });
+              }}
+              type="button"
+            >
+              Refresh response
+            </button>
+          ) : null}
+          <Link
+            className="brand-link"
+            href={`/app/conversations/${conversationId}`}
+          >
+            Open the active conversation
+          </Link>
+        </div>
+      ) : null}
       {retryable.map((message) => (
         <button
           className="brand-link chat-retry"
@@ -438,14 +567,14 @@ export function ChatComposer({
           </button>
         )}
       </form>
-      {error ? (
+      {visibleError ? (
         <div className="chat-error" role="alert">
-          <p>{error.message}</p>
-          {error.code === "CHAT_GENERATION_IN_PROGRESS" &&
-          typeof error.metadata?.conversationId === "string" ? (
+          <p>{visibleError.message}</p>
+          {visibleError.code === "CHAT_GENERATION_IN_PROGRESS" &&
+          typeof visibleError.metadata?.conversationId === "string" ? (
             <Link
               className="brand-link"
-              href={`/app/conversations/${error.metadata.conversationId}`}
+              href={`/app/conversations/${visibleError.metadata.conversationId}`}
             >
               Open the active conversation
             </Link>
