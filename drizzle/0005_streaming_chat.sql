@@ -172,13 +172,13 @@ CREATE TABLE "quota_buckets" (
         (
           "quota_buckets"."scope" = 'user'
           AND "quota_buckets"."period_start" = DATE_TRUNC('day', "quota_buckets"."period_start" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-          AND "quota_buckets"."period_end" = "quota_buckets"."period_start" + INTERVAL '1 day'
+          AND "quota_buckets"."period_end" = (("quota_buckets"."period_start" AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC'
         )
         OR
         (
           "quota_buckets"."scope" = 'instance'
           AND "quota_buckets"."period_start" = DATE_TRUNC('month', "quota_buckets"."period_start" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-          AND "quota_buckets"."period_end" = "quota_buckets"."period_start" + INTERVAL '1 month'
+          AND "quota_buckets"."period_end" = (("quota_buckets"."period_start" AT TIME ZONE 'UTC') + INTERVAL '1 month') AT TIME ZONE 'UTC'
         )
       )),
 	CONSTRAINT "quota_buckets_consumed_requests_nonnegative" CHECK ("quota_buckets"."consumed_requests" >= 0),
@@ -372,6 +372,18 @@ DECLARE
   source_role text;
   source_kind conversation_message_kind;
 BEGIN
+  IF TG_OP = 'UPDATE'
+     AND ROW(NEW.id, NEW.kind, NEW.conversation_id)
+         IS DISTINCT FROM ROW(OLD.id, OLD.kind, OLD.conversation_id)
+     AND EXISTS (
+       SELECT 1
+       FROM conversation_messages
+       WHERE kind = 'generated'
+         AND in_reply_to = OLD.id
+     ) THEN
+    RAISE EXCEPTION 'referenced user message identity, kind, and conversation are immutable';
+  END IF;
+
   IF NEW.kind <> 'generated' THEN
     RETURN NEW;
   END IF;
@@ -481,6 +493,56 @@ CREATE TRIGGER generation_attempts_preserve_terminal
 BEFORE UPDATE ON generation_attempts
 FOR EACH ROW
 EXECUTE FUNCTION preserve_terminal_generation_attempt();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION enforce_generation_lease_invariants()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  conversation_user_id text;
+BEGIN
+  SELECT conversations.user_id
+  INTO conversation_user_id
+  FROM generation_attempts
+  JOIN conversation_messages
+    ON conversation_messages.id = generation_attempts.assistant_message_id
+   AND conversation_messages.kind = 'generated'
+  JOIN conversations
+    ON conversations.id = conversation_messages.conversation_id
+  WHERE generation_attempts.id = NEW.attempt_id
+  FOR UPDATE OF generation_attempts;
+
+  IF NOT FOUND OR NEW.user_id IS DISTINCT FROM conversation_user_id THEN
+    RAISE EXCEPTION 'generation lease user must match the attempt conversation owner';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+
+CREATE TRIGGER generation_leases_enforce_invariants
+BEFORE INSERT OR UPDATE ON generation_leases
+FOR EACH ROW
+EXECUTE FUNCTION enforce_generation_lease_invariants();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION lock_quota_reservation_attempt()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM 1
+  FROM generation_attempts
+  WHERE id = NEW.attempt_id
+  FOR UPDATE;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+
+CREATE TRIGGER quota_reservations_lock_attempt
+BEFORE INSERT OR UPDATE ON quota_reservations
+FOR EACH ROW
+EXECUTE FUNCTION lock_quota_reservation_attempt();--> statement-breakpoint
 
 CREATE OR REPLACE FUNCTION release_deleted_quota_reservation()
 RETURNS trigger

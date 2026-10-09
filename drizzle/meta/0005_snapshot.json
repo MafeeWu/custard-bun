@@ -1954,7 +1954,7 @@
         },
         "quota_buckets_period_check": {
           "name": "quota_buckets_period_check",
-          "value": "(\n        (\n          \"quota_buckets\".\"scope\" = 'user'\n          AND \"quota_buckets\".\"period_start\" = DATE_TRUNC('day', \"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'\n          AND \"quota_buckets\".\"period_end\" = \"quota_buckets\".\"period_start\" + INTERVAL '1 day'\n        )\n        OR\n        (\n          \"quota_buckets\".\"scope\" = 'instance'\n          AND \"quota_buckets\".\"period_start\" = DATE_TRUNC('month', \"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'\n          AND \"quota_buckets\".\"period_end\" = \"quota_buckets\".\"period_start\" + INTERVAL '1 month'\n        )\n      )"
+          "value": "(\n        (\n          \"quota_buckets\".\"scope\" = 'user'\n          AND \"quota_buckets\".\"period_start\" = DATE_TRUNC('day', \"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'\n          AND \"quota_buckets\".\"period_end\" = ((\"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC'\n        )\n        OR\n        (\n          \"quota_buckets\".\"scope\" = 'instance'\n          AND \"quota_buckets\".\"period_start\" = DATE_TRUNC('month', \"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'\n          AND \"quota_buckets\".\"period_end\" = ((\"quota_buckets\".\"period_start\" AT TIME ZONE 'UTC') + INTERVAL '1 month') AT TIME ZONE 'UTC'\n        )\n      )"
         },
         "quota_buckets_consumed_requests_nonnegative": {
           "name": "quota_buckets_consumed_requests_nonnegative",

@@ -77,6 +77,31 @@ async function expectDatabaseError(
   }
 }
 
+async function waitForApplicationLockWait(
+  applicationName: string,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const result = await database.$client.query<{
+          wait_event_type: string | null;
+        }>(
+          `
+            SELECT wait_event_type
+            FROM pg_stat_activity
+            WHERE application_name = $1
+              AND state = 'active'
+          `,
+          [applicationName],
+        );
+
+        return result.rows.some((row) => row.wait_event_type === "Lock");
+      },
+      { timeout: 2_000 },
+    )
+    .toBe(true);
+}
+
 async function insertUser(id = randomUUID()) {
   await database.execute(sql`
     INSERT INTO "user" (
@@ -265,10 +290,12 @@ async function insertAttempt(input: {
   return id;
 }
 
-async function chatFixture() {
+async function chatFixture(slugSuffix = "") {
   const userId = await insertUser();
-  const firstCharacter = await insertCharacterWithVersion("mira");
-  const secondCharacter = await insertCharacterWithVersion("sol");
+  const firstCharacter = await insertCharacterWithVersion(
+    `mira${slugSuffix}`,
+  );
+  const secondCharacter = await insertCharacterWithVersion(`sol${slugSuffix}`);
   const conversationId = await insertConversation({
     userId,
     characterId: firstCharacter.characterId,
@@ -472,6 +499,39 @@ describe("chat storage invariants", () => {
     );
   });
 
+  test("referenced user messages cannot move to another conversation", async () => {
+    const fixture = await chatFixture();
+    const otherConversationId = await insertConversation({
+      userId: fixture.userId,
+      characterId: fixture.secondCharacter.characterId,
+      characterVersionId: fixture.secondCharacter.versionId,
+    });
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE conversation_messages
+        SET conversation_id = ${otherConversationId}
+        WHERE id = ${fixture.userMessageId}
+      `),
+      /referenced user message.*conversation.*immutable/i,
+    );
+  });
+
+  test("referenced user messages cannot change kind", async () => {
+    const fixture = await chatFixture();
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE conversation_messages
+        SET kind = 'opening',
+            role = 'assistant',
+            client_request_id = NULL
+        WHERE id = ${fixture.userMessageId}
+      `),
+      /referenced user message.*kind.*immutable/i,
+    );
+  });
+
   test("allows only one current attempt per assistant slot", async () => {
     const fixture = await chatFixture();
     await insertAttempt({ assistantMessageId: fixture.assistantMessageId });
@@ -531,6 +591,187 @@ describe("chat storage invariants", () => {
       `),
       /generation lease|user_id/i,
     );
+  });
+
+  test("generation leases must belong to the attempt conversation owner", async () => {
+    const fixture = await chatFixture();
+    const otherUserId = await insertUser();
+    const attemptId = await insertAttempt({
+      assistantMessageId: fixture.assistantMessageId,
+    });
+
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO generation_leases (
+          attempt_id,
+          user_id,
+          owner_token,
+          expires_at
+        )
+        VALUES (
+          ${attemptId},
+          ${otherUserId},
+          'wrong-owner',
+          NOW() + INTERVAL '1 minute'
+        )
+      `),
+      /generation lease user.*conversation owner/i,
+    );
+
+    await database.execute(sql`
+      INSERT INTO generation_leases (
+        attempt_id,
+        user_id,
+        owner_token,
+        expires_at
+      )
+      VALUES (
+        ${attemptId},
+        ${fixture.userId},
+        'right-owner',
+        NOW() + INTERVAL '1 minute'
+      )
+    `);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE generation_leases
+        SET user_id = ${otherUserId}
+        WHERE attempt_id = ${attemptId}
+      `),
+      /generation lease user.*conversation owner/i,
+    );
+  });
+
+  test("serializes terminal finalization against lease and reservation inserts", async () => {
+    for (const resource of ["lease", "reservation"] as const) {
+      const fixture = await chatFixture(`-${resource}`);
+      const attemptId = await insertAttempt({
+        assistantMessageId: fixture.assistantMessageId,
+      });
+      const applicationName = `chat-${resource}-insert`;
+      const finalizerDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: `chat-${resource}-finalizer`,
+        max: 1,
+      });
+      const resourceDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: applicationName,
+        max: 1,
+      });
+      const finalizer = await finalizerDatabase.$client.connect();
+      const resourceWriter = await resourceDatabase.$client.connect();
+      let inserting: Promise<unknown> | undefined;
+      const resourceId = resource === "lease" ? attemptId : randomUUID();
+      let userBucketId: string | undefined;
+      let instanceBucketId: string | undefined;
+
+      if (resource === "reservation") {
+        userBucketId = randomUUID();
+        instanceBucketId = randomUUID();
+        await database.execute(sql`
+          INSERT INTO quota_buckets (
+            id,
+            scope,
+            user_id,
+            period_start,
+            period_end
+          )
+          VALUES
+            (
+              ${userBucketId},
+              'user',
+              ${fixture.userId},
+              TIMESTAMPTZ '2026-10-09 00:00:00+00',
+              TIMESTAMPTZ '2026-10-10 00:00:00+00'
+            ),
+            (
+              ${instanceBucketId},
+              'instance',
+              NULL,
+              TIMESTAMPTZ '2026-10-01 00:00:00+00',
+              TIMESTAMPTZ '2026-11-01 00:00:00+00'
+            )
+        `);
+      }
+
+      try {
+        await finalizer.query("BEGIN");
+        await resourceWriter.query("BEGIN");
+        await finalizer.query(
+          `UPDATE generation_attempts
+           SET status = 'complete', completed_at = NOW()
+           WHERE id = $1`,
+          [attemptId],
+        );
+
+        if (resource === "lease") {
+          inserting = resourceWriter.query(
+            `INSERT INTO generation_leases (
+               attempt_id,
+               user_id,
+               owner_token,
+               expires_at
+             )
+             VALUES ($1, $2, 'race-owner', NOW() + INTERVAL '1 minute')`,
+            [attemptId, fixture.userId],
+          );
+        } else {
+          inserting = resourceWriter.query(
+            `INSERT INTO quota_reservations (
+               id,
+               user_id,
+               conversation_id,
+               attempt_id,
+               user_bucket_id,
+               instance_bucket_id,
+               reserved_tokens
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, 256)`,
+            [
+              resourceId,
+              fixture.userId,
+              fixture.conversationId,
+              attemptId,
+              userBucketId,
+              instanceBucketId,
+            ],
+          );
+        }
+        void inserting.catch(() => undefined);
+
+        await waitForApplicationLockWait(applicationName);
+        await finalizer.query("COMMIT");
+        await inserting;
+        await expect(resourceWriter.query("COMMIT")).rejects.toThrow(
+          /terminal generation attempts cannot retain active leases or reservations/i,
+        );
+
+        const table =
+          resource === "lease" ? "generation_leases" : "quota_reservations";
+        const idColumn = resource === "lease" ? "attempt_id" : "id";
+        const result = await database.$client.query(
+          `SELECT 1 FROM ${table} WHERE ${idColumn} = $1`,
+          [resourceId],
+        );
+        expect(result.rows).toHaveLength(0);
+        await expect(
+          database.$client.query(
+            "SELECT status FROM generation_attempts WHERE id = $1",
+            [attemptId],
+          ),
+        ).resolves.toMatchObject({
+          rows: [{ status: "complete" }],
+        });
+      } finally {
+        await finalizer.query("ROLLBACK").catch(() => undefined);
+        await resourceWriter.query("ROLLBACK").catch(() => undefined);
+        finalizer.release();
+        resourceWriter.release();
+        await Promise.allSettled(inserting ? [inserting] : []);
+        await finalizerDatabase.$client.end();
+        await resourceDatabase.$client.end();
+      }
+    }
   });
 
   test("terminal attempt status, content, and accounting fields are immutable", async () => {
@@ -867,4 +1108,53 @@ describe("chat storage invariants", () => {
       /period/i,
     );
   });
+
+  test.each([
+    {
+      scope: "user" as const,
+      timeZone: "Asia/Kolkata",
+      periodStart: "2026-10-09T00:00:00.000Z",
+      periodEnd: "2026-10-10T00:00:00.000Z",
+    },
+    {
+      scope: "user" as const,
+      timeZone: "America/Los_Angeles",
+      periodStart: "2026-03-08T00:00:00.000Z",
+      periodEnd: "2026-03-09T00:00:00.000Z",
+    },
+    {
+      scope: "instance" as const,
+      timeZone: "America/Los_Angeles",
+      periodStart: "2026-03-01T00:00:00.000Z",
+      periodEnd: "2026-04-01T00:00:00.000Z",
+    },
+  ])(
+    "accepts $scope UTC quota periods in the $timeZone session timezone",
+    async ({ scope, timeZone, periodEnd, periodStart }) => {
+      const userId = scope === "user" ? await insertUser() : null;
+      const client = await database.$client.connect();
+
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('TimeZone', $1, true)", [
+          timeZone,
+        ]);
+        await client.query(
+          `INSERT INTO quota_buckets (
+             id,
+             scope,
+             user_id,
+             period_start,
+             period_end
+           )
+           VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), scope, userId, periodStart, periodEnd],
+        );
+        await client.query("COMMIT");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+    },
+  );
 });

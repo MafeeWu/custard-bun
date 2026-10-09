@@ -444,13 +444,13 @@ export const quotaBucket = pgTable(
         (
           ${table.scope} = 'user'
           AND ${table.periodStart} = DATE_TRUNC('day', ${table.periodStart} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-          AND ${table.periodEnd} = ${table.periodStart} + INTERVAL '1 day'
+          AND ${table.periodEnd} = ((${table.periodStart} AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC'
         )
         OR
         (
           ${table.scope} = 'instance'
           AND ${table.periodStart} = DATE_TRUNC('month', ${table.periodStart} AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-          AND ${table.periodEnd} = ${table.periodStart} + INTERVAL '1 month'
+          AND ${table.periodEnd} = ((${table.periodStart} AT TIME ZONE 'UTC') + INTERVAL '1 month') AT TIME ZONE 'UTC'
         )
       )`,
     ),
