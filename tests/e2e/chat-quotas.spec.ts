@@ -31,12 +31,18 @@ interface ChatResult {
   body: unknown;
 }
 
+interface CapturedChatResponse {
+  rawBody: string;
+  result: ChatResult;
+}
+
 async function postChat(
   page: Page,
   conversationId: string,
   content: string,
+  capturedResponses: CapturedChatResponse[],
 ): Promise<ChatResult> {
-  return page.evaluate(
+  const captured = await page.evaluate(
     async ({ conversationId: id, content: message }) => {
       const response = await fetch(`/api/chat/conversations/${id}/messages`, {
         method: "POST",
@@ -51,6 +57,7 @@ async function postChat(
       return {
         status: response.status,
         contentType,
+        rawBody: text,
         body: contentType.includes("application/json")
           ? JSON.parse(text)
           : text
@@ -62,6 +69,9 @@ async function postChat(
     },
     { conversationId, content },
   );
+  const { rawBody, ...result } = captured;
+  capturedResponses.push({ rawBody, result });
+  return result;
 }
 
 function terminalEvent(result: ChatResult) {
@@ -284,7 +294,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
   const userAPage = await userAContext.newPage();
   const userBPage = await userBContext.newPage();
   const decisiveUserPage = await decisiveUserContext.newPage();
-  const failureResponseBodies: unknown[] = [];
+  const chatResponses: CapturedChatResponse[] = [];
+  const providerSecretScanValues: unknown[] = [chatResponses];
   let adminReady = false;
 
   try {
@@ -332,13 +343,13 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       `/app/conversations/${userAConversation}`,
     );
     expect(forbiddenPage?.status()).toBe(404);
-    failureResponseBodies.push(await forbiddenPage!.text());
+    providerSecretScanValues.push(await forbiddenPage!.text());
     const forbiddenStream = await postChat(
       userBPage,
       userAConversation,
       "Cross-user streamed event attempt [stream]",
+      chatResponses,
     );
-    failureResponseBodies.push(forbiddenStream.body);
     expect(forbiddenStream).toEqual({
       status: 404,
       contentType: "application/json",
@@ -378,7 +389,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       });
       return { status: response.status, body: await response.json() };
     }, activeAttempt!.id);
-    failureResponseBodies.push(forbiddenStop.body);
+    providerSecretScanValues.push(forbiddenStop.body);
     expect(forbiddenStop).toEqual({
       status: 404,
       body: {
@@ -404,8 +415,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userAPage,
       userAConversation,
       "User request quota",
+      chatResponses,
     );
-    failureResponseBodies.push(userRequestQuota.body);
     expect(userRequestQuota).toEqual({
       status: 429,
       contentType: "application/json",
@@ -424,6 +435,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
           userBPage,
           userBConversation,
           "User B unaffected [stream]",
+          chatResponses,
         ),
       ),
     ).toMatchObject({ type: "completed" });
@@ -438,8 +450,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userAPage,
       userAConversation,
       "User token quota",
+      chatResponses,
     );
-    failureResponseBodies.push(userTokenQuota.body);
     expect(userTokenQuota).toEqual({
       status: 429,
       contentType: "application/json",
@@ -472,6 +484,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
           userBPage,
           userBConversation,
           "Exhaust instance request budget [stream]",
+          chatResponses,
         ),
       ),
     ).toMatchObject({ type: "completed" });
@@ -482,8 +495,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       decisiveUserPage,
       decisiveUserConversation,
       "Decisive instance request budget",
+      chatResponses,
     );
-    failureResponseBodies.push(instanceRequestBudget.body);
     expect(instanceRequestBudget).toEqual({
       status: 429,
       contentType: "application/json",
@@ -513,6 +526,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
           userBPage,
           userBConversation,
           "Exhaust instance token budget [stream]",
+          chatResponses,
         ),
       ),
     ).toMatchObject({ type: "completed" });
@@ -528,8 +542,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       decisiveUserPage,
       decisiveUserConversation,
       "Decisive instance token budget",
+      chatResponses,
     );
-    failureResponseBodies.push(instanceTokenBudget.body);
     expect(instanceTokenBudget).toEqual({
       status: 429,
       contentType: "application/json",
@@ -570,8 +584,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userBPage,
       userBConversation,
       "Provider rate [rate-limit]",
+      chatResponses,
     );
-    failureResponseBodies.push(providerRateLimit.body);
     expectFailedStream(providerRateLimit, {
       code: "CHAT_PROVIDER_RATE_LIMIT",
       message: "The model provider is rate limiting requests.",
@@ -582,8 +596,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userBPage,
       userBConversation,
       "Provider auth [auth-fail]",
+      chatResponses,
     );
-    failureResponseBodies.push(providerAuth.body);
     expectFailedStream(providerAuth, {
       code: "CHAT_PROVIDER_AUTH",
       message: "The model provider rejected the request.",
@@ -593,8 +607,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userBPage,
       userBConversation,
       "Provider timeout [slow]",
+      chatResponses,
     );
-    failureResponseBodies.push(providerTimeout.body);
     expectFailedStream(providerTimeout, {
       code: "CHAT_PROVIDER_TIMEOUT",
       message: "The model provider took too long to respond.",
@@ -604,8 +618,8 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userBPage,
       userBConversation,
       "Provider interruption [interrupt]",
+      chatResponses,
     );
-    failureResponseBodies.push(interrupted.body);
     expectInterruptedStream(interrupted);
 
     await resetFakeModel();
@@ -617,6 +631,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
           userBPage,
           userBConversation,
           `${privacyPhrase} [stream]`,
+          chatResponses,
         ),
       ),
     ).toMatchObject({ type: "completed" });
@@ -637,6 +652,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
           userBPage,
           userBConversation,
           "Missing provider usage [stream]",
+          chatResponses,
         ),
       ),
     ).toMatchObject({ type: "completed" });
@@ -696,8 +712,28 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       ).text(),
     ].join("\n");
     const staticAssets = await staticAssetText(".next/static");
-    expectProviderSecretsAbsent(failureResponseBodies);
-    expectProviderSecretsAbsent([browserBodies, staticAssets]);
+    expect(chatResponses).toHaveLength(14);
+    const ndjsonResponses = chatResponses.filter(({ result }) =>
+      result.contentType.includes("application/x-ndjson"),
+    );
+    expect(ndjsonResponses).toHaveLength(9);
+    for (const { rawBody, result } of ndjsonResponses) {
+      expect(
+        rawBody
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line)),
+      ).toEqual(result.body);
+    }
+    expect(
+      ndjsonResponses.filter(({ result }) => {
+        const events = result.body as Array<Record<string, unknown>>;
+        return events.at(-1)?.type === "completed";
+      }),
+    ).toHaveLength(5);
+    providerSecretScanValues.push(browserBodies, staticAssets);
+    expectProviderSecretsAbsent(providerSecretScanValues);
   } finally {
     if (adminReady) {
       try {
