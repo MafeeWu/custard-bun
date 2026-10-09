@@ -6,9 +6,10 @@ import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
   conversationMessage,
   generationAttempt,
+  quotaBucket,
   usageLedger,
 } from "../../src/server/db/chat-schema";
-import { rateLimit } from "../../src/server/db/auth-schema";
+import { rateLimit, user } from "../../src/server/db/auth-schema";
 import {
   bootstrapAdmin,
   cleanupAdminTestData,
@@ -37,17 +38,14 @@ async function postChat(
 ): Promise<ChatResult> {
   return page.evaluate(
     async ({ conversationId: id, content: message }) => {
-      const response = await fetch(
-        `/api/chat/conversations/${id}/messages`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            clientRequestId: crypto.randomUUID(),
-            content: message,
-          }),
-        },
-      );
+      const response = await fetch(`/api/chat/conversations/${id}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientRequestId: crypto.randomUUID(),
+          content: message,
+        }),
+      });
       const contentType = response.headers.get("content-type") ?? "";
       const text = await response.text();
       return {
@@ -71,6 +69,54 @@ function terminalEvent(result: ChatResult) {
   expect(result.contentType).toContain("application/x-ndjson");
   const events = result.body as Array<Record<string, unknown>>;
   return events.at(-1);
+}
+
+function expectFailedStream(
+  result: ChatResult,
+  terminal: Record<string, unknown>,
+): void {
+  expect(result.status).toBe(200);
+  expect(result.contentType).toContain("application/x-ndjson");
+  const events = result.body as Array<Record<string, unknown>>;
+  expect(events).toHaveLength(2);
+  const attemptId = events[0]?.attemptId;
+  expect(attemptId).toEqual(expect.any(String));
+  expect(events).toEqual([
+    { type: "started", attemptId },
+    { type: "failed", attemptId, ...terminal },
+  ]);
+}
+
+function expectInterruptedStream(result: ChatResult): void {
+  expect(result.status).toBe(200);
+  expect(result.contentType).toContain("application/x-ndjson");
+  const events = result.body as Array<Record<string, unknown>>;
+  expect(events).toHaveLength(3);
+  const attemptId = events[0]?.attemptId;
+  expect(attemptId).toEqual(expect.any(String));
+  expect(events).toEqual([
+    { type: "started", attemptId },
+    { type: "delta", attemptId, text: "Partial reply" },
+    {
+      type: "interrupted",
+      attemptId,
+      code: "CHAT_STREAM_INTERRUPTED",
+      message: "The response stream ended before completion.",
+      retryable: true,
+    },
+  ]);
+}
+
+function expectProviderSecretsAbsent(values: unknown[]): void {
+  const serialized = values
+    .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+    .join("\n");
+  for (const secret of [
+    e2eEnvironment.MODEL_API_KEY,
+    e2eEnvironment.MODEL_API_BASE_URL,
+  ]) {
+    expect(serialized).not.toContain(secret);
+  }
 }
 
 async function setGlobalSettings(
@@ -131,10 +177,8 @@ async function setUserOverride(
 
 async function usageTotals(
   database: ReturnType<typeof createAdminTestDatabase>,
+  periodStart: Date,
 ) {
-  const monthStart = new Date();
-  monthStart.setUTCDate(1);
-  monthStart.setUTCHours(0, 0, 0, 0);
   const [totals] = await database
     .select({
       requests: sql<number>`coalesce(sum(${usageLedger.userRequestUnits}), 0)::int`,
@@ -143,12 +187,62 @@ async function usageTotals(
       estimated: sql<number>`count(*) filter (where ${usageLedger.usageIsEstimated})::int`,
     })
     .from(usageLedger)
-    .where(gte(usageLedger.periodStart, monthStart));
+    .where(gte(usageLedger.periodStart, periodStart));
   return {
     requests: Number(totals?.requests ?? 0),
     inputTokens: Number(totals?.inputTokens ?? 0),
     outputTokens: Number(totals?.outputTokens ?? 0),
     estimated: Number(totals?.estimated ?? 0),
+  };
+}
+
+function utcDayStart(now = new Date()): Date {
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+}
+
+function utcMonthStart(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
+async function instanceQuotaConsumption(
+  database: ReturnType<typeof createAdminTestDatabase>,
+) {
+  const [bucket] = await database
+    .select({
+      requests: quotaBucket.consumedRequests,
+      tokens: quotaBucket.consumedTokens,
+    })
+    .from(quotaBucket)
+    .where(
+      and(
+        eq(quotaBucket.scope, "instance"),
+        eq(quotaBucket.periodStart, utcMonthStart()),
+      ),
+    )
+    .limit(1);
+  return {
+    requests: Number(bucket?.requests ?? 0),
+    tokens: Number(bucket?.tokens ?? 0),
+  };
+}
+
+async function userUsageTotals(
+  database: ReturnType<typeof createAdminTestDatabase>,
+  email: string,
+) {
+  const [totals] = await database
+    .select({
+      requests: sql<number>`coalesce(sum(${usageLedger.userRequestUnits}), 0)::int`,
+      tokens: sql<number>`coalesce(sum(${usageLedger.inputTokens} + ${usageLedger.outputTokens}), 0)::int`,
+    })
+    .from(usageLedger)
+    .innerJoin(user, eq(user.id, usageLedger.userId))
+    .where(eq(user.email, email));
+  return {
+    requests: Number(totals?.requests ?? 0),
+    tokens: Number(totals?.tokens ?? 0),
   };
 }
 
@@ -175,6 +269,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
   const adminEmail = `quota-admin-${token}@example.com`;
   const userAEmail = `quota-a-${token}@example.com`;
   const userBEmail = `quota-b-${token}@example.com`;
+  const decisiveUserEmail = `quota-decisive-${token}@example.com`;
   const userAName = `Quota A ${token}`;
   const userBName = `Quota B ${token}`;
   const userAContext = await browser.newContext({
@@ -183,8 +278,13 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
   const userBContext = await browser.newContext({
     baseURL: e2eEnvironment.BETTER_AUTH_URL,
   });
+  const decisiveUserContext = await browser.newContext({
+    baseURL: e2eEnvironment.BETTER_AUTH_URL,
+  });
   const userAPage = await userAContext.newPage();
   const userBPage = await userBContext.newPage();
+  const decisiveUserPage = await decisiveUserContext.newPage();
+  const failureResponseBodies: unknown[] = [];
   let adminReady = false;
 
   try {
@@ -211,6 +311,10 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       email: userBEmail,
       name: userBName,
     });
+    await registerAndSignIn(decisiveUserPage, {
+      email: decisiveUserEmail,
+      name: `Quota decisive ${token}`,
+    });
     const userAConversation = await startCharacterConversation(
       userAPage,
       "calm-listener",
@@ -219,19 +323,32 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userBPage,
       "calm-listener",
     );
+    const decisiveUserConversation = await startCharacterConversation(
+      decisiveUserPage,
+      "calm-listener",
+    );
 
     const forbiddenPage = await userBPage.goto(
       `/app/conversations/${userAConversation}`,
     );
     expect(forbiddenPage?.status()).toBe(404);
+    failureResponseBodies.push(await forbiddenPage!.text());
     const forbiddenStream = await postChat(
       userBPage,
       userAConversation,
       "Cross-user streamed event attempt [stream]",
     );
-    expect(forbiddenStream).toMatchObject({
+    failureResponseBodies.push(forbiddenStream.body);
+    expect(forbiddenStream).toEqual({
       status: 404,
-      body: { error: { code: "CHAT_NOT_FOUND" } },
+      contentType: "application/json",
+      body: {
+        error: {
+          code: "CHAT_NOT_FOUND",
+          message: "The requested chat was not found.",
+          retryable: false,
+        },
+      },
     });
 
     await userAPage.goto(`/app/conversations/${userAConversation}`);
@@ -261,9 +378,16 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       });
       return { status: response.status, body: await response.json() };
     }, activeAttempt!.id);
-    expect(forbiddenStop).toMatchObject({
+    failureResponseBodies.push(forbiddenStop.body);
+    expect(forbiddenStop).toEqual({
       status: 404,
-      body: { error: { code: "CHAT_NOT_FOUND" } },
+      body: {
+        error: {
+          code: "CHAT_NOT_FOUND",
+          message: "The requested chat was not found.",
+          retryable: false,
+        },
+      },
     });
     await userAPage.getByRole("button", { name: "Stop", exact: true }).click();
     await expect(
@@ -281,19 +405,26 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userAConversation,
       "User request quota",
     );
-    expect(userRequestQuota).toMatchObject({
+    failureResponseBodies.push(userRequestQuota.body);
+    expect(userRequestQuota).toEqual({
       status: 429,
+      contentType: "application/json",
       body: {
         error: {
           code: "CHAT_USER_REQUEST_QUOTA",
           message: "You have reached today's chat request limit.",
+          retryable: true,
           resetAt: expect.any(String),
         },
       },
     });
     expect(
       terminalEvent(
-        await postChat(userBPage, userBConversation, "User B unaffected [stream]"),
+        await postChat(
+          userBPage,
+          userBConversation,
+          "User B unaffected [stream]",
+        ),
       ),
     ).toMatchObject({ type: "completed" });
 
@@ -308,12 +439,15 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       userAConversation,
       "User token quota",
     );
-    expect(userTokenQuota).toMatchObject({
+    failureResponseBodies.push(userTokenQuota.body);
+    expect(userTokenQuota).toEqual({
       status: 429,
+      contentType: "application/json",
       body: {
         error: {
           code: "CHAT_USER_TOKEN_QUOTA",
           message: "You have reached today's chat token limit.",
+          retryable: true,
           resetAt: expect.any(String),
         },
       },
@@ -324,48 +458,93 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       (userTokenQuota.body as { error: { resetAt: string } }).error.resetAt,
     );
 
+    const beforeInstanceRequestExhaustion =
+      await instanceQuotaConsumption(database);
     await setGlobalSettings(adminPage, {
-      userRequests: 1,
+      userRequests: beforeInstanceRequestExhaustion.requests + 1,
       userTokens: 100_000,
-      instanceRequests: 1,
+      instanceRequests: beforeInstanceRequestExhaustion.requests + 1,
       instanceTokens: 10_000_000,
     });
-    const instanceRequestBudget = await postChat(
-      userBPage,
-      userBConversation,
-      "Instance request budget",
+    expect(
+      terminalEvent(
+        await postChat(
+          userBPage,
+          userBConversation,
+          "Exhaust instance request budget [stream]",
+        ),
+      ),
+    ).toMatchObject({ type: "completed" });
+    expect((await instanceQuotaConsumption(database)).requests).toBe(
+      beforeInstanceRequestExhaustion.requests + 1,
     );
-    expect(instanceRequestBudget).toMatchObject({
+    const instanceRequestBudget = await postChat(
+      decisiveUserPage,
+      decisiveUserConversation,
+      "Decisive instance request budget",
+    );
+    failureResponseBodies.push(instanceRequestBudget.body);
+    expect(instanceRequestBudget).toEqual({
       status: 429,
+      contentType: "application/json",
       body: {
         error: {
           code: "CHAT_INSTANCE_REQUEST_BUDGET",
           message: "This deployment has reached its request budget.",
+          retryable: true,
           resetAt: expect.any(String),
         },
       },
+    });
+    expect(await userUsageTotals(database, decisiveUserEmail)).toEqual({
+      requests: 0,
+      tokens: 0,
     });
 
     await setGlobalSettings(adminPage, {
       userRequests: 100,
-      userTokens: 1,
+      userTokens: 100_000,
       instanceRequests: 100_000,
-      instanceTokens: 1,
+      instanceTokens: 10_000_000,
+    });
+    expect(
+      terminalEvent(
+        await postChat(
+          userBPage,
+          userBConversation,
+          "Exhaust instance token budget [stream]",
+        ),
+      ),
+    ).toMatchObject({ type: "completed" });
+    const exhaustedInstanceTokens = (await instanceQuotaConsumption(database))
+      .tokens;
+    await setGlobalSettings(adminPage, {
+      userRequests: 100,
+      userTokens: exhaustedInstanceTokens,
+      instanceRequests: 100_000,
+      instanceTokens: exhaustedInstanceTokens,
     });
     const instanceTokenBudget = await postChat(
-      userBPage,
-      userBConversation,
-      "Instance token budget",
+      decisiveUserPage,
+      decisiveUserConversation,
+      "Decisive instance token budget",
     );
-    expect(instanceTokenBudget).toMatchObject({
+    failureResponseBodies.push(instanceTokenBudget.body);
+    expect(instanceTokenBudget).toEqual({
       status: 429,
+      contentType: "application/json",
       body: {
         error: {
           code: "CHAT_INSTANCE_TOKEN_BUDGET",
           message: "This deployment has reached its token budget.",
+          retryable: true,
           resetAt: expect.any(String),
         },
       },
+    });
+    expect(await userUsageTotals(database, decisiveUserEmail)).toEqual({
+      requests: 0,
+      tokens: 0,
     });
     expect(
       (instanceRequestBudget.body as { error: { resetAt: string } }).error
@@ -387,51 +566,50 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       instanceRequests: 100_000,
       instanceTokens: 10_000_000,
     });
-    expect(
-      terminalEvent(
-        await postChat(userBPage, userBConversation, "Provider rate [rate-limit]"),
-      ),
-    ).toMatchObject({
-      type: "failed",
+    const providerRateLimit = await postChat(
+      userBPage,
+      userBConversation,
+      "Provider rate [rate-limit]",
+    );
+    failureResponseBodies.push(providerRateLimit.body);
+    expectFailedStream(providerRateLimit, {
       code: "CHAT_PROVIDER_RATE_LIMIT",
       message: "The model provider is rate limiting requests.",
+      retryable: true,
+      resetAt: expect.any(String),
     });
-    expect(
-      terminalEvent(
-        await postChat(userBPage, userBConversation, "Provider auth [auth-fail]"),
-      ),
-    ).toMatchObject({
-      type: "failed",
+    const providerAuth = await postChat(
+      userBPage,
+      userBConversation,
+      "Provider auth [auth-fail]",
+    );
+    failureResponseBodies.push(providerAuth.body);
+    expectFailedStream(providerAuth, {
       code: "CHAT_PROVIDER_AUTH",
       message: "The model provider rejected the request.",
+      retryable: false,
     });
-    expect(
-      terminalEvent(
-        await postChat(userBPage, userBConversation, "Provider timeout [slow]"),
-      ),
-    ).toMatchObject({
-      type: "failed",
+    const providerTimeout = await postChat(
+      userBPage,
+      userBConversation,
+      "Provider timeout [slow]",
+    );
+    failureResponseBodies.push(providerTimeout.body);
+    expectFailedStream(providerTimeout, {
       code: "CHAT_PROVIDER_TIMEOUT",
       message: "The model provider took too long to respond.",
+      retryable: true,
     });
-    const interrupted = (await postChat(
+    const interrupted = await postChat(
       userBPage,
       userBConversation,
       "Provider interruption [interrupt]",
-    )).body as Array<Record<string, unknown>>;
-    expect(interrupted).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "delta", text: "Partial reply" }),
-        expect.objectContaining({
-          type: "interrupted",
-          code: "CHAT_STREAM_INTERRUPTED",
-          message: "The response stream ended before completion.",
-        }),
-      ]),
     );
+    failureResponseBodies.push(interrupted.body);
+    expectInterruptedStream(interrupted);
 
     await resetFakeModel();
-    const beforeAggregate = await usageTotals(database);
+    const beforeAggregate = await usageTotals(database, utcMonthStart());
     const privacyPhrase = `private-message-${randomUUID()}`;
     expect(
       terminalEvent(
@@ -444,7 +622,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
     ).toMatchObject({ type: "completed" });
     const providerActivity = await fakeModelRequests();
     expect(providerActivity).toHaveLength(1);
-    const afterAggregate = await usageTotals(database);
+    const afterAggregate = await usageTotals(database, utcMonthStart());
     expect(afterAggregate).toMatchObject({
       requests: beforeAggregate.requests + 1,
       inputTokens: beforeAggregate.inputTokens + 20,
@@ -452,7 +630,7 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
     });
 
     await setFakeModelControl({ missingUsage: true });
-    const beforeEstimated = await usageTotals(database);
+    const beforeEstimated = await usageTotals(database, utcMonthStart());
     expect(
       terminalEvent(
         await postChat(
@@ -462,24 +640,49 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
         ),
       ),
     ).toMatchObject({ type: "completed" });
-    const afterEstimated = await usageTotals(database);
+    const afterEstimated = await usageTotals(database, utcMonthStart());
     expect(afterEstimated.estimated).toBe(beforeEstimated.estimated + 1);
     await setFakeModelControl({ missingUsage: false });
 
+    const finalDayTotals = await usageTotals(database, utcDayStart());
+    const finalMonthTotals = await usageTotals(database, utcMonthStart());
+    expect(finalMonthTotals).toEqual(afterEstimated);
     await adminPage.goto("/admin/usage");
     const usageHtml = await adminPage.content();
     await expect(
       adminPage.getByRole("heading", { name: "Usage and quotas" }),
     ).toBeVisible();
-    await expect(adminPage.getByText(`${afterAggregate.requests + 1} requests`)).toHaveCount(
-      2,
-    );
+    const dayCard = adminPage
+      .getByRole("heading", { name: "UTC day", exact: true })
+      .locator("..");
+    await expect(
+      dayCard.getByText(`${finalDayTotals.requests} requests`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      dayCard.getByText(
+        `${finalDayTotals.inputTokens} input / ${finalDayTotals.outputTokens} output tokens`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    const monthCard = adminPage
+      .getByRole("heading", { name: "UTC month", exact: true })
+      .locator("..");
+    await expect(
+      monthCard.getByText(`${finalMonthTotals.requests} requests`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      monthCard.getByText(
+        `${finalMonthTotals.inputTokens} input / ${finalMonthTotals.outputTokens} output tokens`,
+        { exact: true },
+      ),
+    ).toBeVisible();
     await adminPage.goto("/admin/audit");
     const auditHtml = await adminPage.content();
-    const applicationLogs = await readFile(
-      "test-results/e2e-app.log",
-      "utf8",
-    );
+    const applicationLogs = await readFile("test-results/e2e-app.log", "utf8");
     for (const source of [usageHtml, auditHtml, applicationLogs]) {
       expect(source).not.toContain(privacyPhrase);
     }
@@ -488,16 +691,13 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
       usageHtml,
       auditHtml,
       await (await adminPage.request.get("/")).text(),
-      await (await userBPage.request.get(`/app/conversations/${userBConversation}`)).text(),
+      await (
+        await userBPage.request.get(`/app/conversations/${userBConversation}`)
+      ).text(),
     ].join("\n");
     const staticAssets = await staticAssetText(".next/static");
-    for (const secret of [
-      "e2e-model-key",
-      "http://127.0.0.1:3102/v1",
-    ]) {
-      expect(browserBodies).not.toContain(secret);
-      expect(staticAssets).not.toContain(secret);
-    }
+    expectProviderSecretsAbsent(failureResponseBodies);
+    expectProviderSecretsAbsent([browserBodies, staticAssets]);
   } finally {
     if (adminReady) {
       try {
@@ -520,10 +720,11 @@ test("enforces tenant isolation, distinct quotas, provider failures and aggregat
     }
     await userAContext.close();
     await userBContext.close();
+    await decisiveUserContext.close();
     try {
       await cleanupAdminTestData(
         database,
-        [adminEmail, userAEmail, userBEmail],
+        [adminEmail, userAEmail, userBEmail, decisiveUserEmail],
         [],
       );
     } finally {

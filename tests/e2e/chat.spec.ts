@@ -45,12 +45,18 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   );
 
   await sendChatMessage(page, "Stop this reply [stall]");
-  const stoppedReply = page.locator('li[data-status="streaming"]').last();
+  const stoppedUserMessage = page
+    .getByRole("listitem")
+    .filter({ hasText: "Stop this reply [stall]" });
+  const stoppedReply = stoppedUserMessage.locator(
+    "xpath=following-sibling::li[1]",
+  );
+  await expect(stoppedReply).toHaveAttribute("data-status", "streaming");
   await expect(stoppedReply).toContainText("Partial reply");
   await page.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(page.locator('li[data-status="interrupted"]').last()).toContainText(
-    "Stopped.",
-  );
+  await expect(stoppedReply).toHaveAttribute("data-status", "interrupted");
+  await expect(stoppedReply).toContainText("Partial reply");
+  await expect(stoppedReply).toContainText("Stopped.");
 
   await sendChatMessage(page, "Refresh this reply [stall]");
   const refreshUserMessage = page
@@ -79,9 +85,9 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   );
 
   await sendChatMessage(page, "Hold the user lease [stall]");
-  await expect(page.locator('li[data-status="streaming"]').last()).toContainText(
-    "Partial reply",
-  );
+  await expect(
+    page.locator('li[data-status="streaming"]').last(),
+  ).toContainText("Partial reply");
   const secondTab = await page.context().newPage();
   try {
     const energeticConversationId = await startCharacterConversation(
