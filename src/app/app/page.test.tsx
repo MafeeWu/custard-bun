@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { requireSession } from "@/server/auth/require-session";
+import { listActiveConversations } from "@/server/chat/conversation-queries";
 import ApplicationHomePage from "./page";
 
 vi.mock("next/headers", () => ({
@@ -9,6 +10,14 @@ vi.mock("next/headers", () => ({
 
 vi.mock("@/server/auth/require-session", () => ({
   requireSession: vi.fn(),
+}));
+
+vi.mock("@/server/db/database", () => ({
+  getDatabase: vi.fn(async () => ({})),
+}));
+
+vi.mock("@/server/chat/conversation-queries", () => ({
+  listActiveConversations: vi.fn(),
 }));
 
 vi.mock("@/components/auth/sign-out-button", () => ({
@@ -23,6 +32,20 @@ test("renders account and character catalog navigation from the application page
       emailVerified: true,
     },
   } as never);
+  vi.mocked(listActiveConversations).mockResolvedValue([
+    {
+      id: "conversation-1",
+      character: {
+        id: "character-1",
+        slug: "calm-guide",
+        displayName: "Calm Guide",
+        avatarPath: "/calm.svg",
+        pinnedVersionId: "version-1",
+        isCurrentDefault: true,
+      },
+      lastMessageAt: new Date("2026-10-09T10:00:00Z"),
+    },
+  ]);
 
   const element = await ApplicationHomePage();
   render(element);
@@ -37,4 +60,7 @@ test("renders account and character catalog navigation from the application page
   expect(
     screen.getByRole("link", { name: /browse characters/i }),
   ).toHaveAttribute("href", "/characters");
+  expect(
+    screen.getByRole("link", { name: /continue with calm guide/i }),
+  ).toHaveAttribute("href", "/app/conversations/conversation-1");
 });

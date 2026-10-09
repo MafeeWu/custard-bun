@@ -39,6 +39,7 @@
     "pg-connection-string": "2.14.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
     "server-only": "0.0.1",
     "tsx": "4.23.15",
     "yaml": "2.9.1",
