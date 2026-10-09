@@ -34,13 +34,14 @@ async function consume(
 
 async function consumeWithRequestIdDelay(
   source: AsyncIterable<GatewayStreamEvent>,
+  delayedRequestId: string,
   delayMs: number,
 ): Promise<Consumption> {
   const events: GatewayStreamEvent[] = [];
   try {
     for await (const event of source) {
       events.push(event);
-      if (event.type === "request-id") {
+      if (event.type === "request-id" && event.requestId === delayedRequestId) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
@@ -164,6 +165,7 @@ describe("OpenAiCompatibleGateway", () => {
 
     const result = await consumeWithRequestIdDelay(
       stream({ firstTokenTimeoutMs: 200, requestTimeoutMs: 1_000 }),
+      "req-authentication",
       300,
     );
     const error = expectGatewayError(result.error, "authentication");
@@ -194,10 +196,14 @@ describe("OpenAiCompatibleGateway", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
-  test("retries one server failure and emits a request ID only for the accepted response", async () => {
+  test("emits the failed server request ID before retry success", async () => {
     provider.enqueue("server-error", "standard");
 
-    const result = await consume(stream());
+    const result = await consumeWithRequestIdDelay(
+      stream({ firstTokenTimeoutMs: 100, requestTimeoutMs: 1_000 }),
+      "req-server-error",
+      200,
+    );
 
     expect(result.error).toBeUndefined();
     expect(
@@ -207,6 +213,7 @@ describe("OpenAiCompatibleGateway", () => {
       ),
     ).toEqual([
       { type: "provider-call", callNumber: 1 },
+      { type: "request-id", requestId: "req-server-error" },
       { type: "provider-call", callNumber: 2 },
       { type: "request-id", requestId: "req-standard" },
     ]);

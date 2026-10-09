@@ -240,6 +240,7 @@ export class OpenAiCompatibleGateway implements ModelGateway {
           firstTokenController.signal,
         ]);
         let requestId: string | undefined;
+        let hasEmittedRequestId = false;
 
         try {
           const response = await fetch(this.endpoint, {
@@ -272,6 +273,7 @@ export class OpenAiCompatibleGateway implements ModelGateway {
             });
           }
           if (requestId) {
+            hasEmittedRequestId = true;
             yield { type: "request-id", requestId };
           }
 
@@ -307,6 +309,12 @@ export class OpenAiCompatibleGateway implements ModelGateway {
           const remainingMs = input.requestTimeoutMs - (Date.now() - startedAt);
           if (!shouldRetry(normalized, hasEmittedDelta, attempt, remainingMs)) {
             throw normalized;
+          }
+          if (!hasEmittedRequestId && normalized.providerRequestId) {
+            yield {
+              type: "request-id",
+              requestId: normalized.providerRequestId,
+            };
           }
 
           try {
