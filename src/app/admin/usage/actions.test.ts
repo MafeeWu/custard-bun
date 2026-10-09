@@ -129,4 +129,37 @@ describe("usage administration actions", () => {
       message: "Unable to update chat settings. Try again.",
     });
   });
+
+  test("returns authoritative restored values after a successful reset", async () => {
+    vi.mocked(resetGlobalChatSettings).mockResolvedValue({
+      revision: 4,
+      userDailyRequestLimit: 50,
+      userDailyTokenLimit: 5_000,
+      instanceMonthlyRequestLimit: 500,
+      instanceMonthlyTokenBudget: 50_000,
+      maxConcurrentGenerations: 2,
+    });
+    const { resetGlobalChatSettingsAction } = await import("./actions");
+    const confirmed = new FormData();
+    confirmed.set("expectedRevision", "3");
+    confirmed.set("confirm", "on");
+
+    await expect(
+      resetGlobalChatSettingsAction({ status: "idle" }, confirmed),
+    ).resolves.toEqual({
+      status: "success",
+      message: "Deployment defaults restored.",
+      values: {
+        expectedRevision: "4",
+        userDailyRequestLimit: "50",
+        userDailyTokenLimit: "5000",
+        instanceMonthlyRequestLimit: "500",
+        instanceMonthlyTokenBudget: "50000",
+        maxConcurrentGenerations: "2",
+      },
+    });
+    expect(resetGlobalChatSettings).toHaveBeenCalledWith({ db: true }, actor, {
+      expectedRevision: 3,
+    });
+  });
 });

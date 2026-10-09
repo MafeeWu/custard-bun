@@ -182,7 +182,7 @@ export async function resetGlobalChatSettings(
   database: Database,
   actor: AdminActor,
   input: { expectedRevision: number },
-): Promise<{ revision: number }> {
+): Promise<GlobalChatSettings> {
   validateRevision(input.expectedRevision);
 
   return database.transaction(async (transaction) => {
@@ -231,7 +231,7 @@ export async function resetGlobalChatSettings(
       targetId: "global",
       metadata: auditSettings(current.revision, nextRevision, nextValues),
     });
-    return { revision: nextRevision };
+    return { revision: nextRevision, ...nextValues };
   });
 }
 

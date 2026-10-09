@@ -7,6 +7,7 @@ import {
   ChatSettingsAdminError,
   resetGlobalChatSettings,
   updateGlobalChatSettings,
+  type GlobalChatSettings,
 } from "@/server/admin/chat-settings-service";
 import { getDatabase } from "@/server/db/database";
 
@@ -48,6 +49,19 @@ function readValues(formData: FormData): GlobalSettingsFormValues {
     maxConcurrentGenerations: String(
       formData.get("maxConcurrentGenerations") ?? "",
     ).trim(),
+  };
+}
+
+function valuesFromSettings(
+  settings: GlobalChatSettings,
+): GlobalSettingsFormValues {
+  return {
+    expectedRevision: String(settings.revision),
+    userDailyRequestLimit: String(settings.userDailyRequestLimit),
+    userDailyTokenLimit: String(settings.userDailyTokenLimit),
+    instanceMonthlyRequestLimit: String(settings.instanceMonthlyRequestLimit),
+    instanceMonthlyTokenBudget: String(settings.instanceMonthlyTokenBudget),
+    maxConcurrentGenerations: String(settings.maxConcurrentGenerations),
   };
 }
 
@@ -135,7 +149,7 @@ export async function updateGlobalChatSettingsAction(
 }
 
 export async function resetGlobalChatSettingsAction(
-  _state: UsageAdminActionState,
+  state: UsageAdminActionState,
   formData: FormData,
 ): Promise<UsageAdminActionState> {
   const actor = await requireAdmin(await headers());
@@ -143,6 +157,7 @@ export async function resetGlobalChatSettingsAction(
     return {
       status: "error",
       message: "Confirm that deployment defaults should be restored.",
+      values: state.values,
     };
   }
   const expectedRevision = Number(
@@ -152,19 +167,21 @@ export async function resetGlobalChatSettingsAction(
     return {
       status: "error",
       message: "Reload the page before restoring deployment defaults.",
+      values: state.values,
     };
   }
 
   try {
-    await resetGlobalChatSettings(await getDatabase(), actor, {
+    const settings = await resetGlobalChatSettings(await getDatabase(), actor, {
       expectedRevision,
     });
     revalidateAdministration();
     return {
       status: "success",
       message: "Deployment defaults restored.",
+      values: valuesFromSettings(settings),
     };
   } catch (error) {
-    return errorState(error);
+    return errorState(error, state.values);
   }
 }

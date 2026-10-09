@@ -234,7 +234,14 @@ describe("global chat settings", () => {
   test("resets to stored deployment defaults with optimistic revision", async () => {
     await expect(
       resetGlobalChatSettings(database, actor, { expectedRevision: 3 }),
-    ).resolves.toEqual({ revision: 4 });
+    ).resolves.toEqual({
+      revision: 4,
+      userDailyRequestLimit: 50,
+      userDailyTokenLimit: 5_000,
+      instanceMonthlyRequestLimit: 500,
+      instanceMonthlyTokenBudget: 50_000,
+      maxConcurrentGenerations: 2,
+    });
     expect(await settings()).toMatchObject({
       revision: 4,
       userDailyRequestLimit: 50,
