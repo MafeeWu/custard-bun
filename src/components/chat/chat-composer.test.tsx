@@ -131,6 +131,110 @@ test("changes send to stop, calls the stop endpoint before aborting, and preserv
   expect(screen.getByText("Stopped.")).toBeVisible();
 });
 
+test("keeps the authoritative stream active when stop returns an error and accepts its completion", async () => {
+  const user = userEvent.setup();
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let messageSignal: AbortSignal | undefined;
+
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/messages")) {
+      messageSignal = init?.signal as AbortSignal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            streamController = controller;
+            controller.enqueue(
+              encoder.encode(
+                `{"type":"started","attemptId":"${attemptId}"}\n{"type":"delta","attemptId":"${attemptId}","text":"Almost done"}\n`,
+              ),
+            );
+          },
+        }),
+      );
+    }
+    return Response.json(
+      {
+        error: {
+          code: "CHAT_NOT_FOUND",
+          message: "The requested chat was not found.",
+          retryable: false,
+        },
+      },
+      { status: 404 },
+    );
+  });
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Hello");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(await screen.findByText("Almost done")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Stop" }));
+
+  expect(
+    await screen.findByText("The requested chat was not found."),
+  ).toBeVisible();
+  expect(messageSignal?.aborted).toBe(false);
+  expect(screen.queryByText("Stopped.")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+
+  streamController?.enqueue(
+    encoder.encode(
+      `{"type":"completed","attemptId":"${attemptId}","usage":{"inputTokens":1,"outputTokens":2,"estimated":false}}\n`,
+    ),
+  );
+  streamController?.close();
+
+  await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+  expect(screen.getByText("Almost done")).toBeVisible();
+  expect(screen.queryByText("Stopped.")).not.toBeInTheDocument();
+});
+
+test("surfaces a network stop failure without aborting the active stream", async () => {
+  const user = userEvent.setup();
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let messageSignal: AbortSignal | undefined;
+
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/messages")) {
+      messageSignal = init?.signal as AbortSignal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            streamController = controller;
+            controller.enqueue(
+              encoder.encode(`{"type":"started","attemptId":"${attemptId}"}\n`),
+            );
+          },
+        }),
+      );
+    }
+    throw new TypeError("network unavailable");
+  });
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Hello");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await user.click(await screen.findByRole("button", { name: "Stop" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Unable to reach the chat service.",
+  );
+  expect(messageSignal?.aborted).toBe(false);
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+
+  streamController?.enqueue(
+    encoder.encode(
+      `{"type":"completed","attemptId":"${attemptId}","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n`,
+    ),
+  );
+  streamController?.close();
+
+  await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+});
+
 test("keeps a server-loaded streaming attempt disabled and stoppable", async () => {
   const user = userEvent.setup();
   vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 202 }));
@@ -153,10 +257,9 @@ test("keeps a server-loaded streaming attempt disabled and stoppable", async () 
   expect(screen.getByLabelText("Message")).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "Stop" }));
 
-  expect(fetch).toHaveBeenCalledWith(
-    `/api/chat/attempts/${attemptId}/stop`,
-    { method: "POST" },
-  );
+  expect(fetch).toHaveBeenCalledWith(`/api/chat/attempts/${attemptId}/stop`, {
+    method: "POST",
+  });
   expect(screen.getByText("Already in progress")).toBeVisible();
   expect(screen.getByText("Stopped.")).toBeVisible();
 });
@@ -224,6 +327,81 @@ test("links a generation-in-progress error to the owning conversation", async ()
   expect(
     await screen.findByRole("link", { name: "Open the active conversation" }),
   ).toHaveAttribute("href", "/app/conversations/conversation-owner");
+  expect(screen.getByLabelText("Message")).toHaveValue("Hello");
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+});
+
+test("preserves the draft and re-enables the composer after a quota rejection", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetch).mockResolvedValue(
+    Response.json(
+      {
+        error: {
+          code: "CHAT_USER_REQUEST_QUOTA",
+          message: "You have reached today's chat request limit.",
+          retryable: false,
+        },
+      },
+      { status: 429 },
+    ),
+  );
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Keep my draft");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(
+    await screen.findByText("You have reached today's chat request limit."),
+  ).toBeVisible();
+  expect(screen.getByLabelText("Message")).toHaveValue("Keep my draft");
+  expect(screen.getByLabelText("Message")).toBeEnabled();
+});
+
+test("preserves the draft and re-enables the composer after a pre-start network failure", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetch).mockRejectedValue(new TypeError("network unavailable"));
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Keep my draft");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Unable to reach the chat service.",
+  );
+  expect(screen.getByLabelText("Message")).toHaveValue("Keep my draft");
+  expect(screen.getByLabelText("Message")).toBeEnabled();
+});
+
+test("clears the draft only after a started event confirms admission", async () => {
+  const user = userEvent.setup();
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  vi.mocked(fetch).mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          streamController = controller;
+        },
+      }),
+    ),
+  );
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Accepted draft");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(screen.getByLabelText("Message")).toHaveValue("Accepted draft");
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+
+  streamController?.enqueue(
+    encoder.encode(
+      `{"type":"started","attemptId":"${attemptId}"}\n{"type":"completed","attemptId":"${attemptId}","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n`,
+    ),
+  );
+  streamController?.close();
+
+  await waitFor(() => expect(screen.getByLabelText("Message")).toHaveValue(""));
 });
 
 test("returns to an enabled composer after completion in React strict mode", async () => {

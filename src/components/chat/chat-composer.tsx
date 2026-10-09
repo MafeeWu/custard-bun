@@ -124,11 +124,16 @@ export function ChatComposer({
   const [activeAttemptId, setActiveAttemptId] = useState<string | undefined>(
     () => activeAttemptFrom(messages),
   );
+  const [generationOwnerConversationId, setGenerationOwnerConversationId] =
+    useState<string>();
   const [error, setError] = useState<PublicChatError>();
   const controllerRef = useRef<AbortController | undefined>(undefined);
   const stoppingRef = useRef(false);
   const mountedRef = useRef(true);
-  const generating = submitting || Boolean(activeAttemptId);
+  const generating =
+    submitting ||
+    Boolean(activeAttemptId) ||
+    generationOwnerConversationId !== undefined;
 
   useEffect(() => {
     onGeneratingChange?.(generating);
@@ -185,13 +190,23 @@ export function ChatComposer({
         },
       );
       if (!response.ok) {
-        setError(await responseError(response));
+        const nextError = await responseError(response);
+        setError(nextError);
+        if (
+          nextError.code === "CHAT_GENERATION_IN_PROGRESS" &&
+          typeof nextError.metadata?.conversationId === "string"
+        ) {
+          setGenerationOwnerConversationId(nextError.metadata.conversationId);
+        }
         return;
       }
 
       const result = await consumeChatEventStream(response, (event) => {
         currentAttemptId = event.attemptId;
         if (event.type === "started") {
+          if (input.content !== undefined) {
+            setContent("");
+          }
           setActiveAttemptId(event.attemptId);
           onMessagesChange((current) => {
             const assistant = generatedMessage(event.attemptId);
@@ -289,7 +304,6 @@ export function ChatComposer({
     if (!normalized || generating) {
       return;
     }
-    setContent("");
     await generate({ content: normalized });
   }
 
@@ -304,10 +318,11 @@ export function ChatComposer({
       const response = await fetch(`/api/chat/attempts/${attemptId}/stop`, {
         method: "POST",
       });
-      if (!response.ok) {
+      if (response.status !== 202) {
         setError(await responseError(response));
+        stoppingRef.current = false;
+        return;
       }
-    } finally {
       updateAttempt(attemptId, (message) => ({
         ...message,
         status: "interrupted",
@@ -317,13 +332,18 @@ export function ChatComposer({
       }));
       controller?.abort();
       setActiveAttemptId(undefined);
+    } catch {
+      stoppingRef.current = false;
+      setError({
+        code: "CHAT_INTERNAL",
+        message: "Unable to reach the chat service.",
+        retryable: true,
+      });
     }
   }
 
   const retryable = messages.filter(
-    (
-      message,
-    ): message is Extract<ChatClientMessage, { kind: "generated" }> =>
+    (message): message is Extract<ChatClientMessage, { kind: "generated" }> =>
       message.kind === "generated" &&
       message.retryable &&
       (message.status === "failed" || message.status === "interrupted"),
