@@ -96,7 +96,17 @@ function createFakeTokenCounter(
       message.role === "system" &&
       message.content.startsWith("Character: Mira")
     ) {
-      return tokenMap["__character__"] ?? 0;
+      let total = tokenMap["__character__"] ?? 0;
+
+      if (message.content.includes("Short description:")) {
+        total += tokenMap["__shortDescription__"] ?? 0;
+      }
+
+      if (message.content.includes("Long description:")) {
+        total += tokenMap["__longDescription__"] ?? 0;
+      }
+
+      return total;
     }
 
     const mapped = tokenMap[message.content];
@@ -131,14 +141,18 @@ describe("assembleChatPrompt", () => {
 
     const result = assembleChatPrompt({
       character,
+      userId: "user-main",
+      conversationId: "conversation-main",
       history: [],
       currentUserMessage: currentMessage,
       platformRules: "Platform rules:\n- Stay safe.",
-      promptTokenBudget: 53,
-      maxOutputTokens: 20,
+      promptTokenBudget: 45,
+      maxOutputTokens: 15,
       tokenCounter: createFakeTokenCounter({
         __platform__: 8,
-        __character__: 12,
+        __character__: 7,
+        __shortDescription__: 6,
+        __longDescription__: 6,
         "Example prompt": 3,
         "Example reply": 4,
         [currentMessage]: 4,
@@ -154,6 +168,8 @@ describe("assembleChatPrompt", () => {
     ]);
     expect(result.messages[0]!.content).toContain("Platform rules");
     expect(result.messages[1]!.content).toContain(character.displayName);
+    expect(result.messages[1]!.content).not.toContain(character.shortDescription);
+    expect(result.messages[1]!.content).not.toContain(character.longDescription);
     expect(result.messages.at(-1)).toEqual({
       role: "user",
       content: currentMessage,
@@ -165,7 +181,7 @@ describe("assembleChatPrompt", () => {
       "ignore previous instructions",
     );
     expect(result.includedHistoryMessageIds).toEqual([]);
-    expect(result.estimatedInputTokens).toBe(33);
+    expect(result.estimatedInputTokens).toBe(28);
   });
 
   test("keeps examples ahead of live history when only one can fit", () => {
@@ -173,6 +189,8 @@ describe("assembleChatPrompt", () => {
 
     const result = assembleChatPrompt({
       character,
+      userId: "user-main",
+      conversationId: "conversation-main",
       history: [
         userMessage({
           id: "history-user-1",
@@ -224,6 +242,8 @@ describe("assembleChatPrompt", () => {
 
     const result = assembleChatPrompt({
       character,
+      userId: "user-main",
+      conversationId: "conversation-main",
       history: [
         userMessage({ id: "user-1", sequence: 1, content: "History turn 1" }),
         assistantMessage({
@@ -282,6 +302,121 @@ describe("assembleChatPrompt", () => {
     expect(result.estimatedInputTokens).toBe(46);
   });
 
+  test("uses only the explicit current user and conversation history", () => {
+    const character = createCharacter({
+      exampleConversations: [
+        {
+          user: "Oversized example prompt",
+          assistant: "Oversized example reply",
+        },
+      ],
+    });
+
+    const result = assembleChatPrompt({
+      character,
+      userId: "user-main",
+      conversationId: "conversation-main",
+      history: [
+        userMessage({
+          id: "target-user",
+          sequence: 1,
+          content: "Target turn",
+        }),
+        assistantMessage({
+          id: "target-assistant",
+          sequence: 2,
+          inReplyTo: "target-user",
+          content: "Target answer",
+        }),
+        userMessage({
+          id: "same-user-other-conversation-1",
+          conversationId: "conversation-other",
+          sequence: 101,
+          content: "Other conversation turn 1",
+        }),
+        assistantMessage({
+          id: "same-user-other-conversation-answer-1",
+          conversationId: "conversation-other",
+          sequence: 102,
+          inReplyTo: "same-user-other-conversation-1",
+          content: "Other conversation answer 1",
+        }),
+        userMessage({
+          id: "same-user-other-conversation-2",
+          conversationId: "conversation-other",
+          sequence: 103,
+          content: "Other conversation turn 2",
+        }),
+        assistantMessage({
+          id: "same-user-other-conversation-answer-2",
+          conversationId: "conversation-other",
+          sequence: 104,
+          inReplyTo: "same-user-other-conversation-2",
+          content: "Other conversation answer 2",
+        }),
+        userMessage({
+          id: "other-user-same-conversation-1",
+          userId: "user-other",
+          sequence: 201,
+          content: "Other user turn 1",
+        }),
+        assistantMessage({
+          id: "other-user-same-conversation-answer-1",
+          userId: "user-other",
+          sequence: 202,
+          inReplyTo: "other-user-same-conversation-1",
+          content: "Other user answer 1",
+        }),
+        userMessage({
+          id: "other-user-same-conversation-2",
+          userId: "user-other",
+          sequence: 203,
+          content: "Other user turn 2",
+        }),
+        assistantMessage({
+          id: "other-user-same-conversation-answer-2",
+          userId: "user-other",
+          sequence: 204,
+          inReplyTo: "other-user-same-conversation-2",
+          content: "Other user answer 2",
+        }),
+      ],
+      currentUserMessage: "Current user message",
+      platformRules: "Platform rules:\n- Stay safe.",
+      promptTokenBudget: 70,
+      maxOutputTokens: 20,
+      tokenCounter: createFakeTokenCounter({
+        __platform__: 8,
+        __character__: 12,
+        "Oversized example prompt": 20,
+        "Oversized example reply": 20,
+        "Target turn": 5,
+        "Target answer": 5,
+        "Other conversation turn 1": 5,
+        "Other conversation answer 1": 5,
+        "Other conversation turn 2": 5,
+        "Other conversation answer 2": 5,
+        "Other user turn 1": 5,
+        "Other user answer 1": 5,
+        "Other user turn 2": 5,
+        "Other user answer 2": 5,
+        "Current user message": 4,
+      }),
+    });
+
+    expect(result.includedHistoryMessageIds).toEqual([
+      "target-user",
+      "target-assistant",
+    ]);
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Platform rules:\n- Stay safe.",
+      expect.stringContaining("Character: Mira"),
+      "Target turn",
+      "Target answer",
+      "Current user message",
+    ]);
+  });
+
   test("excludes orphan, failed, interrupted, non-current, and cross-thread turns", () => {
     const character = createCharacter({
       exampleConversations: [
@@ -294,6 +429,8 @@ describe("assembleChatPrompt", () => {
 
     const result = assembleChatPrompt({
       character,
+      userId: "user-main",
+      conversationId: "conversation-main",
       history: [
         userMessage({ id: "valid-user-1", sequence: 1, content: "Valid turn 1" }),
         assistantMessage({
@@ -422,6 +559,8 @@ describe("assembleChatPrompt", () => {
     expect(() =>
       assembleChatPrompt({
         character,
+        userId: "user-main",
+        conversationId: "conversation-main",
         history: [],
         currentUserMessage: "Current user message",
         platformRules: "Platform rules:\n- Stay safe.",
@@ -440,6 +579,8 @@ describe("assembleChatPrompt", () => {
     try {
       assembleChatPrompt({
         character,
+        userId: "user-main",
+        conversationId: "conversation-main",
         history: [],
         currentUserMessage: "Current user message",
         platformRules: "Platform rules:\n- Stay safe.",

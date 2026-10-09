@@ -49,18 +49,11 @@ type PromptTurn = {
   >;
 };
 
-type HistoryGroup = {
-  key: string;
-  turns: PromptTurn[];
-};
-
 function buildCharacterInstruction(
   character: PublishedCharacterVersion,
 ): string {
   return [
     `Character: ${character.displayName}`,
-    `Short description: ${character.shortDescription}`,
-    `Long description: ${character.longDescription}`,
     "Personality principles:",
     ...character.personalityPrinciples.map((value) => `- ${value}`),
     `Speaking style: ${character.speakingStyle}`,
@@ -105,24 +98,16 @@ function fitsWithinBudget(input: {
   );
 }
 
-function createHistoryGroups(history: PromptHistoryMessage[]): HistoryGroup[] {
-  const grouped = new Map<string, PromptHistoryMessage[]>();
-
-  for (const message of history) {
-    const key = `${message.userId}:${message.conversationId}`;
-    const group = grouped.get(key);
-
-    if (group) {
-      group.push(message);
-    } else {
-      grouped.set(key, [message]);
-    }
-  }
-
-  return Array.from(grouped, ([key, messages]) => ({
-    key,
-    turns: createCompleteTurns(messages),
-  }));
+function filterCurrentHistory(input: {
+  history: PromptHistoryMessage[];
+  userId: string;
+  conversationId: string;
+}): PromptHistoryMessage[] {
+  return input.history.filter(
+    (message) =>
+      message.userId === input.userId &&
+      message.conversationId === input.conversationId,
+  );
 }
 
 function createCompleteTurns(history: PromptHistoryMessage[]): PromptTurn[] {
@@ -172,39 +157,6 @@ function createCompleteTurns(history: PromptHistoryMessage[]): PromptTurn[] {
   return turns;
 }
 
-function chooseHistoryGroup(history: PromptHistoryMessage[]): PromptTurn[] {
-  const groups = createHistoryGroups(history).filter(
-    (group) => group.turns.length > 0,
-  );
-
-  if (groups.length === 0) {
-    return [];
-  }
-
-  groups.sort((left, right) => {
-    if (right.turns.length !== left.turns.length) {
-      return right.turns.length - left.turns.length;
-    }
-
-    const rightLatest =
-      right.turns.at(-1)?.assistant.sequence ??
-      right.turns.at(-1)?.user.sequence ??
-      Number.NEGATIVE_INFINITY;
-    const leftLatest =
-      left.turns.at(-1)?.assistant.sequence ??
-      left.turns.at(-1)?.user.sequence ??
-      Number.NEGATIVE_INFINITY;
-
-    if (rightLatest !== leftLatest) {
-      return rightLatest - leftLatest;
-    }
-
-    return left.key.localeCompare(right.key);
-  });
-
-  return groups[0]!.turns;
-}
-
 function appendExampleMessages(input: {
   selected: GatewayMessage[];
   currentUserMessage: GatewayMessage;
@@ -246,6 +198,8 @@ function appendExampleMessages(input: {
 function appendHistoryTurns(input: {
   selected: GatewayMessage[];
   currentUserMessage: GatewayMessage;
+  userId: string;
+  conversationId: string;
   history: PromptHistoryMessage[];
   tokenCounter: TokenCounter;
   maxOutputTokens: number;
@@ -254,7 +208,13 @@ function appendHistoryTurns(input: {
   messages: GatewayMessage[];
   includedHistoryMessageIds: string[];
 } {
-  const completeTurns = chooseHistoryGroup(input.history);
+  const completeTurns = createCompleteTurns(
+    filterCurrentHistory({
+      history: input.history,
+      userId: input.userId,
+      conversationId: input.conversationId,
+    }),
+  );
   const selectedTurns: PromptTurn[] = [];
 
   for (const turn of [...completeTurns].reverse()) {
@@ -290,6 +250,8 @@ function appendHistoryTurns(input: {
 
 export function assembleChatPrompt(input: {
   character: PublishedCharacterVersion;
+  userId: string;
+  conversationId: string;
   history: PromptHistoryMessage[];
   currentUserMessage: string;
   platformRules: string;
@@ -342,6 +304,8 @@ export function assembleChatPrompt(input: {
   const withHistory = appendHistoryTurns({
     selected: withExamples,
     currentUserMessage,
+    userId: input.userId,
+    conversationId: input.conversationId,
     history: input.history,
     tokenCounter: input.tokenCounter,
     maxOutputTokens: input.maxOutputTokens,
