@@ -22,6 +22,10 @@ const expectedActions = [
   "character.restore",
   "user.disable",
   "user.restore",
+  "chat.settings.update",
+  "chat.settings.reset",
+  "user.chat_quota.update",
+  "user.chat_quota.clear",
 ] satisfies AdminAuditAction[];
 
 beforeEach(async () => {

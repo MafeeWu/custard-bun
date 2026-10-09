@@ -36,6 +36,13 @@
       "when": 1791439860272,
       "tag": "0004_admin_session_and_publisher_invariants",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791516212270,
+      "tag": "0005_streaming_chat",
+      "breakpoints": true
     }
   ]
 }

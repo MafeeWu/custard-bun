@@ -10,6 +10,10 @@ const adminAuditActionValues = [
   "character.restore",
   "user.disable",
   "user.restore",
+  "chat.settings.update",
+  "chat.settings.reset",
+  "user.chat_quota.update",
+  "user.chat_quota.clear",
 ] as const;
 
 type AdminAuditMetadataValue = string | number | boolean | null;
