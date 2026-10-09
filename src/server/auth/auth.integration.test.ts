@@ -57,6 +57,18 @@ const baseConfig: RuntimeConfig = {
       termsUrl: "https://example.com/terms",
       supportUrl: "mailto:support@example.com",
     },
+    chat: {
+      firstTokenTimeoutMs: 30000,
+      requestTimeoutMs: 120000,
+      promptTokenBudget: 8192,
+      maxInputCharacters: 12000,
+      maxOutputTokens: 1024,
+      defaultUserDailyRequestLimit: 100,
+      defaultUserDailyTokenLimit: 100000,
+      defaultInstanceMonthlyRequestLimit: 10000,
+      defaultInstanceMonthlyTokenBudget: 10000000,
+      maxConcurrentGenerations: 4,
+    },
   },
   secret: {
     nodeEnv: "test",
@@ -70,6 +82,11 @@ const baseConfig: RuntimeConfig = {
       user: "test",
       password: "test",
       from: "Custard Bun <noreply@example.com>",
+    },
+    model: {
+      apiBaseUrl: "http://127.0.0.1:3102/v1",
+      apiKey: "test-model-key",
+      modelId: "test-chat-model",
     },
   },
 };

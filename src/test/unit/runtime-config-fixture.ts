@@ -12,6 +12,17 @@ links:
   privacyUrl: https://example.com/privacy
   termsUrl: https://example.com/terms
   supportUrl: mailto:support@example.com
+chat:
+  firstTokenTimeoutMs: 30000
+  requestTimeoutMs: 120000
+  promptTokenBudget: 8192
+  maxInputCharacters: 12000
+  maxOutputTokens: 1024
+  defaultUserDailyRequestLimit: 100
+  defaultUserDailyTokenLimit: 100000
+  defaultInstanceMonthlyRequestLimit: 10000
+  defaultInstanceMonthlyTokenBudget: 10000000
+  maxConcurrentGenerations: 4
 `;
 
 export const validSecretEnv = {
@@ -26,4 +37,7 @@ export const validSecretEnv = {
   SMTP_USER: "test",
   SMTP_PASSWORD: "test",
   SMTP_FROM: "Custard Bun <noreply@example.com>",
+  MODEL_API_BASE_URL: "http://127.0.0.1:3102/v1",
+  MODEL_API_KEY: "test-model-key",
+  MODEL_ID: "test-chat-model",
 } as const;

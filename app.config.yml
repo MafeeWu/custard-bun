@@ -11,3 +11,14 @@ links:
   privacyUrl: https://example.com/privacy
   termsUrl: https://example.com/terms
   supportUrl: mailto:support@example.com
+chat:
+  firstTokenTimeoutMs: 30000
+  requestTimeoutMs: 120000
+  promptTokenBudget: 8192
+  maxInputCharacters: 12000
+  maxOutputTokens: 1024
+  defaultUserDailyRequestLimit: 100
+  defaultUserDailyTokenLimit: 100000
+  defaultInstanceMonthlyRequestLimit: 10000
+  defaultInstanceMonthlyTokenBudget: 10000000
+  maxConcurrentGenerations: 4

@@ -69,6 +69,9 @@ export async function loadRuntimeConfig(
     SMTP_USER: env.SMTP_USER,
     SMTP_PASSWORD: env.SMTP_PASSWORD,
     SMTP_FROM: env.SMTP_FROM,
+    MODEL_API_BASE_URL: env.MODEL_API_BASE_URL,
+    MODEL_API_KEY: env.MODEL_API_KEY,
+    MODEL_ID: env.MODEL_ID,
   });
   if (!secretResult.success) {
     throw new ConfigurationError(
@@ -91,6 +94,11 @@ export async function loadRuntimeConfig(
         user: secret.SMTP_USER,
         password: secret.SMTP_PASSWORD,
         from: secret.SMTP_FROM,
+      },
+      model: {
+        apiBaseUrl: secret.MODEL_API_BASE_URL,
+        apiKey: secret.MODEL_API_KEY,
+        modelId: secret.MODEL_ID,
       },
     },
   };

@@ -37,7 +37,9 @@ describe("loadRuntimeConfig", () => {
 
     expect(config.public.branding.name).toBe("Custard Bun");
     expect(config.public.registration.open).toBe(true);
+    expect(config.public.chat.promptTokenBudget).toBe(8192);
     expect(config.secret.databaseUrl).toContain("postgresql://");
+    expect(config.secret.model.modelId).toBe("test-chat-model");
   });
 
   test("rejects syntactically malformed YAML with app.config.yml.<root> prefix", async () => {
@@ -85,6 +87,42 @@ describe("loadRuntimeConfig", () => {
       validYaml,
       { ...validSecretEnv, BETTER_AUTH_URL: "ftp://secret.example.com" },
       "BETTER_AUTH_URL",
+    ],
+    [
+      "missing model API base URL",
+      validYaml,
+      { ...validSecretEnv, MODEL_API_BASE_URL: undefined },
+      "MODEL_API_BASE_URL",
+    ],
+    [
+      "missing model API key",
+      validYaml,
+      { ...validSecretEnv, MODEL_API_KEY: undefined },
+      "MODEL_API_KEY",
+    ],
+    [
+      "missing model ID",
+      validYaml,
+      { ...validSecretEnv, MODEL_ID: undefined },
+      "MODEL_ID",
+    ],
+    [
+      "non-http model API base URL",
+      validYaml,
+      { ...validSecretEnv, MODEL_API_BASE_URL: "ws://127.0.0.1:3102/v1" },
+      "MODEL_API_BASE_URL",
+    ],
+    [
+      "empty model ID",
+      validYaml,
+      { ...validSecretEnv, MODEL_ID: "" },
+      "MODEL_ID",
+    ],
+    [
+      "short model API key",
+      validYaml,
+      { ...validSecretEnv, MODEL_API_KEY: "short" },
+      "MODEL_API_KEY",
     ],
   ])("rejects %s", async (_name, yaml, env, expectedField) => {
     const configPath = await writeConfig(yaml);
