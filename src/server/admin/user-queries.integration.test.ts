@@ -2,7 +2,7 @@
 import { afterAll, beforeEach, expect, test } from "vitest";
 import { sql } from "drizzle-orm";
 import { createDatabase } from "@/server/db/client";
-import { user } from "@/server/db/auth-schema";
+import { quotaBucket, user, userChatQuotaOverride } from "@/server/db/schema";
 import { testDatabaseUrl } from "@/test/database-target";
 import { listOrdinaryUsers } from "./user-queries";
 
@@ -85,6 +85,10 @@ test("lists only exact ordinary users with safe fields in deterministic order", 
       email: "gamma@example.com",
       createdAt: new Date("2026-10-08T09:00:00Z"),
       banned: false,
+      dailyRequestLimit: null,
+      dailyTokenLimit: null,
+      currentPeriodRequests: 0,
+      currentPeriodTokens: 0,
     },
     {
       id: "ordinary-b",
@@ -92,6 +96,10 @@ test("lists only exact ordinary users with safe fields in deterministic order", 
       email: "beta@example.com",
       createdAt: new Date("2026-10-08T09:00:00Z"),
       banned: true,
+      dailyRequestLimit: null,
+      dailyTokenLimit: null,
+      currentPeriodRequests: 0,
+      currentPeriodTokens: 0,
     },
     {
       id: "ordinary-a",
@@ -99,6 +107,10 @@ test("lists only exact ordinary users with safe fields in deterministic order", 
       email: "alpha@example.com",
       createdAt: new Date("2026-10-08T08:00:00Z"),
       banned: false,
+      dailyRequestLimit: null,
+      dailyTokenLimit: null,
+      currentPeriodRequests: 0,
+      currentPeriodTokens: 0,
     },
   ]);
   expect(Object.keys(result.users[1]!)).toEqual([
@@ -107,9 +119,58 @@ test("lists only exact ordinary users with safe fields in deterministic order", 
     "email",
     "createdAt",
     "banned",
+    "dailyRequestLimit",
+    "dailyTokenLimit",
+    "currentPeriodRequests",
+    "currentPeriodTokens",
   ]);
   expect(JSON.stringify(result.users)).not.toContain(
     "sensitive moderation reason",
+  );
+});
+
+test("includes current UTC-day numeric usage and nullable overrides without content", async () => {
+  await database.insert(user).values({
+    id: "ordinary-usage",
+    name: "Usage User",
+    email: "usage@example.com",
+    emailVerified: true,
+    role: "user",
+  });
+  await database.insert(userChatQuotaOverride).values({
+    userId: "ordinary-usage",
+    dailyRequestLimit: 12,
+    dailyTokenLimit: null,
+  });
+  await database.insert(quotaBucket).values({
+    id: "usage-bucket",
+    scope: "user",
+    userId: "ordinary-usage",
+    periodStart: new Date("2026-10-09T00:00:00Z"),
+    periodEnd: new Date("2026-10-10T00:00:00Z"),
+    consumedRequests: 3,
+    reservedRequests: 1,
+    consumedTokens: 400,
+    reservedTokens: 100,
+  });
+
+  const result = await listOrdinaryUsers(database, {
+    page: 1,
+    pageSize: 25,
+    now: new Date("2026-10-09T14:00:00Z"),
+  });
+
+  expect(result.users).toEqual([
+    expect.objectContaining({
+      id: "ordinary-usage",
+      dailyRequestLimit: 12,
+      dailyTokenLimit: null,
+      currentPeriodRequests: 4,
+      currentPeriodTokens: 500,
+    }),
+  ]);
+  expect(JSON.stringify(result)).not.toMatch(
+    /conversation|transcript|message|prompt/i,
   );
 });
 

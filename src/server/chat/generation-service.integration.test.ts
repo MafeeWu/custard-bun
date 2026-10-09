@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { characterContentDigest } from "@/server/characters/content-digest";
+import { disableOrdinaryUser } from "@/server/admin/user-service";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import type { TokenCounter } from "@/server/chat/token-counter";
 import { createDatabase } from "@/server/db/client";
@@ -16,6 +17,7 @@ import {
   generationAttempt,
   generationLease,
   quotaReservation,
+  session,
   usageLedger,
   user,
 } from "@/server/db/schema";
@@ -86,6 +88,7 @@ beforeEach(async () => {
   await database.execute(
     sql.raw(`
       TRUNCATE TABLE
+        admin_audit_events,
         usage_ledger,
         generation_leases,
         quota_reservations,
@@ -98,6 +101,8 @@ beforeEach(async () => {
         character_drafts,
         character_versions,
         characters,
+        session,
+        account,
         "user"
       RESTART IDENTITY CASCADE
     `),
@@ -178,7 +183,9 @@ function serviceWith(
   gateway: ModelGateway,
   options: {
     now?: () => Date;
-    logger?: { error(message: string, metadata?: Record<string, unknown>): void };
+    logger?: {
+      error(message: string, metadata?: Record<string, unknown>): void;
+    };
     database?: ReturnType<typeof createDatabase>;
   } = {},
 ): GenerationService {
@@ -726,6 +733,89 @@ describe("GenerationService", () => {
     expect(attempt!.status).toBe("interrupted");
   });
 
+  test("settles interrupted after an administrator disables the user during a leased attempt", async () => {
+    await database.insert(user).values({
+      id: "admin-disable",
+      name: "Admin",
+      email: "admin-disable@example.com",
+      emailVerified: true,
+      role: "admin",
+    });
+    const userId = await insertUser();
+    await database
+      .update(user)
+      .set({ role: "user" })
+      .where(eq(user.id, userId));
+    await database.insert(session).values({
+      id: "active-user-session",
+      token: "active-user-token",
+      userId,
+      expiresAt: new Date("2026-10-10T00:00:00Z"),
+    });
+    const conversationId = await insertConversation(userId);
+    let finishProvider!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finishProvider = resolve;
+    });
+    const gateway = new FakeGateway(async function* () {
+      yield { type: "provider-call", callNumber: 1 };
+      yield { type: "delta", text: "partial" };
+      await gate;
+      yield { type: "delta", text: "must-not-escape" };
+    });
+    const stream = serviceWith(gateway).startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "Hi",
+      signal: new AbortController().signal,
+    });
+    const started = await stream.next();
+    const partial = await stream.next();
+    expect(partial.value).toMatchObject({ type: "delta", text: "partial" });
+
+    await disableOrdinaryUser(
+      database,
+      {
+        userId: "admin-disable",
+        label: "admin-disable@example.com",
+        operationId: "disable-during-generation",
+      },
+      { userId, reason: "Valid administrative reason" },
+    );
+    expect(await database.select().from(session)).toHaveLength(0);
+    expect(await database.select().from(generationLease)).toHaveLength(1);
+    expect(await database.select().from(quotaReservation)).toEqual([
+      expect.objectContaining({ status: "active" }),
+    ]);
+
+    finishProvider();
+    const terminal = await stream.next();
+
+    expect(terminal.value).toMatchObject({
+      type: "interrupted",
+      attemptId: started.value!.attemptId,
+      code: "CHAT_STREAM_INTERRUPTED",
+    });
+    expect(JSON.stringify(terminal.value)).not.toContain("must-not-escape");
+    expect(await stream.next()).toMatchObject({ done: true });
+    expect(await database.select().from(generationAttempt)).toEqual([
+      expect.objectContaining({
+        id: started.value!.attemptId,
+        status: "interrupted",
+        content: "partial",
+        cancelRequestedAt: expect.any(Date),
+      }),
+    ]);
+    expect(await database.select().from(generationLease)).toHaveLength(0);
+    expect(await database.select().from(quotaReservation)).toEqual([
+      expect.objectContaining({ status: "settled" }),
+    ]);
+    expect(await database.select().from(usageLedger)).toEqual([
+      expect.objectContaining({ outcome: "interrupted" }),
+    ]);
+  });
+
   test("stop wins a deterministic lock race with completion and prevents a completed event", async () => {
     const userId = await insertUser();
     const conversationId = await insertConversation(userId);
@@ -950,14 +1040,11 @@ describe("GenerationService", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "CHAT_INTERNAL" });
-    expect(logger.error).toHaveBeenCalledWith(
-      "generation settlement failed",
-      {
-        attemptId: expect.any(String),
-        conversationId,
-        name: "UnknownError",
-      },
-    );
+    expect(logger.error).toHaveBeenCalledWith("generation settlement failed", {
+      attemptId: expect.any(String),
+      conversationId,
+      name: "UnknownError",
+    });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("private");
   });
 
@@ -1079,8 +1166,7 @@ describe("GenerationService", () => {
     ["wrong owner", "wrong-owner"],
   ] as const)("%s fails before provider contact", async (_label, mode) => {
     const ownerId = await insertUser({ banned: mode === "disabled" });
-    const requesterId =
-      mode === "wrong-owner" ? await insertUser() : ownerId;
+    const requesterId = mode === "wrong-owner" ? await insertUser() : ownerId;
     const conversationId = await insertConversation(ownerId);
     if (mode === "archived") {
       await database

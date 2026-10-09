@@ -23,6 +23,9 @@ export default async function AdminLayout({
             <Link href="/admin/users">Users</Link>
           </li>
           <li>
+            <Link href="/admin/usage">Usage</Link>
+          </li>
+          <li>
             <Link href="/admin/audit">Audit</Link>
           </li>
         </ul>

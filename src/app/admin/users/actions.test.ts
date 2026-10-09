@@ -4,6 +4,7 @@ import {
   disableOrdinaryUser,
   restoreOrdinaryUser,
 } from "@/server/admin/user-service";
+import { setUserChatQuotaOverride } from "@/server/admin/chat-settings-service";
 import { getDatabase } from "@/server/db/database";
 
 const revalidatePath = vi.fn();
@@ -18,6 +19,16 @@ vi.mock("@/server/admin/user-service", () => ({
   disableOrdinaryUser: vi.fn(),
   restoreOrdinaryUser: vi.fn(),
 }));
+vi.mock("@/server/admin/chat-settings-service", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("@/server/admin/chat-settings-service")
+    >();
+  return {
+    ...original,
+    setUserChatQuotaOverride: vi.fn(),
+  };
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,5 +115,66 @@ describe("user administration actions", () => {
       { userId: "user-from-server-row" },
     );
     expect(revalidatePath).toHaveBeenCalledWith("/admin/users");
+  });
+
+  test("sets nullable user quota overrides and revalidates both admin pages", async () => {
+    const { setUserQuotaAction } = await import("./actions");
+    const formData = new FormData();
+    formData.set("dailyRequestLimit", "25");
+    formData.set("dailyTokenLimit", "");
+
+    await expect(
+      setUserQuotaAction("user-from-server-row", { status: "idle" }, formData),
+    ).resolves.toEqual({
+      status: "success",
+      message: "User quota override updated.",
+      values: { dailyRequestLimit: "25", dailyTokenLimit: "" },
+    });
+    expect(setUserChatQuotaOverride).toHaveBeenCalledWith(
+      { db: true },
+      { userId: "real-admin", label: "real@example.com", operationId: "op-1" },
+      {
+        userId: "user-from-server-row",
+        dailyRequestLimit: 25,
+        dailyTokenLimit: null,
+      },
+    );
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/users");
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/usage");
+  });
+
+  test("preserves invalid override values without calling the service", async () => {
+    const { setUserQuotaAction } = await import("./actions");
+    const formData = new FormData();
+    formData.set("dailyRequestLimit", "0");
+    formData.set("dailyTokenLimit", "private provider secret");
+
+    await expect(
+      setUserQuotaAction("user-1", { status: "idle" }, formData),
+    ).resolves.toMatchObject({
+      status: "error",
+      values: {
+        dailyRequestLimit: "0",
+        dailyTokenLimit: "private provider secret",
+      },
+    });
+    expect(setUserChatQuotaOverride).not.toHaveBeenCalled();
+  });
+
+  test("does not expose unexpected quota service errors", async () => {
+    vi.mocked(setUserChatQuotaOverride).mockRejectedValue(
+      new Error("provider secret must never escape"),
+    );
+    const { setUserQuotaAction } = await import("./actions");
+    const formData = new FormData();
+    formData.set("dailyRequestLimit", "25");
+    formData.set("dailyTokenLimit", "5000");
+
+    await expect(
+      setUserQuotaAction("user-1", { status: "idle" }, formData),
+    ).resolves.toMatchObject({
+      status: "error",
+      message: "Unable to update the user. Try again.",
+    });
   });
 });

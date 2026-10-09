@@ -1,10 +1,15 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { UserStatusForm } from "@/components/admin/users/user-status-form";
+import { UserQuotaForm } from "@/components/admin/users/user-quota-form";
 import { requireAdmin } from "@/server/admin/require-admin";
 import { listOrdinaryUsers } from "@/server/admin/user-queries";
 import { getDatabase } from "@/server/db/database";
-import { disableUserAction, restoreUserAction } from "./actions";
+import {
+  disableUserAction,
+  restoreUserAction,
+  setUserQuotaAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +72,8 @@ export default async function AdminUsersPage({ searchParams }: PageProps = {}) {
               <th scope="col">Email</th>
               <th scope="col">Created</th>
               <th scope="col">Status</th>
+              <th scope="col">Current UTC-day usage</th>
+              <th scope="col">Quota override</th>
               <th scope="col">Access</th>
             </tr>
           </thead>
@@ -77,6 +84,16 @@ export default async function AdminUsersPage({ searchParams }: PageProps = {}) {
                 <td>{adminUser.email}</td>
                 <td>{adminUser.createdAt.toISOString()}</td>
                 <td>{adminUser.banned ? "Disabled" : "Active"}</td>
+                <td>
+                  {adminUser.currentPeriodRequests} requests /{" "}
+                  {adminUser.currentPeriodTokens} tokens
+                </td>
+                <td>
+                  <UserQuotaForm
+                    user={adminUser}
+                    action={setUserQuotaAction.bind(null, adminUser.id)}
+                  />
+                </td>
                 <td>
                   <UserStatusForm
                     user={adminUser}

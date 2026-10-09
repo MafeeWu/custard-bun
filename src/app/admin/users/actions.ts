@@ -7,11 +7,23 @@ import {
   disableOrdinaryUser,
   restoreOrdinaryUser,
 } from "@/server/admin/user-service";
+import {
+  ChatSettingsAdminError,
+  setUserChatQuotaOverride,
+} from "@/server/admin/chat-settings-service";
 import { getDatabase } from "@/server/db/database";
 
 export interface UserAdminActionState {
   status: "idle" | "success" | "error";
   message?: string;
+  fieldErrors?: {
+    dailyRequestLimit?: string[];
+    dailyTokenLimit?: string[];
+  };
+  values?: {
+    dailyRequestLimit: string;
+    dailyTokenLimit: string;
+  };
 }
 
 const genericErrorMessage = "Unable to update the user. Try again.";
@@ -65,4 +77,77 @@ export async function restoreUserAction(
 
   revalidatePath("/admin/users");
   return { status: "success", message: "User restored." };
+}
+
+function parseOptionalPositiveInteger(
+  value: string,
+): number | null | undefined {
+  if (value === "") return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export async function setUserQuotaAction(
+  userId: string,
+  _state: UserAdminActionState,
+  formData: FormData,
+): Promise<UserAdminActionState> {
+  const actor = await requireAdmin(await headers());
+  const values = {
+    dailyRequestLimit: String(formData.get("dailyRequestLimit") ?? "").trim(),
+    dailyTokenLimit: String(formData.get("dailyTokenLimit") ?? "").trim(),
+  };
+  const dailyRequestLimit = parseOptionalPositiveInteger(
+    values.dailyRequestLimit,
+  );
+  const dailyTokenLimit = parseOptionalPositiveInteger(values.dailyTokenLimit);
+  const fieldErrors: UserAdminActionState["fieldErrors"] = {};
+  if (dailyRequestLimit === undefined) {
+    fieldErrors.dailyRequestLimit = [
+      "Enter a positive whole number or leave blank to inherit.",
+    ];
+  }
+  if (dailyTokenLimit === undefined) {
+    fieldErrors.dailyTokenLimit = [
+      "Enter a positive whole number or leave blank to inherit.",
+    ];
+  }
+  if (Object.keys(fieldErrors).length > 0) {
+    return {
+      status: "error",
+      message: "Check the quota override fields and try again.",
+      fieldErrors,
+      values,
+    };
+  }
+  if (dailyRequestLimit === undefined || dailyTokenLimit === undefined) {
+    return { status: "error", message: genericErrorMessage, values };
+  }
+
+  try {
+    await setUserChatQuotaOverride(await getDatabase(), actor, {
+      userId,
+      dailyRequestLimit,
+      dailyTokenLimit,
+    });
+  } catch (error) {
+    const message =
+      error instanceof ChatSettingsAdminError ||
+      (error instanceof Error &&
+        [
+          "Administrators cannot manage their own account",
+          "Only ordinary users can be managed",
+        ].includes(error.message))
+        ? error.message
+        : genericErrorMessage;
+    return { status: "error", message, values };
+  }
+
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/usage");
+  return {
+    status: "success",
+    message: "User quota override updated.",
+    values,
+  };
 }

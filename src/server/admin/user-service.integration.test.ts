@@ -4,6 +4,16 @@ import { eq, sql } from "drizzle-orm";
 import { createDatabase } from "@/server/db/client";
 import { adminAuditEvent } from "@/server/db/audit-schema";
 import { session, user } from "@/server/db/auth-schema";
+import {
+  character,
+  characterVersion,
+  conversation,
+  conversationMessage,
+  generationAttempt,
+  generationLease,
+  quotaBucket,
+  quotaReservation,
+} from "@/server/db/schema";
 import { testDatabaseUrl } from "@/test/database-target";
 import type { AdminActor } from "./admin-actor";
 import { disableOrdinaryUser, restoreOrdinaryUser } from "./user-service";
@@ -107,6 +117,198 @@ test("disables an ordinary user, deletes sessions, and audits without reason tex
     metadata: { previousState: "active", nextState: "disabled" },
   });
   expect(JSON.stringify(events)).not.toContain("Repeated abuse");
+});
+
+test("requests cancellation before revoking sessions without releasing active quota", async () => {
+  const now = new Date("2026-10-09T14:00:00Z");
+  await database.insert(session).values({
+    id: "target-session",
+    token: "target-token",
+    userId: "ordinary-1",
+    expiresAt: new Date("2026-10-10T00:00:00Z"),
+  });
+  await database.insert(character).values({
+    id: "character-1",
+    slug: "listener",
+  });
+  await database.insert(characterVersion).values({
+    id: "version-1",
+    characterId: "character-1",
+    versionNumber: 1,
+    displayName: "Listener",
+    avatarPath: "/listener.png",
+    shortDescription: "Short",
+    longDescription: "Long",
+    personalityPrinciples: ["Kind"],
+    speakingStyle: "Warm",
+    responseRhythm: "Measured",
+    relationshipBoundaries: ["No dependency"],
+    openingMessage: "Hello",
+    exampleConversations: [],
+    generationParameters: {
+      temperature: 0.7,
+      topP: 0.9,
+      maxOutputTokens: 100,
+    },
+    safetyAdditions: [],
+    contentDigest: "a".repeat(64),
+    publishedBy: "admin@example.com",
+    publishedAt: now,
+  });
+  await database
+    .update(character)
+    .set({ defaultVersionId: "version-1" })
+    .where(eq(character.id, "character-1"));
+  await database.insert(conversation).values({
+    id: "conversation-1",
+    userId: "ordinary-1",
+    characterId: "character-1",
+    characterVersionId: "version-1",
+    createdAt: now,
+    updatedAt: now,
+    lastMessageAt: now,
+  });
+  await database.insert(conversationMessage).values([
+    {
+      id: "user-message-1",
+      conversationId: "conversation-1",
+      sequence: 1,
+      role: "user",
+      kind: "user",
+      content: "Hello",
+      clientRequestId: "client-request-1",
+      createdAt: now,
+    },
+    {
+      id: "assistant-message-1",
+      conversationId: "conversation-1",
+      sequence: 2,
+      role: "assistant",
+      kind: "generated",
+      inReplyTo: "user-message-1",
+      createdAt: now,
+    },
+  ]);
+  await database.insert(generationAttempt).values({
+    id: "attempt-1",
+    userId: "ordinary-1",
+    assistantMessageId: "assistant-message-1",
+    clientRequestId: "client-request-1",
+    attemptNumber: 1,
+    status: "streaming",
+    content: "partial",
+    modelId: "model-a",
+    leaseExpiresAt: new Date("2026-10-09T14:05:00Z"),
+    leaseOwner: "owner-1",
+    startedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await database.insert(quotaBucket).values([
+    {
+      id: "user-bucket-1",
+      scope: "user",
+      userId: "ordinary-1",
+      periodStart: new Date("2026-10-09T00:00:00Z"),
+      periodEnd: new Date("2026-10-10T00:00:00Z"),
+      reservedRequests: 1,
+      reservedTokens: 500,
+    },
+    {
+      id: "instance-bucket-1",
+      scope: "instance",
+      periodStart: new Date("2026-10-01T00:00:00Z"),
+      periodEnd: new Date("2026-11-01T00:00:00Z"),
+      reservedRequests: 1,
+      reservedTokens: 500,
+    },
+  ]);
+  await database.insert(quotaReservation).values({
+    id: "reservation-1",
+    userId: "ordinary-1",
+    conversationId: "conversation-1",
+    attemptId: "attempt-1",
+    userBucketId: "user-bucket-1",
+    instanceBucketId: "instance-bucket-1",
+    reservedTokens: 500,
+  });
+  await database.insert(generationLease).values({
+    attemptId: "attempt-1",
+    userId: "ordinary-1",
+    ownerToken: "owner-1",
+    expiresAt: new Date("2026-10-09T14:05:00Z"),
+    createdAt: now,
+    updatedAt: now,
+  });
+  await database.execute(sql`
+    CREATE OR REPLACE FUNCTION assert_generation_cancelled_before_session_delete()
+    RETURNS trigger AS $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM generation_attempts
+        WHERE user_id = OLD.user_id
+          AND status IN ('pending', 'streaming')
+          AND cancel_requested_at IS NULL
+      ) THEN
+        RAISE EXCEPTION 'active generation was not cancelled before session deletion';
+      END IF;
+      RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await database.execute(sql`
+    CREATE TRIGGER assert_generation_cancelled_before_session_delete
+    BEFORE DELETE ON session
+    FOR EACH ROW EXECUTE FUNCTION assert_generation_cancelled_before_session_delete()
+  `);
+
+  try {
+    await disableOrdinaryUser(database, actor, {
+      userId: "ordinary-1",
+      reason: "Valid reason",
+    });
+  } finally {
+    await database.execute(sql`
+      DROP TRIGGER IF EXISTS assert_generation_cancelled_before_session_delete
+      ON session
+    `);
+    await database.execute(sql`
+      DROP FUNCTION IF EXISTS assert_generation_cancelled_before_session_delete()
+    `);
+  }
+
+  expect(await database.select().from(session)).toHaveLength(0);
+  expect(await database.select().from(generationAttempt)).toMatchObject([
+    {
+      id: "attempt-1",
+      status: "streaming",
+      cancelRequestedAt: expect.any(Date),
+    },
+  ]);
+  expect(await database.select().from(generationLease)).toMatchObject([
+    { attemptId: "attempt-1", ownerToken: "owner-1" },
+  ]);
+  expect(await database.select().from(quotaReservation)).toMatchObject([
+    { id: "reservation-1", status: "active", reservedTokens: 500 },
+  ]);
+  expect(await database.select().from(quotaBucket)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: "user-bucket-1",
+        reservedRequests: 1,
+        reservedTokens: 500,
+        consumedRequests: 0,
+        consumedTokens: 0,
+      }),
+      expect.objectContaining({
+        id: "instance-bucket-1",
+        reservedRequests: 1,
+        reservedTokens: 500,
+        consumedRequests: 0,
+        consumedTokens: 0,
+      }),
+    ]),
+  );
 });
 
 test.each([

@@ -1,10 +1,12 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { recordAdminAudit } from "@/server/admin/audit";
 import type { AdminActor } from "@/server/admin/admin-actor";
 import type { Database } from "@/server/db/client";
 import { session, user } from "@/server/db/auth-schema";
+import { generationAttempt } from "@/server/db/chat-schema";
+import { lockUserChatMutation } from "@/server/chat/chat-locks";
 import { requireAdminWrite } from "./require-admin-write";
 
 export function validateDisableReason(reason: string): string {
@@ -34,6 +36,7 @@ export async function disableOrdinaryUser(
 
   await database.transaction(async (transaction) => {
     await requireAdminWrite(transaction, actor);
+    await lockUserChatMutation(transaction, input.userId);
     const [target] = await transaction
       .select({ id: user.id, role: user.role, banned: user.banned })
       .from(user)
@@ -57,6 +60,20 @@ export async function disableOrdinaryUser(
         updatedAt: new Date(),
       })
       .where(eq(user.id, input.userId));
+    const cancellationRequestedAt = new Date();
+    await transaction
+      .update(generationAttempt)
+      .set({
+        cancelRequestedAt: cancellationRequestedAt,
+        updatedAt: cancellationRequestedAt,
+      })
+      .where(
+        and(
+          eq(generationAttempt.userId, input.userId),
+          inArray(generationAttempt.status, ["pending", "streaming"]),
+          isNull(generationAttempt.cancelRequestedAt),
+        ),
+      );
     await transaction.delete(session).where(eq(session.userId, input.userId));
     await recordAdminAudit(transaction, actor, {
       action: "user.disable",

@@ -12,6 +12,7 @@ const usersPageMocks = vi.hoisted(() => ({
     void props;
     return null;
   }),
+  UserQuotaForm: vi.fn(() => null),
 }));
 
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
@@ -22,6 +23,9 @@ vi.mock("@/server/db/database", () => ({
 vi.mock("@/server/admin/user-queries", () => ({ listOrdinaryUsers: vi.fn() }));
 vi.mock("@/components/admin/users/user-status-form", () => ({
   UserStatusForm: usersPageMocks.UserStatusForm,
+}));
+vi.mock("@/components/admin/users/user-quota-form", () => ({
+  UserQuotaForm: usersPageMocks.UserQuotaForm,
 }));
 
 beforeEach(() => {
@@ -43,6 +47,10 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
         email: "one@example.com",
         createdAt: new Date("2026-10-08T01:02:03Z"),
         banned: false,
+        dailyRequestLimit: 25,
+        dailyTokenLimit: null,
+        currentPeriodRequests: 3,
+        currentPeriodTokens: 400,
       },
       {
         id: "user-2",
@@ -50,6 +58,10 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
         email: "two@example.com",
         createdAt: new Date("2026-10-07T01:02:03Z"),
         banned: true,
+        dailyRequestLimit: null,
+        dailyTokenLimit: 5_000,
+        currentPeriodRequests: 1,
+        currentPeriodTokens: 50,
       },
     ],
   } as never);
@@ -83,6 +95,20 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
     }),
     undefined,
   );
+  expect(within(rows[1]!).getByText("3 requests / 400 tokens")).toBeVisible();
+  expect(usersPageMocks.UserQuotaForm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      user: expect.objectContaining({
+        id: "user-1",
+        dailyRequestLimit: 25,
+        dailyTokenLimit: null,
+      }),
+    }),
+    undefined,
+  );
+  expect(
+    screen.queryByText(/conversation|transcript|message content/i),
+  ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Next page" })).toHaveAttribute(
     "href",
     "/admin/users?q=one&page=2",
