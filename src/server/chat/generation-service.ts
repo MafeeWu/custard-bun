@@ -946,6 +946,7 @@ export function createGenerationService(
           outcome: "complete",
           now: dependencies.now(),
           providerCalls,
+          cancellationSignal: signal,
         },
         true,
       );
@@ -987,6 +988,7 @@ export function createGenerationService(
           outcome: terminal.outcome,
           now: dependencies.now(),
           providerCalls,
+          cancellationSignal: signal,
           errorCategory: terminal.error.code,
           retryable: terminal.error.retryable,
         },
@@ -1027,6 +1029,7 @@ export function createGenerationService(
               outcome: "interrupted",
               now: dependencies.now(),
               providerCalls,
+              cancellationSignal: signal,
               errorCategory: "CHAT_STREAM_INTERRUPTED",
               retryable: true,
             },

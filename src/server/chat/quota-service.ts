@@ -74,6 +74,7 @@ export interface GenerationSettlement {
   outcome: "complete" | "failed" | "interrupted";
   now: Date;
   providerCalls: ProviderCallSettlement[];
+  cancellationSignal?: AbortSignal;
   errorCategory?: string | null;
   retryable?: boolean | null;
 }
@@ -377,8 +378,17 @@ async function settleLockedGeneration(
   ) {
     return attempt.status;
   }
+  const signalAborted = input.cancellationSignal?.aborted ?? false;
+  const cancellationRequested =
+    Boolean(attempt.cancelRequestedAt) || signalAborted;
+  if (signalAborted && !attempt.cancelRequestedAt) {
+    await transaction
+      .update(generationAttempt)
+      .set({ cancelRequestedAt: input.now, updatedAt: input.now })
+      .where(eq(generationAttempt.id, input.attemptId));
+  }
   const committedOutcome =
-    attempt.cancelRequestedAt && input.outcome !== "interrupted"
+    cancellationRequested && input.outcome !== "interrupted"
       ? "interrupted"
       : input.outcome;
   if (

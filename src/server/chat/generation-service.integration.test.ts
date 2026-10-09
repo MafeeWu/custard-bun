@@ -615,6 +615,78 @@ describe("GenerationService", () => {
     });
   });
 
+  test("browser abort during locked completion settles interrupted exactly once", async () => {
+    const userId = await insertUser();
+    const conversationId = await insertConversation(userId);
+    const browser = new AbortController();
+    let finishProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      finishProvider = resolve;
+    });
+    const gateway = new FakeGateway(async function* () {
+      yield { type: "provider-call", callNumber: 1 };
+      yield { type: "delta", text: "partial" };
+      await providerGate;
+    });
+    const completingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "generation-browser-abort-race",
+      max: 1,
+    });
+    const stream = serviceWith(gateway, {
+      database: completingDatabase,
+    }).startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "Hi",
+      signal: browser.signal,
+    });
+    const started = await stream.next();
+    await stream.next();
+    const locker = await database.$client.connect();
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query(
+        "SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE",
+      );
+
+      finishProvider();
+      const completing = stream.next();
+      await waitForApplicationLockWait("generation-browser-abort-race");
+      browser.abort();
+      await locker.query("COMMIT");
+
+      const terminal = await completing;
+      expect(terminal.value).toMatchObject({
+        type: "interrupted",
+        code: "CHAT_STREAM_INTERRUPTED",
+      });
+      expect(terminal.value).not.toMatchObject({ type: "completed" });
+      expect(await stream.next()).toMatchObject({ done: true });
+
+      const [attempt] = await database
+        .select()
+        .from(generationAttempt)
+        .where(eq(generationAttempt.id, started.value!.attemptId));
+      expect(attempt).toMatchObject({
+        status: "interrupted",
+        cancelRequestedAt: expect.any(Date),
+      });
+      expect(await database.select().from(usageLedger)).toHaveLength(1);
+      expect(await database.select().from(quotaReservation)).toEqual([
+        expect.objectContaining({ status: "settled" }),
+      ]);
+      expect(await database.select().from(generationLease)).toHaveLength(0);
+    } finally {
+      finishProvider();
+      await locker.query("ROLLBACK").catch(() => undefined);
+      locker.release();
+      await stream.return().catch(() => undefined);
+      await completingDatabase.$client.end();
+    }
+  });
+
   test("observes a stop requested by another process after the final provider chunk", async () => {
     const userId = await insertUser();
     const conversationId = await insertConversation(userId);
