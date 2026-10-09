@@ -17,6 +17,7 @@ import {
   generationAttempt,
   generationLease,
   quotaReservation,
+  quotaBucket,
   session,
   usageLedger,
   user,
@@ -36,6 +37,7 @@ import {
   deleteUserWithGenerationSettlement,
   reconcileExpiredLeases,
 } from "./quota-service";
+import { getConversationForUser } from "./conversation-queries";
 
 const database = createDatabase(testDatabaseUrl());
 const baseNow = new Date("2026-10-09T12:00:00.000Z");
@@ -187,6 +189,10 @@ function serviceWith(
       error(message: string, metadata?: Record<string, unknown>): void;
     };
     database?: ReturnType<typeof createDatabase>;
+    scheduleCheckpoint?: (
+      callback: () => Promise<void>,
+      milliseconds: number,
+    ) => () => void;
   } = {},
 ): GenerationService {
   return createGenerationService(options.database ?? database, {
@@ -204,6 +210,7 @@ function serviceWith(
       requestTimeoutMs: 30_000,
     },
     logger: options.logger ?? { error: vi.fn() },
+    scheduleCheckpoint: options.scheduleCheckpoint,
   });
 }
 
@@ -260,6 +267,137 @@ function successfulGateway(events?: GatewayStreamEvent[]) {
 }
 
 describe("GenerationService", () => {
+  test.each([
+    "expiry",
+    "account deletion",
+    "account deletion with provider usage",
+    "completion",
+  ] as const)(
+    "an independent 500ms checkpoint persists a stalled small partial before %s and never writes after terminal",
+    async (exit) => {
+      const userId = await insertUser();
+      const conversationId = await insertConversation(userId);
+      let milliseconds = baseNow.getTime();
+      const scheduled: Array<{
+        due: number;
+        active: boolean;
+        callback: () => Promise<void>;
+      }> = [];
+      const advance = async (amount: number) => {
+        milliseconds += amount;
+        for (const timer of scheduled) {
+          if (timer.active && timer.due <= milliseconds) {
+            timer.active = false;
+            await timer.callback();
+          }
+        }
+      };
+      let release!: () => void;
+      let stalled!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const atStall = new Promise<void>((resolve) => {
+        stalled = resolve;
+      });
+      const hasProviderUsage = exit === "account deletion with provider usage";
+      const gateway = new FakeGateway(async function* () {
+        yield { type: "provider-call", callNumber: 1 };
+        yield { type: "delta", text: "Hello" };
+        if (hasProviderUsage) {
+          yield {
+            type: "usage",
+            inputTokens: 8,
+            outputTokens: 7,
+            estimated: false,
+          };
+        }
+        stalled();
+        await gate;
+      });
+      const stream = serviceWith(gateway, {
+        now: () => new Date(milliseconds),
+        scheduleCheckpoint: (callback, interval) => {
+          const timer = {
+            due: milliseconds + interval,
+            active: true,
+            callback,
+          };
+          scheduled.push(timer);
+          return () => {
+            timer.active = false;
+          };
+        },
+      }).startNewMessage({
+        userId,
+        conversationId,
+        clientRequestId: randomUUID(),
+        content: "Hi",
+        signal: new AbortController().signal,
+      });
+      await stream.next();
+      await stream.next();
+      const terminalPromise = stream.next();
+      void terminalPromise.catch(() => undefined);
+      try {
+        await atStall;
+        await advance(499);
+        expect(await database.select().from(generationAttempt)).toMatchObject([
+          { content: "" },
+        ]);
+        await advance(1);
+        expect(await database.select().from(generationAttempt)).toMatchObject([
+          {
+            content: "Hello",
+            status: "streaming",
+            outputTokens: hasProviderUsage ? 7 : 3,
+            usageIsEstimated: !hasProviderUsage,
+          },
+        ]);
+        if (exit === "expiry") {
+          await database
+            .update(generationLease)
+            .set({ expiresAt: new Date("2000-01-01T00:00:00Z") });
+          expect(
+            (
+              await getConversationForUser(database, { userId, conversationId })
+            )?.messages.at(-1),
+          ).toMatchObject({ status: "interrupted", content: "Hello" });
+        } else if (exit.startsWith("account deletion")) {
+          await deleteUserWithGenerationSettlement(
+            database,
+            userId,
+            new Date(milliseconds),
+          );
+        }
+        release();
+        expect((await terminalPromise).value).toMatchObject({
+          type: exit === "completion" ? "completed" : "interrupted",
+        });
+        await stream.next();
+        await advance(1_000);
+        expect(scheduled.some((timer) => timer.active)).toBe(false);
+        const ledger = await database.select().from(usageLedger);
+        expect(ledger).toHaveLength(1);
+        expect(ledger[0]).toMatchObject({
+          outputTokens: hasProviderUsage ? 7 : 3,
+          userRequestUnits: 1,
+          usageIsEstimated: !hasProviderUsage,
+        });
+        expect(await database.select().from(generationLease)).toHaveLength(0);
+        expect(await database.select().from(quotaBucket)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ reservedRequests: 0, reservedTokens: 0 }),
+          ]),
+        );
+      } finally {
+        release();
+        await terminalPromise.catch(() => undefined);
+        await stream.return().catch(() => undefined);
+      }
+    },
+  );
+
   test("commits the turn, reservation, and lease before provider contact and completes with provider usage", async () => {
     const userId = await insertUser();
     const conversationId = await insertConversation(userId);

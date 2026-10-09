@@ -35,8 +35,8 @@ export async function disableOrdinaryUser(
   const reason = validateDisableReason(input.reason);
 
   await database.transaction(async (transaction) => {
-    await requireAdminWrite(transaction, actor);
     await lockUserChatMutation(transaction, input.userId);
+    await requireAdminWrite(transaction, actor);
     const [target] = await transaction
       .select({ id: user.id, role: user.role, banned: user.banned })
       .from(user)

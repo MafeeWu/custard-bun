@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useActionState, useState } from "react";
 import type { ConversationActionState } from "@/app/app/conversations/actions";
 import type {
@@ -94,6 +95,12 @@ export function ChatScreen({
     conversation.messages,
   );
   const [generating, setGenerating] = useState(false);
+  const [serverMessages, setServerMessages] = useState(conversation.messages);
+  const router = useRouter();
+  if (serverMessages !== conversation.messages) {
+    setServerMessages(conversation.messages);
+    setMessages(conversation.messages);
+  }
   const active = conversation.lifecycle === "active";
 
   return (
@@ -174,6 +181,7 @@ export function ChatScreen({
             messages={messages}
             onGeneratingChange={setGenerating}
             onMessagesChange={setMessages}
+            onAuthoritativeRefresh={() => router.refresh()}
           />
         ) : (
           <p role="status">This archived conversation is read-only.</p>

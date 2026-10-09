@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 
 export type FakeModelScenario =
   | "standard"
+  | "done-open"
   | "buffered-events"
   | "missing-usage"
   | "authentication-error"
@@ -39,6 +40,7 @@ export interface FakeModelServer {
 
 const requestIds: Record<FakeModelScenario, string> = {
   standard: "req-standard",
+  "done-open": "req-done-open",
   "buffered-events": "req-buffered-events",
   "missing-usage": "req-missing-usage",
   "authentication-error": "req-authentication",
@@ -86,6 +88,13 @@ async function runScenario(
   response: ServerResponse,
 ): Promise<void> {
   switch (scenario) {
+    case "done-open":
+      startEventStream(response, scenario);
+      response.write(
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n' +
+          "data: [DONE]\n\n",
+      );
+      return;
     case "standard": {
       startEventStream(response, scenario);
       const first = Buffer.from(

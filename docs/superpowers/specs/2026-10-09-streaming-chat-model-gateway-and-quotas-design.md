@@ -594,6 +594,12 @@ Row locks and a consistent lock order prevent oversubscription and deadlock:
 
 The implementation must exercise this order in concurrent PostgreSQL tests.
 
+Mutations requiring both global settings and user-row authorization locks,
+including administrator settings writes and disablement, acquire settings
+first and recheck authorization inside the transaction. Checkpoints and
+settlement lock an attempt before its lease; expiry reconciliation rereads
+the lease after both locks so concurrent refreshes cannot be treated as expired.
+
 At settlement, actual usage replaces reserved usage. Failed requests retain
 their consumed request unit. Unused token reservation is released.
 

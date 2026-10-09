@@ -161,6 +161,17 @@ complete. Retry replaces the incomplete generated attempt without duplicating
 the source user message. Only one generation may run for a user across all
 their conversations at a time.
 
+Partial output is checkpointed after approximately 500 ms even if the provider
+stalls, or after 1 KiB of new text. Opening an affected conversation recovers an
+expired generation as interrupted. Crash recovery and account deletion charge
+durable partial output once using the tokenizer's 20% safety margin when provider
+usage is unavailable, and release unused token reservations.
+
+If a submission loses its response before admission is confirmed, resending the
+unchanged draft reuses its request key. A terminal replay reloads the persisted
+transcript rather than creating another turn; editing the draft starts a new
+submission.
+
 `app.config.yml` defines deployer safety ceilings and first-deploy defaults:
 
 - first-token and total request timeouts;

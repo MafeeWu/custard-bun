@@ -20,6 +20,14 @@ import {
   userChatQuotaOverride,
 } from "@/server/db/schema";
 import { testDatabaseUrl } from "@/test/database-target";
+import { lockUserChatMutation } from "./chat-locks";
+import {
+  resetGlobalChatSettings,
+  updateGlobalChatSettings,
+} from "@/server/admin/chat-settings-service";
+import { disableOrdinaryUser } from "@/server/admin/user-service";
+import { getConversationForUser } from "./conversation-queries";
+import { createConversationService } from "./conversation-service";
 import {
   admitGeneration,
   deleteUserWithGenerationSettlement,
@@ -228,10 +236,7 @@ async function admit(
 }
 
 async function bucketRows() {
-  return database
-    .select()
-    .from(quotaBucket)
-    .orderBy(quotaBucket.scope);
+  return database.select().from(quotaBucket).orderBy(quotaBucket.scope);
 }
 
 async function waitForWaitingQuery(applicationName: string) {
@@ -311,6 +316,140 @@ describe("quota periods and effective limits", () => {
 });
 
 describe("transactional admission", () => {
+  test.each(["update", "reset", "disable"] as const)(
+    "admission versus admin %s waits on settings without a user-row deadlock",
+    async (mutation) => {
+      const userId = await insertUser();
+      await database
+        .update(user)
+        .set({ role: "admin" })
+        .where(eq(user.id, userId));
+      const targetId = await insertUser();
+      await database
+        .update(user)
+        .set({ role: "user" })
+        .where(eq(user.id, targetId));
+      const attempt = await insertPendingAttempt({ userId });
+      const actor = { userId, label: "Admin", operationId: randomUUID() };
+      const adminName = `admin-${mutation}-${randomUUID()}`;
+      const adminDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: adminName,
+        max: 1,
+      });
+      const admissionDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
+      let proceed!: () => void;
+      let locked!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        proceed = resolve;
+      });
+      const settingsLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const admission = admissionDatabase.transaction(async (transaction) => {
+        await lockUserChatMutation(transaction, userId);
+        locked();
+        await gate;
+        return admitGeneration(transaction, {
+          userId,
+          ...attempt,
+          estimatedInputTokens: 100,
+          maxOutputTokens: 100,
+          now,
+        });
+      });
+      void admission.catch(() => undefined);
+      let adminMutation: Promise<unknown> | undefined;
+      try {
+        await settingsLocked;
+        adminMutation =
+          mutation === "disable"
+            ? disableOrdinaryUser(adminDatabase, actor, {
+                userId: targetId,
+                reason: "Administrative disable",
+              })
+            : mutation === "reset"
+              ? resetGlobalChatSettings(adminDatabase, actor, {
+                  expectedRevision: 1,
+                })
+              : updateGlobalChatSettings(adminDatabase, actor, {
+                  expectedRevision: 1,
+                  userDailyRequestLimit: 10,
+                  userDailyTokenLimit: 10_000,
+                  instanceMonthlyRequestLimit: 100,
+                  instanceMonthlyTokenBudget: 100_000,
+                  maxConcurrentGenerations: 2,
+                });
+        void adminMutation.catch(() => undefined);
+        expect(await waitForWaitingQuery(adminName)).toMatch(/chat_settings/i);
+        proceed();
+        await expect(admission).resolves.toMatchObject({
+          attemptId: attempt.attemptId,
+        });
+        await adminMutation;
+      } finally {
+        proceed();
+        await Promise.allSettled([
+          admission,
+          ...(adminMutation ? [adminMutation] : []),
+        ]);
+        await admissionDatabase.$client.end();
+        await adminDatabase.$client.end();
+      }
+    },
+    10_000,
+  );
+
+  test("expiry admission waits on checkpoint's attempt before lease and rechecks the refreshed expiry", async () => {
+    const userId = await insertUser();
+    const expired = await insertPendingAttempt({ userId });
+    await admit(database, { userId, ...expired });
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date(now.getTime() - 1) })
+      .where(eq(generationLease.attemptId, expired.attemptId));
+    const next = await insertPendingAttempt({ userId });
+    const applicationName = `expiry-admission-${randomUUID()}`;
+    const admissionDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: applicationName,
+      max: 1,
+    });
+    const checkpointConnection = await database.$client.connect();
+    let admission: ReturnType<typeof admit> | undefined;
+    try {
+      await checkpointConnection.query("BEGIN");
+      await checkpointConnection.query(
+        "UPDATE generation_attempts SET content = 'durable partial', status = 'streaming' WHERE id = $1",
+        [expired.attemptId],
+      );
+      admission = admit(admissionDatabase, { userId, ...next });
+      void admission.catch(() => undefined);
+      expect(await waitForWaitingQuery(applicationName)).toMatch(
+        /generation_attempts/i,
+      );
+      const refreshedExpiry = new Date(now.getTime() + 60_000);
+      await checkpointConnection.query(
+        "UPDATE generation_leases SET expires_at = $2 WHERE attempt_id = $1",
+        [expired.attemptId, refreshedExpiry],
+      );
+      await checkpointConnection.query("COMMIT");
+      await expect(admission).rejects.toMatchObject({
+        code: "CHAT_GENERATION_IN_PROGRESS",
+      });
+      expect(await database.select().from(usageLedger)).toHaveLength(0);
+      expect(await database.select().from(generationLease)).toMatchObject([
+        { attemptId: expired.attemptId, expiresAt: refreshedExpiry },
+      ]);
+      expect(await database.select().from(quotaReservation)).toMatchObject([
+        { attemptId: expired.attemptId, status: "active" },
+      ]);
+    } finally {
+      await checkpointConnection.query("ROLLBACK");
+      checkpointConnection.release();
+      await Promise.allSettled(admission ? [admission] : []);
+      await admissionDatabase.$client.end();
+    }
+  }, 10_000);
+
   test("waits for a racing final user request slot and returns the user quota code", async () => {
     await replaceSettings({ userDailyRequestLimit: 1 });
     const userId = await insertUser();
@@ -579,17 +718,25 @@ describe("transactional admission", () => {
       admission = admit(admissionDatabase, { userId, ...next });
       void admission.catch(() => undefined);
 
-      expect(await waitForWaitingQuery(applicationName)).toMatch(/chat_settings/i);
+      expect(await waitForWaitingQuery(applicationName)).toMatch(
+        /chat_settings/i,
+      );
       await blockers[0].query("COMMIT");
-      expect(await waitForWaitingQuery(applicationName)).toMatch(/quota_buckets/i);
+      expect(await waitForWaitingQuery(applicationName)).toMatch(
+        /quota_buckets/i,
+      );
       await blockers[1].query("COMMIT");
-      expect(await waitForWaitingQuery(applicationName)).toMatch(/quota_buckets/i);
+      expect(await waitForWaitingQuery(applicationName)).toMatch(
+        /quota_buckets/i,
+      );
       await blockers[2].query("COMMIT");
       expect(await waitForWaitingQuery(applicationName)).toMatch(
         /generation_leases/i,
       );
       await blockers[3].query("COMMIT");
-      expect(await waitForWaitingQuery(applicationName)).toMatch(/conversations/i);
+      expect(await waitForWaitingQuery(applicationName)).toMatch(
+        /conversations/i,
+      );
       await blockers[4].query("COMMIT");
 
       await expect(admission).resolves.toMatchObject({
@@ -597,7 +744,9 @@ describe("transactional admission", () => {
       });
     } finally {
       await Promise.all(
-        blockers.map((blocker) => blocker.query("ROLLBACK").catch(() => undefined)),
+        blockers.map((blocker) =>
+          blocker.query("ROLLBACK").catch(() => undefined),
+        ),
       );
       blockers.forEach((blocker) => blocker.release());
       await Promise.allSettled(admission ? [admission] : []);
@@ -685,7 +834,12 @@ describe("transactional admission", () => {
       userId: deletedUserId,
     });
     await admit(database, { userId: deletedUserId, ...deletedAttempt });
+    await database
+      .update(generationAttempt)
+      .set({ status: "streaming", content: "Hello" })
+      .where(eq(generationAttempt.id, deletedAttempt.attemptId));
 
+    await deleteUserWithGenerationSettlement(database, deletedUserId, now);
     await deleteUserWithGenerationSettlement(database, deletedUserId, now);
 
     const [instanceBucket] = (await bucketRows()).filter(
@@ -695,7 +849,7 @@ describe("transactional admission", () => {
       reservedRequests: 0,
       reservedTokens: 0,
       consumedRequests: 1,
-      consumedTokens: 100,
+      consumedTokens: 102,
     });
     expect(
       (await bucketRows()).filter((bucket) => bucket.scope === "user"),
@@ -711,7 +865,7 @@ describe("transactional admission", () => {
       attemptId: null,
       userRequestUnits: 1,
       inputTokens: 100,
-      outputTokens: 0,
+      outputTokens: 2,
       usageIsEstimated: true,
       outcome: "interrupted",
     });
@@ -719,6 +873,115 @@ describe("transactional admission", () => {
 });
 
 describe("settlement and reconciliation", () => {
+  test.each(["detail", "open"] as const)(
+    "production conversation %s recovers only its owner's expired stream before returning",
+    async (path) => {
+      const userId = await insertUser();
+      const otherUserId = await insertUser();
+      const attempt = await insertPendingAttempt({ userId });
+      await admit(database, { userId, ...attempt });
+      const otherAttempt = await insertPendingAttempt({ userId: otherUserId });
+      await admit(database, { userId: otherUserId, ...otherAttempt });
+      await database
+        .update(generationAttempt)
+        .set({ status: "streaming", content: "Hello" })
+        .where(eq(generationAttempt.id, attempt.attemptId));
+      await database
+        .update(generationLease)
+        .set({ expiresAt: new Date("2000-01-01T00:00:00Z") });
+      expect(
+        await getConversationForUser(database, {
+          userId: otherUserId,
+          conversationId: attempt.conversationId,
+        }),
+      ).toBeNull();
+      expect(await database.select().from(usageLedger)).toHaveLength(0);
+
+      if (path === "open") {
+        const [row] = await database
+          .select()
+          .from(conversation)
+          .where(eq(conversation.id, attempt.conversationId));
+        await createConversationService(database).openOrCreate({
+          userId,
+          characterId: row!.characterId,
+        });
+        expect(
+          await database
+            .select()
+            .from(generationAttempt)
+            .where(eq(generationAttempt.id, attempt.attemptId)),
+        ).toMatchObject([{ status: "interrupted", content: "Hello" }]);
+      }
+      const detail = await getConversationForUser(database, {
+        userId,
+        conversationId: attempt.conversationId,
+      });
+      expect(detail?.messages.at(-1)).toMatchObject({
+        status: "interrupted",
+        content: "Hello",
+        retryable: true,
+      });
+      await getConversationForUser(database, {
+        userId,
+        conversationId: attempt.conversationId,
+      });
+      expect(await database.select().from(usageLedger)).toMatchObject([
+        { attemptId: attempt.attemptId, outputTokens: 2, userRequestUnits: 1 },
+      ]);
+      expect(await database.select().from(generationLease)).toMatchObject([
+        { attemptId: otherAttempt.attemptId },
+      ]);
+    },
+  );
+
+  test("production detail leaves a fresh lease and another owned expired conversation untouched", async () => {
+    const userId = await insertUser();
+    const expired = await insertPendingAttempt({ userId });
+    await admit(database, { userId, ...expired });
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date("2000-01-01T00:00:00Z") });
+    const emptyConversation = await insertConversationFixture(userId);
+    await getConversationForUser(database, {
+      userId,
+      conversationId: emptyConversation,
+    });
+    expect(await database.select().from(usageLedger)).toHaveLength(0);
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date("2099-01-01T00:00:00Z") });
+    const detail = await getConversationForUser(database, {
+      userId,
+      conversationId: expired.conversationId,
+    });
+    expect(detail?.messages.at(-1)).toMatchObject({ status: "pending" });
+    expect(await database.select().from(usageLedger)).toHaveLength(0);
+  });
+
+  test("expiry fallback honors durable provider usage rather than a local estimate", async () => {
+    const userId = await insertUser();
+    const attempt = await insertPendingAttempt({ userId });
+    await admit(database, { userId, ...attempt });
+    await database
+      .update(generationAttempt)
+      .set({
+        status: "streaming",
+        content: "Hello",
+        inputTokens: 8,
+        outputTokens: 7,
+        usageIsEstimated: false,
+      })
+      .where(eq(generationAttempt.id, attempt.attemptId));
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date(now.getTime() - 1) });
+    await reconcileExpiredLeases(database, now);
+    expect(await database.select().from(usageLedger)).toMatchObject([
+      { inputTokens: 8, outputTokens: 7, usageIsEstimated: false },
+    ]);
+  });
+
   test("consumes one request, charges actual tokens, and releases unused reservation", async () => {
     const userId = await insertUser();
     const attempt = await insertPendingAttempt({ userId });
@@ -872,7 +1135,7 @@ describe("settlement and reconciliation", () => {
     const admission = await admit(database, { userId, ...attempt });
     await database
       .update(generationAttempt)
-      .set({ status: "streaming", content: "Persisted partial reply" })
+      .set({ status: "streaming", content: "Hello" })
       .where(eq(generationAttempt.id, attempt.attemptId));
     await database
       .update(generationLease)
@@ -888,13 +1151,13 @@ describe("settlement and reconciliation", () => {
       .where(eq(generationAttempt.id, attempt.attemptId));
     expect(attemptRow).toMatchObject({
       status: "interrupted",
-      content: "Persisted partial reply",
+      content: "Hello",
       usageIsEstimated: true,
     });
     expect(await database.select().from(usageLedger)).toHaveLength(1);
     for (const bucket of await bucketRows()) {
       expect(bucket.consumedRequests).toBe(1);
-      expect(bucket.consumedTokens).toBe(100);
+      expect(bucket.consumedTokens).toBe(102);
       expect(bucket.reservedRequests).toBe(0);
       expect(bucket.reservedTokens).toBe(0);
     }
@@ -933,7 +1196,9 @@ describe("settlement and reconciliation", () => {
       );
       reconciliation = reconcileExpiredLeases(reconcileDatabase, now);
       void reconciliation.catch(() => undefined);
-      expect(await waitForWaitingQuery(reconcileName)).toMatch(/chat_settings/i);
+      expect(await waitForWaitingQuery(reconcileName)).toMatch(
+        /chat_settings/i,
+      );
 
       await refreshDatabase.transaction(async (transaction) => {
         await transaction
@@ -1014,7 +1279,9 @@ describe("settlement and reconciliation", () => {
     });
     const attempt = await insertPendingAttempt({ userId });
 
-    await expect(admit(database, { userId, ...attempt })).resolves.toMatchObject({
+    await expect(
+      admit(database, { userId, ...attempt }),
+    ).resolves.toMatchObject({
       effectiveLimits: {
         userDailyRequests: 3,
         userDailyTokens: 10_000,

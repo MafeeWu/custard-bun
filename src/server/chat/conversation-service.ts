@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
-import {
-  character,
-  characterVersion,
-} from "@/server/db/character-schema";
+import { character, characterVersion } from "@/server/db/character-schema";
 import {
   conversation,
   conversationMessage,
@@ -17,6 +14,7 @@ import {
   lockUserChatMutation,
   type ChatTransaction,
 } from "./chat-locks";
+import { reconcileExpiredConversationInTransaction } from "./quota-service";
 
 export interface ConversationService {
   openOrCreate(input: {
@@ -27,10 +25,7 @@ export interface ConversationService {
     userId: string;
     conversationId: string;
   }): Promise<{ conversationId: string }>;
-  delete(input: {
-    userId: string;
-    conversationId: string;
-  }): Promise<void>;
+  delete(input: { userId: string; conversationId: string }): Promise<void>;
 }
 
 function notFound(): ChatDomainError {
@@ -174,10 +169,7 @@ function errorDetails(error: unknown): { code?: string; message: string } {
   };
   const nested = candidate.cause ? errorDetails(candidate.cause) : null;
   return {
-    code:
-      typeof candidate.code === "string"
-        ? candidate.code
-        : nested?.code,
+    code: typeof candidate.code === "string" ? candidate.code : nested?.code,
     message: [
       typeof candidate.message === "string" ? candidate.message : "",
       nested?.message ?? "",
@@ -255,6 +247,11 @@ export function createConversationService(
 
         const existing = await findActiveConversation(transaction, input);
         if (existing) {
+          await reconcileExpiredConversationInTransaction(
+            transaction,
+            { userId: input.userId, conversationId: existing.id },
+            new Date(),
+          );
           return { conversationId: existing.id, created: false };
         }
 

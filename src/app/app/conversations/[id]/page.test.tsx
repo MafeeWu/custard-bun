@@ -12,6 +12,7 @@ vi.mock("next/headers", () => ({
   headers: async () => new Headers([["cookie", "session=1"]]),
 }));
 vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
   notFound: vi.fn(() => {
     throw new Error("NEXT_NOT_FOUND");
   }),

@@ -138,6 +138,15 @@ describe("OpenAiCompatibleGateway", () => {
     expect(result.events.some((event) => event.type === "usage")).toBe(false);
   });
 
+  test("completes at DONE while the loopback response remains open and cleans up its body", async () => {
+    provider.enqueue("done-open");
+    const result = await consume(stream({ requestTimeoutMs: 150 }));
+    expect(result.error).toBeUndefined();
+    expect(result.events).toContainEqual({ type: "delta", text: "Hello" });
+    await vi.waitFor(() => expect(provider.requests[0]?.aborted).toBe(true));
+    expect(provider.requests).toHaveLength(1);
+  });
+
   test("maps authentication errors without exposing provider bodies or credentials", async () => {
     provider.enqueue("authentication-error");
 

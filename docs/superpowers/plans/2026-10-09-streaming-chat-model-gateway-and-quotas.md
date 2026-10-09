@@ -1629,8 +1629,10 @@ Do not join conversation messages or generation content.
 
 - [ ] **Step 5: Implement transactional settings services**
 
-Call `requireAdminWrite(transaction, actor)` before locking the singleton or
-target user. Record actions from Task 2. Keep audit metadata flat:
+Lock the global settings singleton before any actor or target user-row locks
+when both are required. Recheck `requireAdminWrite(transaction, actor)` inside
+that transaction before mutating settings or the target user. Record actions
+from Task 2. Keep audit metadata flat:
 
 ```ts
 {

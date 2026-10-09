@@ -2,6 +2,17 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { SafeMarkdown } from "./safe-markdown";
 
+test.each(["HTTP://example.com", "hTtPs://example.com"])(
+  "classifies mixed-case external link %s through its parsed protocol",
+  (href) => {
+    render(<SafeMarkdown>{`[External](${href})`}</SafeMarkdown>);
+    const link = screen.getByRole("link", { name: "External" });
+    expect(link).toHaveAttribute("href", href);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  },
+);
+
 test("renders the supported Markdown presentation", () => {
   render(
     <SafeMarkdown>{`A paragraph with *emphasis* and \`inline code\`.
@@ -22,7 +33,9 @@ const answer = 42;
   expect(screen.getByText("emphasis").tagName).toBe("EM");
   expect(screen.getByText("inline code").tagName).toBe("CODE");
   expect(screen.getByRole("list")).toHaveTextContent("First");
-  expect(screen.getByText("A quoted thought").closest("blockquote")).toBeVisible();
+  expect(
+    screen.getByText("A quoted thought").closest("blockquote"),
+  ).toBeVisible();
   expect(screen.getByText("const answer = 42;").closest("pre")).toBeVisible();
   expect(screen.getByRole("link", { name: "Internal" })).toHaveAttribute(
     "href",

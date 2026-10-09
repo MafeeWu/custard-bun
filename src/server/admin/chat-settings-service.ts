@@ -132,13 +132,13 @@ export async function updateGlobalChatSettings(
   validateGlobalInput(input);
 
   return database.transaction(async (transaction) => {
-    await requireAdminWrite(transaction, actor);
     const [current] = await transaction
       .select()
       .from(chatSettings)
       .where(eq(chatSettings.id, "global"))
       .for("update")
       .limit(1);
+    await requireAdminWrite(transaction, actor);
     if (!current) {
       throw new ChatSettingsAdminError(
         "SETTINGS_NOT_INITIALIZED",
@@ -186,13 +186,13 @@ export async function resetGlobalChatSettings(
   validateRevision(input.expectedRevision);
 
   return database.transaction(async (transaction) => {
-    await requireAdminWrite(transaction, actor);
     const [current] = await transaction
       .select()
       .from(chatSettings)
       .where(eq(chatSettings.id, "global"))
       .for("update")
       .limit(1);
+    await requireAdminWrite(transaction, actor);
     if (!current) {
       throw new ChatSettingsAdminError(
         "SETTINGS_NOT_INITIALIZED",

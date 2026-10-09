@@ -88,6 +88,7 @@ export async function* parseOpenAiStream(
   let lineBuffer = "";
   let dataLines: string[] = [];
   let completed = false;
+  let skipLeadingLf = false;
 
   const processLine = (line: string): ParsedStreamEvent[] | "done" => {
     const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
@@ -120,10 +121,13 @@ export async function* parseOpenAiStream(
     return [];
   };
 
-  const processText = function* (
-    text: string,
-    endOfStream = false,
-  ): Generator<ParsedStreamEvent> {
+  const processText = function* (text: string): Generator<ParsedStreamEvent> {
+    if (skipLeadingLf && text.length > 0) {
+      if (text.startsWith("\n")) {
+        text = text.slice(1);
+      }
+      skipLeadingLf = false;
+    }
     lineBuffer += text;
     while (true) {
       const separatorIndex = lineBuffer.search(/[\r\n]/);
@@ -131,13 +135,8 @@ export async function* parseOpenAiStream(
         return;
       }
       const separator = lineBuffer[separatorIndex];
-      if (
-        separator === "\r" &&
-        separatorIndex === lineBuffer.length - 1 &&
-        !endOfStream
-      ) {
-        return;
-      }
+      skipLeadingLf =
+        separator === "\r" && separatorIndex === lineBuffer.length - 1;
       const separatorLength =
         separator === "\r" && lineBuffer[separatorIndex + 1] === "\n" ? 2 : 1;
       const line = lineBuffer.slice(0, separatorIndex);
@@ -152,14 +151,14 @@ export async function* parseOpenAiStream(
   };
 
   for await (const chunk of chunks) {
-    if (completed) {
-      break;
-    }
     yield* processText(decoder.decode(chunk, { stream: true }));
+    if (completed) {
+      return;
+    }
   }
 
   if (!completed) {
-    yield* processText(decoder.decode(), true);
+    yield* processText(decoder.decode());
   }
   if (!completed) {
     throw protocolError();

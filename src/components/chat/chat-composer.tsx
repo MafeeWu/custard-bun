@@ -64,20 +64,36 @@ export async function consumeChatEventStream(
   return { attemptId, terminal };
 }
 
-async function responseError(response: Response): Promise<PublicChatError> {
+async function responseError(
+  response: Response,
+): Promise<PublicChatError | undefined> {
   try {
     const value = (await response.json()) as { error?: PublicChatError };
-    if (value.error?.message) {
+    if (
+      typeof value.error?.message === "string" &&
+      typeof value.error.code === "string" &&
+      value.error.code.startsWith("CHAT_") &&
+      typeof value.error.retryable === "boolean"
+    ) {
       return value.error;
     }
   } catch {
     // Use the stable fallback below.
   }
-  return {
-    code: "CHAT_INTERNAL",
-    message: "Something went wrong while generating a response.",
-    retryable: false,
-  };
+  return undefined;
+}
+
+const transportError: PublicChatError = {
+  code: "CHAT_INTERNAL",
+  message: "Unable to reach the chat service.",
+  retryable: true,
+};
+
+interface PendingSubmission {
+  content?: string;
+  retryAttemptId?: string;
+  clientRequestId: string;
+  body: string;
 }
 
 function generatedMessage(
@@ -113,23 +129,25 @@ export function ChatComposer({
   messages,
   onMessagesChange,
   onGeneratingChange,
+  onAuthoritativeRefresh,
 }: {
   conversationId: string;
   messages: ChatClientMessage[];
   onMessagesChange: Dispatch<SetStateAction<ChatClientMessage[]>>;
   onGeneratingChange?: (generating: boolean) => void;
+  onAuthoritativeRefresh?: () => void;
 }) {
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [activeAttemptId, setActiveAttemptId] = useState<string | undefined>(
-    () => activeAttemptFrom(messages),
-  );
+  const [activeStreamAttemptId, setActiveAttemptId] = useState<string>();
+  const activeAttemptId = activeStreamAttemptId ?? activeAttemptFrom(messages);
   const [generationOwnerConversationId, setGenerationOwnerConversationId] =
     useState<string>();
   const [error, setError] = useState<PublicChatError>();
   const controllerRef = useRef<AbortController | undefined>(undefined);
   const stoppingRef = useRef(false);
   const mountedRef = useRef(true);
+  const pendingSubmissionRef = useRef<PendingSubmission | undefined>(undefined);
   const generating =
     submitting ||
     Boolean(activeAttemptId) ||
@@ -166,13 +184,29 @@ export function ChatComposer({
     content?: string;
     retryAttemptId?: string;
   }) {
-    const clientRequestId = crypto.randomUUID();
+    const pending = pendingSubmissionRef.current;
+    const clientRequestId =
+      pending &&
+      pending.content === input.content &&
+      pending.retryAttemptId === input.retryAttemptId
+        ? pending.clientRequestId
+        : crypto.randomUUID();
+    const submission: PendingSubmission =
+      pending?.clientRequestId === clientRequestId
+        ? pending
+        : {
+            ...input,
+            clientRequestId,
+            body: JSON.stringify({ clientRequestId, ...input }),
+          };
+    pendingSubmissionRef.current = submission;
     const controller = new AbortController();
     controllerRef.current = controller;
     stoppingRef.current = false;
     setSubmitting(true);
     setError(undefined);
     let currentAttemptId: string | undefined;
+    let started = false;
 
     try {
       const response = await fetch(
@@ -180,20 +214,18 @@ export function ChatComposer({
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            clientRequestId,
-            ...(input.retryAttemptId
-              ? { retryAttemptId: input.retryAttemptId }
-              : { content: input.content }),
-          }),
+          body: submission.body,
           signal: controller.signal,
         },
       );
       if (!response.ok) {
         const nextError = await responseError(response);
-        setError(nextError);
+        if (nextError && nextError.code !== "CHAT_INTERNAL") {
+          pendingSubmissionRef.current = undefined;
+        }
+        setError(nextError ?? transportError);
         if (
-          nextError.code === "CHAT_GENERATION_IN_PROGRESS" &&
+          nextError?.code === "CHAT_GENERATION_IN_PROGRESS" &&
           typeof nextError.metadata?.conversationId === "string"
         ) {
           setGenerationOwnerConversationId(nextError.metadata.conversationId);
@@ -204,6 +236,8 @@ export function ChatComposer({
       const result = await consumeChatEventStream(response, (event) => {
         currentAttemptId = event.attemptId;
         if (event.type === "started") {
+          started = true;
+          pendingSubmissionRef.current = undefined;
           if (input.content !== undefined) {
             setContent("");
           }
@@ -239,6 +273,15 @@ export function ChatComposer({
           }));
           return;
         }
+        pendingSubmissionRef.current = undefined;
+        if (!started) {
+          if (input.content !== undefined) {
+            setContent("");
+          }
+          setActiveAttemptId(undefined);
+          onAuthoritativeRefresh?.();
+          return;
+        }
         if (event.type === "completed") {
           updateAttempt(event.attemptId, (message) => ({
             ...message,
@@ -268,6 +311,8 @@ export function ChatComposer({
           retryable: true,
           statusMessage: "The response stream ended before completion.",
         }));
+      } else if (!result.attemptId) {
+        setError(transportError);
       }
     } catch {
       if (!stoppingRef.current && !controller.signal.aborted) {
@@ -319,7 +364,7 @@ export function ChatComposer({
         method: "POST",
       });
       if (response.status !== 202) {
-        setError(await responseError(response));
+        setError((await responseError(response)) ?? transportError);
         stoppingRef.current = false;
         return;
       }
@@ -372,7 +417,15 @@ export function ChatComposer({
           placeholder="Write a message"
           value={content}
           disabled={generating}
-          onChange={(event) => setContent(event.target.value)}
+          onChange={(event) => {
+            if (
+              pendingSubmissionRef.current?.content !==
+              event.target.value.trim()
+            ) {
+              pendingSubmissionRef.current = undefined;
+            }
+            setContent(event.target.value);
+          }}
           rows={3}
         />
         {activeAttemptId ? (

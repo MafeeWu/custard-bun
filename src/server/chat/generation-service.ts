@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray, max } from "drizzle-orm";
+import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { getRuntimeConfig } from "@/server/config/load-config";
 import type { Database } from "@/server/db/client";
 import { getDatabase } from "@/server/db/database";
@@ -69,6 +69,10 @@ interface GenerationDependencies {
   idFactory: () => string;
   config: GenerationConfig;
   logger: GenerationLogger;
+  scheduleCheckpoint?: (
+    callback: () => Promise<void>,
+    milliseconds: number,
+  ) => () => void;
 }
 
 interface PreparedGeneration {
@@ -401,7 +405,10 @@ function gatewayInput(
   };
 }
 
-function gatewayError(error: unknown, hasDelta: boolean): {
+function gatewayError(
+  error: unknown,
+  hasDelta: boolean,
+): {
   error: ChatDomainError;
   outcome: "failed" | "interrupted";
 } {
@@ -411,7 +418,11 @@ function gatewayError(error: unknown, hasDelta: boolean): {
       outcome: hasDelta ? "interrupted" : "failed",
     };
   }
-  if (hasDelta || error.category === "cancelled" || error.category === "interrupted") {
+  if (
+    hasDelta ||
+    error.category === "cancelled" ||
+    error.category === "interrupted"
+  ) {
     return {
       error: new ChatDomainError(
         "CHAT_STREAM_INTERRUPTED",
@@ -450,11 +461,9 @@ function gatewayError(error: unknown, hasDelta: boolean): {
     error.category === "total_timeout"
   ) {
     return {
-      error: new ChatDomainError(
-        "CHAT_PROVIDER_TIMEOUT",
-        "Provider timeout.",
-        { retryable: true },
-      ),
+      error: new ChatDomainError("CHAT_PROVIDER_TIMEOUT", "Provider timeout.", {
+        retryable: true,
+      }),
       outcome: "failed",
     };
   }
@@ -480,6 +489,29 @@ export function createGenerationService(
   dependencies: GenerationDependencies,
 ): GenerationService {
   const activeControllers = new Map<string, AbortController>();
+  const scheduleCheckpoint =
+    dependencies.scheduleCheckpoint ??
+    ((callback: () => Promise<void>, milliseconds: number) => {
+      const timer = setTimeout(() => void callback(), milliseconds);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    });
+
+  function estimatedOutputTokens(content: string): number {
+    return content
+      ? dependencies.tokenCounter.withSafetyMargin(
+          dependencies.tokenCounter.estimateText(content),
+        )
+      : 0;
+  }
+
+  function writableAttempt(prepared: PreparedGeneration) {
+    return and(
+      eq(generationAttempt.id, prepared.attemptId),
+      eq(generationAttempt.leaseOwner, prepared.leaseOwner),
+      inArray(generationAttempt.status, ["pending", "streaming"]),
+    );
+  }
 
   async function prepareNew(input: {
     userId: string;
@@ -696,15 +728,31 @@ export function createGenerationService(
         .select({
           cancelRequestedAt: generationAttempt.cancelRequestedAt,
           leaseOwner: generationAttempt.leaseOwner,
+          usageIsEstimated: generationAttempt.usageIsEstimated,
         })
         .from(generationAttempt)
-        .where(eq(generationAttempt.id, prepared.attemptId))
+        .where(writableAttempt(prepared))
+        .for("update")
         .limit(1);
       if (
         !attempt ||
         attempt.cancelRequestedAt ||
         attempt.leaseOwner !== prepared.leaseOwner
       ) {
+        return false;
+      }
+      const [lease] = await transaction
+        .select({ attemptId: generationLease.attemptId })
+        .from(generationLease)
+        .where(
+          and(
+            eq(generationLease.attemptId, prepared.attemptId),
+            eq(generationLease.ownerToken, prepared.leaseOwner),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!lease) {
         return false;
       }
       const result = await transaction
@@ -714,8 +762,14 @@ export function createGenerationService(
           status: "streaming",
           checkpointedAt: now,
           updatedAt: now,
+          ...(attempt.usageIsEstimated !== false
+            ? {
+                outputTokens: estimatedOutputTokens(content),
+                usageIsEstimated: true,
+              }
+            : {}),
         })
-        .where(eq(generationAttempt.id, prepared.attemptId))
+        .where(writableAttempt(prepared))
         .returning({ id: generationAttempt.id });
       if (result.length === 0) {
         return false;
@@ -750,23 +804,23 @@ export function createGenerationService(
       .limit(1);
     return Boolean(
       attempt &&
-        !attempt.cancelRequestedAt &&
-        attempt.leaseOwner === leaseOwner,
+      !attempt.cancelRequestedAt &&
+      attempt.leaseOwner === leaseOwner,
     );
   }
 
   async function persistProviderRequestId(
-    attemptId: string,
+    prepared: PreparedGeneration,
     requestId: string,
   ) {
     await database
       .update(generationAttempt)
       .set({ providerRequestId: requestId, updatedAt: dependencies.now() })
-      .where(eq(generationAttempt.id, attemptId));
+      .where(writableAttempt(prepared));
   }
 
   async function flushContent(
-    attemptId: string,
+    prepared: PreparedGeneration,
     content: string,
     firstTokenAt?: Date,
   ) {
@@ -774,6 +828,8 @@ export function createGenerationService(
       .update(generationAttempt)
       .set({
         content,
+        outputTokens: sql`CASE WHEN ${generationAttempt.usageIsEstimated} = FALSE
+          THEN ${generationAttempt.outputTokens} ELSE ${estimatedOutputTokens(content)} END`,
         ...(content
           ? {
               status: "streaming" as const,
@@ -783,7 +839,7 @@ export function createGenerationService(
           : {}),
         updatedAt: dependencies.now(),
       })
-      .where(eq(generationAttempt.id, attemptId));
+      .where(writableAttempt(prepared));
   }
 
   function providerCall(
@@ -840,6 +896,62 @@ export function createGenerationService(
     let currentCall: ProviderCallSettlement | undefined;
     const providerCalls: ProviderCallSettlement[] = [];
     let settlementStarted = false;
+    let finishing = false;
+    let cancelCheckpointTimer: (() => void) | undefined;
+    let checkpointQueue = Promise.resolve();
+    let checkpointFailure: unknown;
+
+    function cancelTimer() {
+      cancelCheckpointTimer?.();
+      cancelCheckpointTimer = undefined;
+    }
+
+    function enqueueCheckpoint(): Promise<void> {
+      cancelTimer();
+      const operation = checkpointQueue.then(async () => {
+        if (finishing || Buffer.byteLength(content) === checkpointBytes) {
+          return;
+        }
+        const snapshot = content;
+        const now = dependencies.now();
+        if (!(await checkpoint(prepared, snapshot, now))) {
+          throw new ModelGatewayError("cancelled");
+        }
+        checkpointAt = now;
+        checkpointBytes = Buffer.byteLength(snapshot);
+      });
+      checkpointQueue = operation.catch((error) => {
+        checkpointFailure = error;
+        localController.abort();
+      });
+      return operation;
+    }
+
+    function deferCheckpoint() {
+      if (
+        finishing ||
+        cancelCheckpointTimer ||
+        Buffer.byteLength(content) === checkpointBytes
+      ) {
+        return;
+      }
+      cancelCheckpointTimer = scheduleCheckpoint(
+        async () => {
+          await enqueueCheckpoint().catch(() => undefined);
+        },
+        Math.max(
+          0,
+          CHECKPOINT_INTERVAL_MS -
+            (dependencies.now().getTime() - checkpointAt.getTime()),
+        ),
+      );
+    }
+
+    async function drainCheckpoints() {
+      finishing = true;
+      cancelTimer();
+      await checkpointQueue;
+    }
 
     try {
       if (signal.aborted) {
@@ -855,10 +967,7 @@ export function createGenerationService(
       })) {
         if (
           signal.aborted ||
-          !(await attemptCanContinue(
-            prepared.attemptId,
-            prepared.leaseOwner,
-          ))
+          !(await attemptCanContinue(prepared.attemptId, prepared.leaseOwner))
         ) {
           localController.abort();
           throw new ModelGatewayError("cancelled");
@@ -869,7 +978,7 @@ export function createGenerationService(
           continue;
         }
         if (event.type === "request-id") {
-          await persistProviderRequestId(prepared.attemptId, event.requestId);
+          await persistProviderRequestId(prepared, event.requestId);
           continue;
         }
         if (event.type === "usage") {
@@ -882,6 +991,15 @@ export function createGenerationService(
             currentCall.inputTokens = event.inputTokens;
             currentCall.outputTokens = event.outputTokens;
           }
+          await database
+            .update(generationAttempt)
+            .set({
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              usageIsEstimated: false,
+              updatedAt: dependencies.now(),
+            })
+            .where(writableAttempt(prepared));
           continue;
         }
 
@@ -896,20 +1014,16 @@ export function createGenerationService(
               firstTokenAt,
               updatedAt: now,
             })
-            .where(eq(generationAttempt.id, prepared.attemptId));
+            .where(writableAttempt(prepared));
         }
         const contentBytes = Buffer.byteLength(content);
         if (
           now.getTime() - checkpointAt.getTime() >= CHECKPOINT_INTERVAL_MS ||
           contentBytes - checkpointBytes >= CHECKPOINT_BYTES
         ) {
-          if (!(await checkpoint(prepared, content, now))) {
-            localController.abort();
-            throw new ModelGatewayError("cancelled");
-          }
-          checkpointAt = now;
-          checkpointBytes = contentBytes;
+          await enqueueCheckpoint();
         }
+        deferCheckpoint();
         yield {
           type: "delta",
           attemptId: prepared.attemptId,
@@ -917,16 +1031,17 @@ export function createGenerationService(
         };
       }
 
+      await drainCheckpoints();
+      if (checkpointFailure) {
+        throw checkpointFailure;
+      }
       if (
-        !(await attemptCanContinue(
-          prepared.attemptId,
-          prepared.leaseOwner,
-        ))
+        !(await attemptCanContinue(prepared.attemptId, prepared.leaseOwner))
       ) {
         localController.abort();
         throw new ModelGatewayError("cancelled");
       }
-      await flushContent(prepared.attemptId, content, firstTokenAt);
+      await flushContent(prepared, content, firstTokenAt);
       usage ??= {
         inputTokens: prepared.estimatedInputTokens,
         outputTokens: dependencies.tokenCounter.withSafetyMargin(
@@ -967,11 +1082,15 @@ export function createGenerationService(
         usage,
       };
     } catch (error) {
+      await drainCheckpoints();
       if (error instanceof SettlementBoundaryError) {
         throw error.cause;
       }
-      await flushContent(prepared.attemptId, content, firstTokenAt);
-      const terminal = gatewayError(error, content.length > 0);
+      await flushContent(prepared, content, firstTokenAt);
+      const terminal = gatewayError(
+        checkpointFailure ?? error,
+        content.length > 0,
+      );
       if (currentCall && currentCall.inputTokens === undefined) {
         currentCall.estimatedOutputTokens =
           dependencies.tokenCounter.withSafetyMargin(
@@ -1003,16 +1122,14 @@ export function createGenerationService(
           )
         : terminal.error;
       yield interrupted
-        ? createInterruptedChatStreamEvent(
-            prepared.attemptId,
-            committedError,
-          )
+        ? createInterruptedChatStreamEvent(prepared.attemptId, committedError)
         : createFailedChatStreamEvent(prepared.attemptId, committedError);
     } finally {
       try {
+        await drainCheckpoints();
         if (!settlementStarted) {
           localController.abort();
-          await flushContent(prepared.attemptId, content, firstTokenAt);
+          await flushContent(prepared, content, firstTokenAt);
           if (currentCall && currentCall.inputTokens === undefined) {
             currentCall.estimatedOutputTokens =
               dependencies.tokenCounter.withSafetyMargin(
@@ -1086,10 +1203,7 @@ export function createGenerationService(
           .where(
             and(
               eq(generationAttempt.id, input.attemptId),
-              eq(
-                generationAttempt.assistantMessageId,
-                conversationMessage.id,
-              ),
+              eq(generationAttempt.assistantMessageId, conversationMessage.id),
               eq(conversation.userId, input.userId),
               inArray(generationAttempt.status, ["pending", "streaming"]),
             ),
@@ -1098,7 +1212,10 @@ export function createGenerationService(
         return row;
       });
       if (!stopped) {
-        throw new ChatDomainError("CHAT_NOT_FOUND", "Active attempt not found.");
+        throw new ChatDomainError(
+          "CHAT_NOT_FOUND",
+          "Active attempt not found.",
+        );
       }
       activeControllers.get(input.attemptId)?.abort();
     },

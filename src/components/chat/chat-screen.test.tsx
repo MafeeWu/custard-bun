@@ -4,6 +4,7 @@ import type { UserConversationDetail } from "@/server/chat/conversation-queries"
 import { ChatScreen } from "./chat-screen";
 
 const action = vi.fn(async () => ({ status: "success" as const }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
 function conversation(
   overrides: Partial<UserConversationDetail> = {},
@@ -82,6 +83,54 @@ function conversation(
   };
 }
 
+test("a server refresh replaces stale local messages with the authoritative recovered transcript", () => {
+  const original = conversation({
+    messages: [
+      {
+        id: "assistant",
+        role: "assistant",
+        kind: "generated",
+        attemptId: "stale",
+        status: "streaming",
+        content: "Partial",
+        errorCode: null,
+        retryable: false,
+      },
+    ],
+  });
+  const props = {
+    archivedConversations: [],
+    restartAction: action,
+    deleteAction: action,
+  };
+  const { rerender } = render(
+    <ChatScreen conversation={original} {...props} />,
+  );
+  expect(screen.getByLabelText("Message")).toBeDisabled();
+  rerender(
+    <ChatScreen
+      conversation={conversation({
+        messages: [
+          {
+            id: "assistant",
+            role: "assistant",
+            kind: "generated",
+            attemptId: "stale",
+            status: "interrupted",
+            content: "Durable partial",
+            errorCode: "CHAT_STREAM_INTERRUPTED",
+            retryable: true,
+          },
+        ],
+      })}
+      {...props}
+    />,
+  );
+  expect(screen.getByText("Durable partial")).toBeVisible();
+  expect(screen.getByLabelText("Message")).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+});
+
 test("renders focused opening, user, streaming, complete, failed, and interrupted states", () => {
   render(
     <ChatScreen
@@ -100,9 +149,13 @@ test("renders focused opening, user, streaming, complete, failed, and interrupte
   expect(screen.getByText("Waiting for a reply…")).toBeVisible();
   expect(screen.getByText("A partial reply")).toBeVisible();
   expect(screen.getByText("A complete reply")).toBeVisible();
-  expect(screen.getByText("The model provider is rate limiting requests.")).toBeVisible();
+  expect(
+    screen.getByText("The model provider is rate limiting requests."),
+  ).toBeVisible();
   expect(screen.getByText("Preserved partial reply")).toBeVisible();
-  expect(screen.getByText("The response stream ended before completion.")).toBeVisible();
+  expect(
+    screen.getByText("The response stream ended before completion."),
+  ).toBeVisible();
   expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
@@ -127,7 +180,9 @@ test("renders archived conversations as read-only with delete and back actions",
       name: "",
     }),
   ).toHaveTextContent("This archived conversation is read-only.");
-  expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Send" }),
+  ).not.toBeInTheDocument();
   expect(
     screen.getByRole("link", { name: "Back to current conversation" }),
   ).toHaveAttribute("href", "/app/conversations/conversation-current");
@@ -157,5 +212,7 @@ test("shows a version notice without exposing model configuration", () => {
       "This conversation keeps the character version it started with. Start over to use the current version.",
     ),
   ).toBeVisible();
-  expect(screen.queryByText(/model id|api key|base url/i)).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/model id|api key|base url/i),
+  ).not.toBeInTheDocument();
 });

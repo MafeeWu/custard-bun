@@ -16,10 +16,8 @@ import {
   userChatQuotaOverride,
 } from "@/server/db/schema";
 import { ChatDomainError } from "./chat-errors";
-import {
-  lockUserChatMutation,
-  type ChatTransaction,
-} from "./chat-locks";
+import { lockUserChatMutation, type ChatTransaction } from "./chat-locks";
+import { createTokenCounter } from "./token-counter";
 
 const GENERATION_LEASE_DURATION_MS = 5 * 60_000;
 
@@ -111,6 +109,48 @@ interface SettlementRequirements {
   leaseExpiredAtOrBefore?: Date;
 }
 
+interface ConversationRecoveryScope {
+  userId: string;
+  conversationId: string;
+}
+
+function expiredLeaseQuery(
+  executor: Database | ChatTransaction,
+  now: Date,
+  scope?: ConversationRecoveryScope,
+) {
+  return executor
+    .select({
+      attemptId: generationLease.attemptId,
+      ownerToken: generationLease.ownerToken,
+    })
+    .from(generationLease)
+    .innerJoin(
+      generationAttempt,
+      eq(generationAttempt.id, generationLease.attemptId),
+    )
+    .innerJoin(
+      conversationMessage,
+      eq(conversationMessage.id, generationAttempt.assistantMessageId),
+    )
+    .innerJoin(
+      conversation,
+      eq(conversation.id, conversationMessage.conversationId),
+    )
+    .where(
+      and(
+        lte(generationLease.expiresAt, now),
+        ...(scope
+          ? [
+              eq(generationLease.userId, scope.userId),
+              eq(conversation.userId, scope.userId),
+              eq(conversation.id, scope.conversationId),
+            ]
+          : []),
+      ),
+    );
+}
+
 export function userPeriod(now: Date): Period {
   const start = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
@@ -127,9 +167,7 @@ export function instancePeriod(now: Date): Period {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   return {
     start,
-    end: new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
-    ),
+    end: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
   };
 }
 
@@ -140,8 +178,7 @@ export function resolveEffectiveLimits(
   return {
     userDailyRequests:
       override?.dailyRequestLimit ?? settings.userDailyRequestLimit,
-    userDailyTokens:
-      override?.dailyTokenLimit ?? settings.userDailyTokenLimit,
+    userDailyTokens: override?.dailyTokenLimit ?? settings.userDailyTokenLimit,
     instanceMonthlyRequests: settings.instanceMonthlyRequestLimit,
     instanceMonthlyTokens: settings.instanceMonthlyTokenBudget,
     maxConcurrentGenerations: settings.maxConcurrentGenerations,
@@ -235,16 +272,11 @@ function requireCapacity(
   limits: { requests: number; tokens: number },
   reservedTokens: number,
   codes: {
-    requests:
-      | "CHAT_USER_REQUEST_QUOTA"
-      | "CHAT_INSTANCE_REQUEST_BUDGET";
+    requests: "CHAT_USER_REQUEST_QUOTA" | "CHAT_INSTANCE_REQUEST_BUDGET";
     tokens: "CHAT_USER_TOKEN_QUOTA" | "CHAT_INSTANCE_TOKEN_BUDGET";
   },
 ) {
-  if (
-    bucket.consumedRequests + bucket.reservedRequests + 1 >
-    limits.requests
-  ) {
+  if (bucket.consumedRequests + bucket.reservedRequests + 1 > limits.requests) {
     throw new ChatDomainError(codes.requests, "Request quota exhausted.", {
       retryable: true,
       resetAt: bucket.periodEnd,
@@ -350,13 +382,12 @@ async function settleLockedGeneration(
     return undefined;
   }
 
-  const leaseQuery = transaction
+  const [lease] = await transaction
     .select()
     .from(generationLease)
-    .where(eq(generationLease.attemptId, input.attemptId));
-  const [lease] = requirements?.leaseExpiredAtOrBefore
-    ? await leaseQuery.for("update", { skipLocked: true }).limit(1)
-    : await leaseQuery.for("update").limit(1);
+    .where(eq(generationLease.attemptId, input.attemptId))
+    .for("update")
+    .limit(1);
   if (requirements?.leaseExpiredAtOrBefore) {
     if (
       !lease ||
@@ -402,15 +433,44 @@ async function settleLockedGeneration(
       ? (input.errorCategory ?? null)
       : "CHAT_STREAM_INTERRUPTED";
   const committedRetryable =
-    committedOutcome === input.outcome
-      ? (input.retryable ?? null)
-      : true;
+    committedOutcome === input.outcome ? (input.retryable ?? null) : true;
 
-  const calls = normalizeSettlementCalls(input.providerCalls, {
+  let fallbackOutputTokens = attempt.outputTokens ?? 0;
+  if (
+    input.providerCalls.length === 0 &&
+    attempt.usageIsEstimated !== false &&
+    attempt.content
+  ) {
+    const counter = createTokenCounter(attempt.modelId);
+    try {
+      fallbackOutputTokens = Math.max(
+        fallbackOutputTokens,
+        counter.withSafetyMargin(counter.estimateText(attempt.content)),
+      );
+    } finally {
+      counter.free();
+    }
+  }
+  const durableProviderUsage =
+    input.providerCalls.length === 0 &&
+    attempt.usageIsEstimated === false &&
+    attempt.inputTokens !== null &&
+    attempt.outputTokens !== null
+      ? [
+          {
+            callNumber: 1,
+            modelId: attempt.modelId,
+            inputTokens: attempt.inputTokens,
+            outputTokens: attempt.outputTokens,
+            estimatedInputTokens: attempt.inputTokens,
+            estimatedOutputTokens: attempt.outputTokens,
+          },
+        ]
+      : input.providerCalls;
+  const calls = normalizeSettlementCalls(durableProviderUsage, {
     modelId: attempt.modelId,
-    estimatedInputTokens:
-      attempt.inputTokens ?? reservation.reservedTokens,
-    estimatedOutputTokens: attempt.outputTokens ?? 0,
+    estimatedInputTokens: attempt.inputTokens ?? reservation.reservedTokens,
+    estimatedOutputTokens: fallbackOutputTokens,
   });
   const settledInputTokens = calls.reduce(
     (total, call) => total + call.inputTokens,
@@ -507,14 +567,9 @@ async function settleLockedGeneration(
 async function reconcileExpiredWithinAdmission(
   transaction: ChatTransaction,
   now: Date,
+  scope?: ConversationRecoveryScope,
 ): Promise<void> {
-  const expired = await transaction
-    .select({
-      attemptId: generationLease.attemptId,
-      ownerToken: generationLease.ownerToken,
-    })
-    .from(generationLease)
-    .where(lte(generationLease.expiresAt, now));
+  const expired = await expiredLeaseQuery(transaction, now, scope);
 
   for (const lease of expired) {
     await settleLockedGeneration(
@@ -534,6 +589,15 @@ async function reconcileExpiredWithinAdmission(
       },
     );
   }
+}
+
+export async function reconcileExpiredConversationInTransaction(
+  transaction: ChatTransaction,
+  input: ConversationRecoveryScope,
+  now: Date,
+): Promise<void> {
+  await lockUserChatMutation(transaction, input.userId);
+  await reconcileExpiredWithinAdmission(transaction, now, input);
 }
 
 export async function admitGeneration(
@@ -583,8 +647,7 @@ export async function admitGeneration(
     .where(eq(userChatQuotaOverride.userId, input.userId))
     .limit(1);
   const effectiveLimits = resolveEffectiveLimits(settings, override);
-  const reservedTokens =
-    input.estimatedInputTokens + input.maxOutputTokens;
+  const reservedTokens = input.estimatedInputTokens + input.maxOutputTokens;
   let instanceBucket = await lockBucket(transaction, {
     scope: "instance",
     period: instancePeriod(input.now),
@@ -595,14 +658,12 @@ export async function admitGeneration(
     period: userPeriod(input.now),
   });
 
+  await reconcileExpiredWithinAdmission(transaction, input.now);
   const [existingUserLease] = await transaction
     .select()
     .from(generationLease)
     .where(eq(generationLease.userId, input.userId))
-    .for("update")
     .limit(1);
-
-  await reconcileExpiredWithinAdmission(transaction, input.now);
 
   instanceBucket =
     (await lockExistingBucket(transaction, instanceBucket.id)) ??
@@ -791,14 +852,9 @@ export async function settleGeneration(
 export async function reconcileExpiredLeases(
   database: Database,
   now: Date,
+  scope?: ConversationRecoveryScope,
 ): Promise<number> {
-  const expired = await database
-    .select({
-      attemptId: generationLease.attemptId,
-      ownerToken: generationLease.ownerToken,
-    })
-    .from(generationLease)
-    .where(lte(generationLease.expiresAt, now));
+  const expired = await expiredLeaseQuery(database, now, scope);
   let reconciled = 0;
 
   for (const lease of expired) {
@@ -809,6 +865,13 @@ export async function reconcileExpiredLeases(
         .where(eq(quotaReservation.attemptId, lease.attemptId))
         .limit(1);
       if (!preview || preview.status !== "active") {
+        return undefined;
+      }
+      if (
+        scope &&
+        (preview.userId !== scope.userId ||
+          preview.conversationId !== scope.conversationId)
+      ) {
         return undefined;
       }
       await lockUserChatMutation(transaction, preview.userId);

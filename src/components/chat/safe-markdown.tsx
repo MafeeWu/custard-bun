@@ -21,21 +21,23 @@ function safeHref(href: string | undefined): string | undefined {
   }
 }
 
-function SafeLink({
-  href,
-  children,
-  ...props
-}: ComponentPropsWithoutRef<"a">) {
+function SafeLink({ href, children, ...props }: ComponentPropsWithoutRef<"a">) {
   const safe = safeHref(href);
-  const external = safe?.startsWith("http://") || safe?.startsWith("https://");
+  const protocol = safe
+    ? new URL(safe, "https://local.invalid").protocol
+    : undefined;
+  const external = Boolean(
+    safe &&
+    !safe.startsWith("/") &&
+    !safe.startsWith("#") &&
+    (protocol === "http:" || protocol === "https:"),
+  );
 
   return (
     <a
       {...props}
       {...(safe ? { href: safe } : {})}
-      {...(external
-        ? { rel: "noopener noreferrer", target: "_blank" }
-        : {})}
+      {...(external ? { rel: "noopener noreferrer", target: "_blank" } : {})}
     >
       {children}
     </a>

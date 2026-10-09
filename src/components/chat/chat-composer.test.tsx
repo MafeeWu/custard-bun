@@ -65,8 +65,10 @@ test("parses NDJSON split across chunks and reports only parsed terminal events"
 
 function ComposerHarness({
   initialMessages = [],
+  refreshedMessages,
 }: {
   initialMessages?: ChatClientMessage[];
+  refreshedMessages?: ChatClientMessage[];
 }) {
   const [messages, setMessages] = useState(initialMessages);
   return (
@@ -76,10 +78,201 @@ function ComposerHarness({
         conversationId="conversation-1"
         messages={messages}
         onMessagesChange={setMessages}
+        onAuthoritativeRefresh={() => {
+          if (refreshedMessages) {
+            setMessages(refreshedMessages);
+          }
+        }}
       />
     </>
   );
 }
+
+test.each([
+  "network",
+  "empty stream",
+  "proxy error",
+  "untyped error",
+  "pre-start read",
+] as const)(
+  "retains the identical submission body through an ambiguous %s failure and refreshes terminal replay",
+  async (failure) => {
+    const user = userEvent.setup();
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("30000000-0000-4000-8000-000000000003")
+      .mockReturnValueOnce("40000000-0000-4000-8000-000000000004");
+    const bodies: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      bodies.push(String(init?.body));
+      if (bodies.length === 1) {
+        if (failure === "network") {
+          throw new TypeError("connection lost after admission");
+        }
+        if (failure === "untyped error") {
+          return Response.json(
+            { error: { message: "proxy failure" } },
+            { status: 502 },
+          );
+        }
+        if (failure === "pre-start read") {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new TypeError("lost first event"));
+              },
+            }),
+          );
+        }
+        return failure === "empty stream"
+          ? responseFromChunks([])
+          : new Response("proxy unavailable", { status: 502 });
+      }
+      return responseFromChunks([
+        `{"type":"completed","attemptId":"${attemptId}","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n`,
+      ]);
+    });
+    render(
+      <ComposerHarness
+        refreshedMessages={[
+          {
+            id: "persisted-user",
+            role: "user",
+            kind: "user",
+            content: "Keep my draft",
+          },
+          {
+            id: "persisted-assistant",
+            role: "assistant",
+            kind: "generated",
+            attemptId,
+            status: "complete",
+            content: "Authoritative reply",
+            errorCode: null,
+            retryable: false,
+          },
+        ]}
+      />,
+    );
+    await user.type(screen.getByLabelText("Message"), "Keep my draft");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+    expect(screen.getByLabelText("Message")).toHaveValue("Keep my draft");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Authoritative reply")).toBeVisible();
+    expect(screen.getAllByText("Keep my draft")).toHaveLength(1);
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+  },
+);
+
+test("a changed draft and an authoritatively rejected submission each receive a new idempotency key", async () => {
+  const user = userEvent.setup();
+  const keys = [
+    "30000000-0000-4000-8000-000000000003",
+    "40000000-0000-4000-8000-000000000004",
+    "50000000-0000-4000-8000-000000000005",
+  ] as const;
+  let index = 0;
+  vi.spyOn(crypto, "randomUUID").mockImplementation(() => keys[index++]!);
+  const bodies: Array<{ clientRequestId: string; content: string }> = [];
+  vi.mocked(fetch).mockImplementation(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    if (bodies.length === 1) {
+      throw new TypeError("network unavailable");
+    }
+    return Response.json(
+      {
+        error: {
+          code: "CHAT_USER_REQUEST_QUOTA",
+          message: "Quota reached",
+          retryable: true,
+        },
+      },
+      { status: 429 },
+    );
+  });
+
+  render(<ComposerHarness />);
+  await user.type(screen.getByLabelText("Message"), "Old draft");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+  await user.clear(screen.getByLabelText("Message"));
+  await user.type(screen.getByLabelText("Message"), "Changed draft");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(await screen.findByText("Quota reached")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(bodies).toHaveLength(3));
+  expect(bodies.map((body) => body.clientRequestId)).toEqual(keys);
+  expect(bodies.map((body) => body.content)).toEqual([
+    "Old draft",
+    "Changed draft",
+    "Changed draft",
+  ]);
+});
+
+test("an ambiguous manual retry retains its body and terminal replay refreshes the replacement bubble", async () => {
+  const user = userEvent.setup();
+  let key = 0;
+  vi.spyOn(crypto, "randomUUID").mockImplementation(() =>
+    key++ === 0
+      ? "30000000-0000-4000-8000-000000000003"
+      : "40000000-0000-4000-8000-000000000004",
+  );
+  const bodies: string[] = [];
+  vi.mocked(fetch).mockImplementation(async (_url, init) => {
+    bodies.push(String(init?.body));
+    if (bodies.length === 1) {
+      throw new TypeError("retry response lost");
+    }
+    return responseFromChunks([
+      `{"type":"completed","attemptId":"${replacementAttemptId}","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n`,
+    ]);
+  });
+  render(
+    <ComposerHarness
+      initialMessages={[
+        {
+          id: "assistant",
+          role: "assistant",
+          kind: "generated",
+          attemptId,
+          status: "interrupted",
+          content: "Old partial",
+          errorCode: "CHAT_STREAM_INTERRUPTED",
+          retryable: true,
+        },
+      ]}
+      refreshedMessages={[
+        {
+          id: "assistant",
+          role: "assistant",
+          kind: "generated",
+          attemptId: replacementAttemptId,
+          status: "complete",
+          content: "Recovered authoritative reply",
+          errorCode: null,
+          retryable: false,
+        },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Unable to reach the chat service.",
+  );
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(
+    await screen.findByText("Recovered authoritative reply"),
+  ).toBeVisible();
+  expect(screen.queryByText("Old partial")).not.toBeInTheDocument();
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toBe(bodies[0]);
+  expect(JSON.parse(bodies[0]!)).toEqual({
+    clientRequestId: "30000000-0000-4000-8000-000000000003",
+    retryAttemptId: attemptId,
+  });
+});
 
 test("changes send to stop, calls the stop endpoint before aborting, and preserves partial text", async () => {
   const user = userEvent.setup();

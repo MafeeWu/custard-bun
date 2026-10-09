@@ -27,6 +27,40 @@ function expectProtocolError(error: unknown): boolean {
 }
 
 describe("parseOpenAiStream", () => {
+  test.each(["\n", "\r\n", "\r"])(
+    "returns at the complete DONE event with %j separators without requesting another upstream chunk",
+    async (separator) => {
+      let requestedAfterDone = false;
+      let cleanedUp = false;
+      async function* openResponse() {
+        try {
+          yield encoder.encode(
+            `data: {"choices":[{"delta":{"content":"Hello"}}]}${separator}${separator}data: [DONE]${separator}${separator}`,
+          );
+          requestedAfterDone = true;
+          throw new Error("The upstream response is still open after DONE");
+        } finally {
+          cleanedUp = true;
+        }
+      }
+      await expect(collect(parseOpenAiStream(openResponse()))).resolves.toEqual(
+        [{ type: "delta", text: "Hello" }],
+      );
+      expect(requestedAfterDone).toBe(false);
+      expect(cleanedUp).toBe(true);
+    },
+  );
+
+  test("handles CRLF delimiters fragmented between every byte without dispatching an extra frame", async () => {
+    const payload = encoder.encode(
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\r\n\r\ndata: [DONE]\r\n\r\n',
+    );
+    const parts = Array.from(payload, (byte) => new Uint8Array([byte]));
+    await expect(
+      collect(parseOpenAiStream(chunksFrom(parts))),
+    ).resolves.toEqual([{ type: "delta", text: "Hello" }]);
+  });
+
   test.each([
     ["LF", "\n"],
     ["CRLF", "\r\n"],

@@ -1,5 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { and, eq, max, sql } from "drizzle-orm";
+import {
+  conversation,
+  conversationMessage,
+  generationAttempt,
+  generationLease,
+  quotaBucket,
+  quotaReservation,
+  usageLedger,
+} from "../../src/server/db/chat-schema";
+import { createAdminTestDatabase } from "./support/admin";
+import { e2eEnvironment } from "./support/environment";
 import {
   fakeModelRequests,
   registerAndSignIn,
@@ -8,7 +20,193 @@ import {
   startCharacterConversation,
 } from "./support/chat";
 
-test("streams, interrupts, retries, stops, restores and deletes conversations safely", async ({
+async function assertComposerReplayAndCrashRecovery(page: Page) {
+  const database = createAdminTestDatabase(e2eEnvironment.DATABASE_URL!);
+  try {
+    await resetFakeModel();
+    const conversationId = await startCharacterConversation(
+      page,
+      "calm-listener",
+    );
+    const bodies: Array<{ clientRequestId: string; content: string }> = [];
+    await page.route("**/api/chat/conversations/*/messages", async (route) => {
+      bodies.push(route.request().postDataJSON());
+      if (bodies.length === 1) {
+        const accepted = await route.fetch();
+        expect(accepted.status()).toBe(200);
+        expect(await accepted.text()).toContain('"type":"completed"');
+        await route.abort("failed");
+      } else {
+        await route.continue();
+      }
+    });
+    const content = "Composer ambiguous transport [stream]";
+    await sendChatMessage(page, content);
+    await expect(
+      page.getByRole("region", { name: "Conversation" }).getByRole("alert"),
+    ).toContainText("Unable to reach the chat service.");
+    await expect(page.getByLabel("Message", { exact: true })).toHaveValue(
+      content,
+    );
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(
+      page.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    await expect(page.getByText(content, { exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Message", { exact: true })).toHaveValue("");
+    expect(
+      (await fakeModelRequests()).filter((request) =>
+        request.body.messages?.some((message) => message.content === content),
+      ),
+    ).toHaveLength(1);
+    const firstUsage = await database
+      .select()
+      .from(usageLedger)
+      .where(eq(usageLedger.conversationId, conversationId));
+    expect(firstUsage).toHaveLength(1);
+    expect(firstUsage[0]?.userRequestUnits).toBe(1);
+
+    await sendChatMessage(page, "Genuinely new draft [stream]");
+    await expect(
+      page.getByText("Genuinely new draft [stream]", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Message", { exact: true })).toBeDisabled();
+    await expect(
+      page.locator('li[data-status="complete"]').last(),
+    ).toContainText("Hello there");
+    await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
+    expect(bodies[2]?.clientRequestId).not.toBe(bodies[0]?.clientRequestId);
+
+    const crashedAttemptId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const userMessageId = randomUUID();
+    const ownerToken = randomUUID();
+    await database.transaction(async (transaction) => {
+      const [owned] = await transaction
+        .select()
+        .from(conversation)
+        .where(eq(conversation.id, conversationId));
+      const [reservation] = await transaction
+        .select()
+        .from(quotaReservation)
+        .where(eq(quotaReservation.conversationId, conversationId))
+        .limit(1);
+      const [{ sequence }] = await transaction
+        .select({ sequence: max(conversationMessage.sequence) })
+        .from(conversationMessage)
+        .where(eq(conversationMessage.conversationId, conversationId));
+      await transaction.insert(conversationMessage).values([
+        {
+          id: userMessageId,
+          conversationId,
+          sequence: Number(sequence) + 1,
+          role: "user",
+          kind: "user",
+          content: "Crashed request",
+          clientRequestId: randomUUID(),
+        },
+        {
+          id: assistantMessageId,
+          conversationId,
+          sequence: Number(sequence) + 2,
+          role: "assistant",
+          kind: "generated",
+          inReplyTo: userMessageId,
+        },
+      ]);
+      await transaction.insert(generationAttempt).values({
+        id: crashedAttemptId,
+        userId: owned!.userId,
+        assistantMessageId,
+        attemptNumber: 1,
+        modelId: "e2e-chat-model",
+        status: "streaming",
+        content: "Hello",
+        inputTokens: 10,
+        outputTokens: 0,
+        usageIsEstimated: true,
+        leaseOwner: ownerToken,
+        leaseExpiresAt: new Date("2000-01-01T00:00:00Z"),
+      });
+      await transaction.insert(quotaReservation).values({
+        id: randomUUID(),
+        userId: owned!.userId,
+        conversationId,
+        attemptId: crashedAttemptId,
+        userBucketId: reservation!.userBucketId,
+        instanceBucketId: reservation!.instanceBucketId,
+        reservedTokens: 200,
+      });
+      await transaction.insert(generationLease).values({
+        attemptId: crashedAttemptId,
+        userId: owned!.userId,
+        ownerToken,
+        expiresAt: new Date("2000-01-01T00:00:00Z"),
+      });
+      for (const id of [
+        reservation!.userBucketId,
+        reservation!.instanceBucketId,
+      ]) {
+        await transaction
+          .update(quotaBucket)
+          .set({
+            reservedRequests: sql`${quotaBucket.reservedRequests} + 1`,
+            reservedTokens: sql`${quotaBucket.reservedTokens} + 200`,
+          })
+          .where(eq(quotaBucket.id, id));
+      }
+    });
+    await page.reload();
+    const crashedReply = page
+      .getByRole("listitem")
+      .filter({ hasText: "Crashed request" })
+      .locator("xpath=following-sibling::li[1]");
+    await expect(crashedReply).toHaveAttribute("data-status", "interrupted");
+    await expect(crashedReply).toContainText("Hello");
+    await expect(page.getByLabel("Message", { exact: true })).toBeEnabled();
+    await page.reload();
+    expect(
+      await database
+        .select()
+        .from(usageLedger)
+        .where(eq(usageLedger.attemptId, crashedAttemptId)),
+    ).toMatchObject([
+      {
+        inputTokens: 10,
+        outputTokens: 2,
+        userRequestUnits: 1,
+        outcome: "interrupted",
+      },
+    ]);
+    expect(
+      await database
+        .select()
+        .from(generationLease)
+        .where(eq(generationLease.attemptId, crashedAttemptId)),
+    ).toHaveLength(0);
+    expect(
+      await database
+        .select({
+          reservedRequests: quotaBucket.reservedRequests,
+          reservedTokens: quotaBucket.reservedTokens,
+        })
+        .from(quotaBucket)
+        .innerJoin(
+          quotaReservation,
+          and(
+            eq(quotaReservation.attemptId, crashedAttemptId),
+            eq(quotaBucket.id, quotaReservation.userBucketId),
+          ),
+        ),
+    ).toMatchObject([{ reservedRequests: 0, reservedTokens: 0 }]);
+  } finally {
+    await database.$client.end();
+  }
+}
+
+test("streams, interrupts, retries, stops, restores and deletes conversations safely, with composer replay and crash recovery", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -188,4 +386,5 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   await expect(
     page.locator(`a[href="${new URL(newConversationUrl).pathname}"]`),
   ).toHaveCount(0);
+  await assertComposerReplayAndCrashRecovery(page);
 });

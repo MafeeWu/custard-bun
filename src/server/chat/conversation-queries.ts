@@ -8,6 +8,7 @@ import {
   type GenerationStatus,
 } from "@/server/db/chat-schema";
 import { character, characterVersion } from "@/server/db/character-schema";
+import { reconcileExpiredLeases } from "./quota-service";
 
 export interface ConversationCharacterSummary {
   id: string;
@@ -111,6 +112,7 @@ export async function getConversationForUser(
   if (!selectedConversation) {
     return null;
   }
+  await reconcileExpiredLeases(database, new Date(), input);
 
   const rows = await database
     .select({
