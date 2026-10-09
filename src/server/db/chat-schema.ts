@@ -177,10 +177,13 @@ export const generationAttempt = pgTable(
   "generation_attempts",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
     assistantMessageId: text("assistant_message_id")
       .notNull()
       .references(() => conversationMessage.id, { onDelete: "cascade" }),
-    clientRequestId: text("client_request_id").unique(),
+    clientRequestId: text("client_request_id"),
     attemptNumber: integer("attempt_number").notNull(),
     isCurrent: boolean("is_current").notNull().default(true),
     status: generationStatusEnum("status").notNull().default("pending"),
@@ -212,6 +215,9 @@ export const generationAttempt = pgTable(
       .notNull(),
   },
   (table) => [
+    uniqueIndex("generation_attempts_user_client_request_unique")
+      .on(table.userId, table.clientRequestId)
+      .where(sql`${table.clientRequestId} IS NOT NULL`),
     unique("generation_attempts_message_attempt_unique").on(
       table.assistantMessageId,
       table.attemptNumber,

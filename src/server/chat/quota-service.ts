@@ -78,6 +78,8 @@ export interface GenerationSettlement {
   retryable?: boolean | null;
 }
 
+export type GenerationSettlementOutcome = GenerationSettlement["outcome"];
+
 interface Period {
   start: Date;
   end: Date;
@@ -299,18 +301,20 @@ async function settleLockedGeneration(
   input: GenerationSettlement,
   knownReservation?: typeof quotaReservation.$inferSelect,
   requirements?: SettlementRequirements,
-): Promise<boolean> {
-  const reservationPreview =
-    knownReservation ??
-    (
-      await transaction
-        .select()
-        .from(quotaReservation)
-        .where(eq(quotaReservation.attemptId, input.attemptId))
-        .limit(1)
-    )[0];
+): Promise<GenerationSettlementOutcome | undefined> {
+  const reservationPreview = (
+    await transaction
+      .select()
+      .from(quotaReservation)
+      .where(
+        knownReservation
+          ? eq(quotaReservation.id, knownReservation.id)
+          : eq(quotaReservation.attemptId, input.attemptId),
+      )
+      .limit(1)
+  )[0];
   if (!reservationPreview || reservationPreview.status !== "active") {
-    return false;
+    return undefined;
   }
 
   const instanceBucket = await lockExistingBucket(
@@ -332,7 +336,7 @@ async function settleLockedGeneration(
     .for("update")
     .limit(1);
   if (!reservation || reservation.status !== "active") {
-    return false;
+    return undefined;
   }
 
   const [attempt] = await transaction
@@ -342,7 +346,7 @@ async function settleLockedGeneration(
     .for("update")
     .limit(1);
   if (!attempt) {
-    return false;
+    return undefined;
   }
 
   const leaseQuery = transaction
@@ -358,7 +362,7 @@ async function settleLockedGeneration(
       lease.ownerToken !== input.leaseOwner ||
       lease.expiresAt > requirements.leaseExpiredAtOrBefore
     ) {
-      return false;
+      return undefined;
     }
   } else if (lease && lease.ownerToken !== input.leaseOwner) {
     throw new ChatDomainError(
@@ -366,6 +370,31 @@ async function settleLockedGeneration(
       "Generation lease owner does not match.",
     );
   }
+  if (
+    attempt.status === "complete" ||
+    attempt.status === "failed" ||
+    attempt.status === "interrupted"
+  ) {
+    return attempt.status;
+  }
+  const committedOutcome =
+    attempt.cancelRequestedAt && input.outcome !== "interrupted"
+      ? "interrupted"
+      : input.outcome;
+  if (
+    input.outcome === "complete" &&
+    (!lease || lease.ownerToken !== input.leaseOwner)
+  ) {
+    return undefined;
+  }
+  const committedErrorCategory =
+    committedOutcome === input.outcome
+      ? (input.errorCategory ?? null)
+      : "CHAT_STREAM_INTERRUPTED";
+  const committedRetryable =
+    committedOutcome === input.outcome
+      ? (input.retryable ?? null)
+      : true;
 
   const calls = normalizeSettlementCalls(input.providerCalls, {
     modelId: attempt.modelId,
@@ -415,8 +444,8 @@ async function settleLockedGeneration(
       outputTokens: call.outputTokens,
       usageIsEstimated: call.estimated,
       modelId: call.modelId,
-      outcome: input.outcome,
-      errorCategory: call.errorCategory ?? input.errorCategory ?? null,
+      outcome: committedOutcome,
+      errorCategory: call.errorCategory ?? committedErrorCategory,
       automaticRetryCount: call.automaticRetryCount,
       latencyMs: call.latencyMs,
       createdAt: input.now,
@@ -448,12 +477,12 @@ async function settleLockedGeneration(
   await transaction
     .update(generationAttempt)
     .set({
-      status: input.outcome,
+      status: committedOutcome,
       inputTokens: settledInputTokens,
       outputTokens: settledOutputTokens,
       usageIsEstimated,
-      errorCategory: input.errorCategory ?? null,
-      retryable: input.retryable ?? null,
+      errorCategory: committedErrorCategory,
+      retryable: committedRetryable,
       providerRetryCount,
       leaseOwner: null,
       leaseExpiresAt: null,
@@ -462,7 +491,7 @@ async function settleLockedGeneration(
     })
     .where(eq(generationAttempt.id, input.attemptId));
 
-  return true;
+  return committedOutcome;
 }
 
 async function reconcileExpiredWithinAdmission(
@@ -733,19 +762,19 @@ export async function admitGeneration(
 export async function settleGeneration(
   database: Database,
   input: GenerationSettlement,
-): Promise<void> {
-  await database.transaction(async (transaction) => {
+): Promise<GenerationSettlementOutcome | undefined> {
+  return database.transaction(async (transaction) => {
     const [preview] = await transaction
       .select()
       .from(quotaReservation)
       .where(eq(quotaReservation.attemptId, input.attemptId))
       .limit(1);
     if (!preview || preview.status !== "active") {
-      return;
+      return undefined;
     }
 
     await lockUserChatMutation(transaction, preview.userId);
-    await settleLockedGeneration(transaction, input, preview);
+    return settleLockedGeneration(transaction, input, preview);
   });
 }
 
@@ -770,7 +799,7 @@ export async function reconcileExpiredLeases(
         .where(eq(quotaReservation.attemptId, lease.attemptId))
         .limit(1);
       if (!preview || preview.status !== "active") {
-        return false;
+        return undefined;
       }
       await lockUserChatMutation(transaction, preview.userId);
       return settleLockedGeneration(
@@ -790,7 +819,7 @@ export async function reconcileExpiredLeases(
         },
       );
     });
-    if (didSettle) {
+    if (didSettle !== undefined) {
       reconciled += 1;
     }
   }

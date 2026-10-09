@@ -195,6 +195,7 @@ async function insertPendingAttempt(input: {
   ]);
   await database.insert(generationAttempt).values({
     id: attemptId,
+    userId: input.userId,
     assistantMessageId,
     attemptNumber: 1,
     status: "pending",
@@ -644,6 +645,7 @@ describe("transactional admission", () => {
         ]);
         await transaction.insert(generationAttempt).values({
           id: randomUUID(),
+          userId,
           assistantMessageId,
           attemptNumber: 1,
           modelId: "test-model",

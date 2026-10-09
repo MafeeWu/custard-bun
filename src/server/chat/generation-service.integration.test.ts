@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { characterContentDigest } from "@/server/characters/content-digest";
@@ -178,9 +179,10 @@ function serviceWith(
   options: {
     now?: () => Date;
     logger?: { error(message: string, metadata?: Record<string, unknown>): void };
+    database?: ReturnType<typeof createDatabase>;
   } = {},
 ): GenerationService {
-  return createGenerationService(database, {
+  return createGenerationService(options.database ?? database, {
     gateway,
     tokenCounter,
     now: options.now ?? (() => baseNow),
@@ -196,6 +198,30 @@ function serviceWith(
     },
     logger: options.logger ?? { error: vi.fn() },
   });
+}
+
+async function waitForApplicationLockWait(
+  applicationName: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await database.$client.query<{
+      wait_event_type: string | null;
+    }>(
+      `
+        SELECT wait_event_type
+        FROM pg_stat_activity
+        WHERE application_name = $1
+          AND state = 'active'
+      `,
+      [applicationName],
+    );
+    if (result.rows.some((row) => row.wait_event_type === "Lock")) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`${applicationName} did not wait on a PostgreSQL lock`);
 }
 
 async function collect(
@@ -373,6 +399,39 @@ describe("GenerationService", () => {
       },
     });
     await collect(first);
+  });
+
+  test("accepts the same new-message idempotency key for different users", async () => {
+    const firstUserId = await insertUser();
+    const secondUserId = await insertUser();
+    const firstConversationId = await insertConversation(firstUserId);
+    const secondConversationId = await insertConversation(secondUserId);
+    const clientRequestId = randomUUID();
+    const gateway = successfulGateway();
+    const service = serviceWith(gateway);
+
+    const first = await collect(
+      service.startNewMessage({
+        userId: firstUserId,
+        conversationId: firstConversationId,
+        clientRequestId,
+        content: "First",
+        signal: new AbortController().signal,
+      }),
+    );
+    const second = await collect(
+      service.startNewMessage({
+        userId: secondUserId,
+        conversationId: secondConversationId,
+        clientRequestId,
+        content: "Second",
+        signal: new AbortController().signal,
+      }),
+    );
+
+    expect(first.at(-1)).toMatchObject({ type: "completed" });
+    expect(second.at(-1)).toMatchObject({ type: "completed" });
+    expect(gateway.inputs).toHaveLength(2);
   });
 
   test("replays a persisted terminal event without contacting the provider twice", async () => {
@@ -595,6 +654,134 @@ describe("GenerationService", () => {
     expect(attempt!.status).toBe("interrupted");
   });
 
+  test("stop wins a deterministic lock race with completion and prevents a completed event", async () => {
+    const userId = await insertUser();
+    const conversationId = await insertConversation(userId);
+    let finishProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      finishProvider = resolve;
+    });
+    const gateway = new FakeGateway(async function* () {
+      yield { type: "provider-call", callNumber: 1 };
+      yield { type: "delta", text: "partial" };
+      await providerGate;
+    });
+    const completingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "generation-completion-race",
+      max: 1,
+    });
+    const stoppingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "generation-stop-race",
+      max: 1,
+    });
+    const stream = serviceWith(gateway, {
+      database: completingDatabase,
+    }).startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "Hi",
+      signal: new AbortController().signal,
+    });
+    const started = await stream.next();
+    await stream.next();
+    const locker = await database.$client.connect();
+
+    try {
+      await locker.query("BEGIN");
+      await locker.query(
+        "SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE",
+      );
+      const stopping = serviceWith(successfulGateway(), {
+        database: stoppingDatabase,
+      }).stop({
+        userId,
+        attemptId: started.value!.attemptId,
+      });
+      await waitForApplicationLockWait("generation-stop-race");
+
+      finishProvider();
+      const completing = stream.next();
+      await waitForApplicationLockWait("generation-completion-race");
+      await locker.query("COMMIT");
+
+      await stopping;
+      const terminal = await completing;
+      expect(terminal.value).toMatchObject({
+        type: "interrupted",
+        code: "CHAT_STREAM_INTERRUPTED",
+      });
+      expect(terminal.value).not.toMatchObject({ type: "completed" });
+      const [attempt] = await database
+        .select()
+        .from(generationAttempt)
+        .where(eq(generationAttempt.id, started.value!.attemptId));
+      expect(attempt).toMatchObject({
+        status: "interrupted",
+        cancelRequestedAt: expect.any(Date),
+      });
+    } finally {
+      finishProvider();
+      await locker.query("ROLLBACK").catch(() => undefined);
+      locker.release();
+      await stream.return().catch(() => undefined);
+      await completingDatabase.$client.end();
+      await stoppingDatabase.$client.end();
+    }
+  });
+
+  test("cancellation before a retry provider-call event prevents that call from continuing", async () => {
+    const userId = await insertUser();
+    const conversationId = await insertConversation(userId);
+    let retryProviderCall!: () => void;
+    let retryProviderCallContinued = false;
+    let reachedRetryGate!: () => void;
+    const retryGate = new Promise<void>((resolve) => {
+      retryProviderCall = resolve;
+    });
+    const atRetryGate = new Promise<void>((resolve) => {
+      reachedRetryGate = resolve;
+    });
+    const gateway = new FakeGateway(async function* (input) {
+      yield { type: "provider-call", callNumber: 1 };
+      yield { type: "request-id", requestId: "failed-call" };
+      reachedRetryGate();
+      await retryGate;
+      yield { type: "provider-call", callNumber: 2 };
+      retryProviderCallContinued = true;
+      if (!input.signal.aborted) {
+        yield { type: "request-id", requestId: "must-not-persist" };
+      }
+    });
+    const firstProcess = serviceWith(gateway);
+    const secondProcess = serviceWith(successfulGateway());
+    const stream = firstProcess.startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "Hi",
+      signal: new AbortController().signal,
+    });
+    const started = await stream.next();
+    const terminalPromise = stream.next();
+    await atRetryGate;
+
+    await secondProcess.stop({
+      userId,
+      attemptId: started.value!.attemptId,
+    });
+    retryProviderCall();
+    const terminal = await terminalPromise;
+
+    expect(terminal.value).toMatchObject({ type: "interrupted" });
+    expect(retryProviderCallContinued).toBe(false);
+    const [attempt] = await database
+      .select()
+      .from(generationAttempt)
+      .where(eq(generationAttempt.id, started.value!.attemptId));
+    expect(attempt!.providerRequestId).toBe("failed-call");
+  });
+
   test("records the gateway's automatic retry and completes after the second provider call", async () => {
     const userId = await insertUser();
     const conversationId = await insertConversation(userId);
@@ -763,6 +950,57 @@ describe("GenerationService", () => {
     ).rejects.toMatchObject({ code: "CHAT_NOT_FOUND" });
   });
 
+  test("accepts the same retry idempotency key for different users", async () => {
+    const firstUserId = await insertUser();
+    const secondUserId = await insertUser();
+    const firstConversationId = await insertConversation(firstUserId);
+    const secondConversationId = await insertConversation(secondUserId);
+    const failedAttemptIds: string[] = [];
+    for (const [userId, conversationId] of [
+      [firstUserId, firstConversationId],
+      [secondUserId, secondConversationId],
+    ] as const) {
+      const events = await collect(
+        serviceWith(
+          new FakeGateway(async function* () {
+            yield { type: "provider-call", callNumber: 1 };
+            throw new ModelGatewayError("authentication");
+          }),
+        ).startNewMessage({
+          userId,
+          conversationId,
+          clientRequestId: randomUUID(),
+          content: "Hi",
+          signal: new AbortController().signal,
+        }),
+      );
+      failedAttemptIds.push((events[0] as { attemptId: string }).attemptId);
+    }
+    const retryRequestId = randomUUID();
+
+    const firstRetry = await collect(
+      serviceWith(successfulGateway()).retry({
+        userId: firstUserId,
+        conversationId: firstConversationId,
+        clientRequestId: retryRequestId,
+        attemptId: failedAttemptIds[0]!,
+        signal: new AbortController().signal,
+      }),
+    );
+    const secondRetry = await collect(
+      serviceWith(successfulGateway()).retry({
+        userId: secondUserId,
+        conversationId: secondConversationId,
+        clientRequestId: retryRequestId,
+        attemptId: failedAttemptIds[1]!,
+        signal: new AbortController().signal,
+      }),
+    );
+
+    expect(firstRetry.at(-1)).toMatchObject({ type: "completed" });
+    expect(secondRetry.at(-1)).toMatchObject({ type: "completed" });
+  });
+
   test.each([
     ["disabled user", "disabled"],
     ["archived conversation", "archived"],
@@ -873,7 +1111,6 @@ describe("GenerationService", () => {
       signal: new AbortController().signal,
     });
     const started = await stream.next();
-    await stream.return();
     const expiredAt = new Date(baseNow.getTime() - 1);
     await database
       .update(generationLease)
@@ -911,5 +1148,6 @@ describe("GenerationService", () => {
           ),
         ),
     ).toHaveLength(1);
+    await stream.return();
   });
 });

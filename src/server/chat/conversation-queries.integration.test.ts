@@ -198,6 +198,7 @@ describe("conversation ownership queries", () => {
     await database.insert(generationAttempt).values([
       {
         id: oldAttemptId,
+        userId: ownerId,
         assistantMessageId,
         attemptNumber: 1,
         isCurrent: false,
@@ -210,6 +211,7 @@ describe("conversation ownership queries", () => {
       },
       {
         id: currentAttemptId,
+        userId: ownerId,
         assistantMessageId,
         attemptNumber: 2,
         isCurrent: true,

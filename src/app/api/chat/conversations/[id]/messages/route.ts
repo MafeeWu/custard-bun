@@ -43,43 +43,75 @@ function enqueueEvent(
 function ndjsonResponse(
   generator: AsyncGenerator<ChatStreamEvent, void>,
   first: IteratorResult<ChatStreamEvent, void>,
+  routeController: AbortController,
 ): Response {
   const encoder = new TextEncoder();
   let pending = first;
+  let cancelled = false;
+  let cancellationFailure: { error: unknown } | undefined;
+  let activePull: Promise<void> | undefined;
   let attemptId =
     !first.done && "attemptId" in first.value
       ? first.value.attemptId
       : undefined;
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      try {
-        if (!pending.done) {
-          enqueueEvent(controller, encoder, pending.value);
-          attemptId = pending.value.attemptId;
-        }
-        pending = await generator.next();
-        if (pending.done) {
+      const operation = (async () => {
+        try {
+          if (cancelled) {
+            return;
+          }
+          if (!pending.done) {
+            enqueueEvent(controller, encoder, pending.value);
+            attemptId = pending.value.attemptId;
+          }
+          pending = await generator.next();
+          if (cancelled) {
+            return;
+          }
+          if (pending.done) {
+            controller.close();
+          }
+        } catch (error) {
+          if (cancelled) {
+            cancellationFailure = { error };
+            return;
+          }
+          if (attemptId) {
+            enqueueEvent(
+              controller,
+              encoder,
+              createFailedChatStreamEvent(
+                attemptId,
+                new ChatDomainError(
+                  "CHAT_INTERNAL",
+                  "Streaming response failed.",
+                ),
+              ),
+            );
+          }
           controller.close();
         }
-      } catch {
-        if (attemptId) {
-          enqueueEvent(
-            controller,
-            encoder,
-            createFailedChatStreamEvent(
-              attemptId,
-              new ChatDomainError(
-                "CHAT_INTERNAL",
-                "Streaming response failed.",
-              ),
-            ),
-          );
+      })();
+      activePull = operation;
+      try {
+        await operation;
+      } finally {
+        if (activePull === operation) {
+          activePull = undefined;
         }
-        controller.close();
       }
     },
     async cancel() {
-      await generator.return();
+      cancelled = true;
+      routeController.abort();
+      await activePull?.catch(() => undefined);
+      if (cancellationFailure) {
+        throw cancellationFailure.error;
+      }
+      while (!pending.done) {
+        pending = await generator.next();
+      }
     },
   });
   return new Response(body, {
@@ -123,6 +155,11 @@ export async function POST(
 
   try {
     const service = await getGenerationService();
+    const routeController = new AbortController();
+    const signal = AbortSignal.any([
+      request.signal,
+      routeController.signal,
+    ]);
     const generator =
       "content" in body.data
         ? service.startNewMessage({
@@ -130,17 +167,17 @@ export async function POST(
             conversationId: params.data.id,
             clientRequestId: body.data.clientRequestId,
             content: body.data.content,
-            signal: request.signal,
+            signal,
           })
         : service.retry({
             userId: session.user.id,
             conversationId: params.data.id,
             clientRequestId: body.data.clientRequestId,
             attemptId: body.data.retryAttemptId,
-            signal: request.signal,
+            signal,
           });
     const first = await generator.next();
-    return ndjsonResponse(generator, first);
+    return ndjsonResponse(generator, first, routeController);
   } catch (error) {
     return chatErrorResponse(error);
   }

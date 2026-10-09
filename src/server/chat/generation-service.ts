@@ -33,6 +33,7 @@ import {
 import {
   admitGeneration,
   settleGeneration,
+  type GenerationSettlementOutcome,
   type ProviderCallSettlement,
 } from "./quota-service";
 import { createTokenCounter, type TokenCounter } from "./token-counter";
@@ -218,6 +219,7 @@ async function findReplay(
     .where(
       and(
         eq(generationAttempt.clientRequestId, input.clientRequestId),
+        eq(generationAttempt.userId, input.userId),
         eq(conversation.userId, input.userId),
       ),
     )
@@ -541,6 +543,7 @@ export function createGenerationService(
       ]);
       await transaction.insert(generationAttempt).values({
         id: attemptId,
+        userId: input.userId,
         assistantMessageId,
         clientRequestId: input.clientRequestId,
         attemptNumber: 1,
@@ -656,6 +659,7 @@ export function createGenerationService(
         .where(eq(generationAttempt.id, current.id));
       await transaction.insert(generationAttempt).values({
         id: attemptId,
+        userId: input.userId,
         assistantMessageId: current.assistantMessageId,
         clientRequestId: input.clientRequestId,
         attemptNumber: current.attemptNumber + 1,
@@ -799,9 +803,9 @@ export function createGenerationService(
     prepared: PreparedGeneration,
     input: Parameters<typeof settleGeneration>[1],
     protectFromGatewayCatch: boolean,
-  ): Promise<void> {
+  ): Promise<GenerationSettlementOutcome | undefined> {
     try {
-      await settleGeneration(database, input);
+      return await settleGeneration(database, input);
     } catch (error) {
       dependencies.logger.error("generation settlement failed", {
         attemptId: prepared.attemptId,
@@ -816,10 +820,10 @@ export function createGenerationService(
   }
 
   async function* run(
-    preparedPromise: Promise<PreparedGeneration>,
+    prepare: () => Promise<PreparedGeneration>,
     browserSignal: AbortSignal,
   ): AsyncGenerator<ChatStreamEvent, void> {
-    const prepared = await preparedPromise;
+    const prepared = await prepare();
     if (prepared.replay) {
       yield prepared.replay;
       return;
@@ -835,13 +839,30 @@ export function createGenerationService(
     let usage: ChatUsage | undefined;
     let currentCall: ProviderCallSettlement | undefined;
     const providerCalls: ProviderCallSettlement[] = [];
+    let settlementStarted = false;
 
-    yield { type: "started", attemptId: prepared.attemptId };
     try {
+      if (signal.aborted) {
+        throw new ModelGatewayError("cancelled");
+      }
+      yield { type: "started", attemptId: prepared.attemptId };
+      if (signal.aborted) {
+        throw new ModelGatewayError("cancelled");
+      }
       for await (const event of dependencies.gateway.stream({
         ...prepared.gatewayInput,
         signal,
       })) {
+        if (
+          signal.aborted ||
+          !(await attemptCanContinue(
+            prepared.attemptId,
+            prepared.leaseOwner,
+          ))
+        ) {
+          localController.abort();
+          throw new ModelGatewayError("cancelled");
+        }
         if (event.type === "provider-call") {
           currentCall = providerCall(event.callNumber, prepared);
           providerCalls.push(currentCall);
@@ -864,15 +885,6 @@ export function createGenerationService(
           continue;
         }
 
-        if (
-          !(await attemptCanContinue(
-            prepared.attemptId,
-            prepared.leaseOwner,
-          ))
-        ) {
-          localController.abort();
-          throw new ModelGatewayError("cancelled");
-        }
         const now = dependencies.now();
         firstTokenAt ??= now;
         content += event.text;
@@ -925,7 +937,8 @@ export function createGenerationService(
       if (currentCall && currentCall.inputTokens === undefined) {
         currentCall.estimatedOutputTokens = usage.outputTokens;
       }
-      await settlePrepared(
+      settlementStarted = true;
+      const committedOutcome = await settlePrepared(
         prepared,
         {
           attemptId: prepared.attemptId,
@@ -936,6 +949,17 @@ export function createGenerationService(
         },
         true,
       );
+      if (committedOutcome !== "complete") {
+        yield createInterruptedChatStreamEvent(
+          prepared.attemptId,
+          new ChatDomainError(
+            "CHAT_STREAM_INTERRUPTED",
+            "Generation was cancelled before completion.",
+            { retryable: true },
+          ),
+        );
+        return;
+      }
       yield {
         type: "completed",
         attemptId: prepared.attemptId,
@@ -954,7 +978,8 @@ export function createGenerationService(
           );
         currentCall.errorCategory = terminal.error.code;
       }
-      await settlePrepared(
+      settlementStarted = true;
+      const committedOutcome = await settlePrepared(
         prepared,
         {
           attemptId: prepared.attemptId,
@@ -967,15 +992,51 @@ export function createGenerationService(
         },
         false,
       );
-      yield terminal.outcome === "interrupted"
+      const interrupted = committedOutcome !== "failed";
+      const committedError = interrupted
+        ? new ChatDomainError(
+            "CHAT_STREAM_INTERRUPTED",
+            "Generation was cancelled before completion.",
+            { retryable: true },
+          )
+        : terminal.error;
+      yield interrupted
         ? createInterruptedChatStreamEvent(
             prepared.attemptId,
-            terminal.error,
+            committedError,
           )
-        : createFailedChatStreamEvent(prepared.attemptId, terminal.error);
+        : createFailedChatStreamEvent(prepared.attemptId, committedError);
     } finally {
-      if (activeControllers.get(prepared.attemptId) === localController) {
-        activeControllers.delete(prepared.attemptId);
+      try {
+        if (!settlementStarted) {
+          localController.abort();
+          await flushContent(prepared.attemptId, content, firstTokenAt);
+          if (currentCall && currentCall.inputTokens === undefined) {
+            currentCall.estimatedOutputTokens =
+              dependencies.tokenCounter.withSafetyMargin(
+                dependencies.tokenCounter.estimateText(content),
+              );
+            currentCall.errorCategory = "CHAT_STREAM_INTERRUPTED";
+          }
+          settlementStarted = true;
+          await settlePrepared(
+            prepared,
+            {
+              attemptId: prepared.attemptId,
+              leaseOwner: prepared.leaseOwner,
+              outcome: "interrupted",
+              now: dependencies.now(),
+              providerCalls,
+              errorCategory: "CHAT_STREAM_INTERRUPTED",
+              retryable: true,
+            },
+            false,
+          );
+        }
+      } finally {
+        if (activeControllers.get(prepared.attemptId) === localController) {
+          activeControllers.delete(prepared.attemptId);
+        }
       }
     }
   }
@@ -983,47 +1044,56 @@ export function createGenerationService(
   return {
     startNewMessage(input) {
       return run(
-        prepareNew({
-          userId: input.userId,
-          conversationId: input.conversationId,
-          clientRequestId: input.clientRequestId,
-          content: input.content,
-        }),
+        () =>
+          prepareNew({
+            userId: input.userId,
+            conversationId: input.conversationId,
+            clientRequestId: input.clientRequestId,
+            content: input.content,
+          }),
         input.signal,
       );
     },
 
     retry(input) {
       return run(
-        prepareRetry({
-          userId: input.userId,
-          conversationId: input.conversationId,
-          clientRequestId: input.clientRequestId,
-          attemptId: input.attemptId,
-        }),
+        () =>
+          prepareRetry({
+            userId: input.userId,
+            conversationId: input.conversationId,
+            clientRequestId: input.clientRequestId,
+            attemptId: input.attemptId,
+          }),
         input.signal,
       );
     },
 
     async stop(input) {
       const now = dependencies.now();
-      const [stopped] = await database
-        .update(generationAttempt)
-        .set({ cancelRequestedAt: now, updatedAt: now })
-        .from(conversationMessage)
-        .innerJoin(
-          conversation,
-          eq(conversation.id, conversationMessage.conversationId),
-        )
-        .where(
-          and(
-            eq(generationAttempt.id, input.attemptId),
-            eq(generationAttempt.assistantMessageId, conversationMessage.id),
-            eq(conversation.userId, input.userId),
-            inArray(generationAttempt.status, ["pending", "streaming"]),
-          ),
-        )
-        .returning({ id: generationAttempt.id });
+      const stopped = await database.transaction(async (transaction) => {
+        await lockUserChatMutation(transaction, input.userId);
+        const [row] = await transaction
+          .update(generationAttempt)
+          .set({ cancelRequestedAt: now, updatedAt: now })
+          .from(conversationMessage)
+          .innerJoin(
+            conversation,
+            eq(conversation.id, conversationMessage.conversationId),
+          )
+          .where(
+            and(
+              eq(generationAttempt.id, input.attemptId),
+              eq(
+                generationAttempt.assistantMessageId,
+                conversationMessage.id,
+              ),
+              eq(conversation.userId, input.userId),
+              inArray(generationAttempt.status, ["pending", "streaming"]),
+            ),
+          )
+          .returning({ id: generationAttempt.id });
+        return row;
+      });
       if (!stopped) {
         throw new ChatDomainError("CHAT_NOT_FOUND", "Active attempt not found.");
       }

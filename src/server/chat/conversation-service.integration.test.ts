@@ -225,6 +225,7 @@ async function insertGenerationWithLease(input: {
   ]);
   await executor.insert(generationAttempt).values({
     id: attemptId,
+    userId: input.userId,
     assistantMessageId,
     attemptNumber: 1,
     status: "streaming",

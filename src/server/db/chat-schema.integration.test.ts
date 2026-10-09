@@ -242,6 +242,7 @@ async function insertMessage(input: {
 
 async function insertAttempt(input: {
   assistantMessageId: string;
+  clientRequestId?: string | null;
   attemptNumber?: number;
   isCurrent?: boolean;
   status?: "pending" | "streaming" | "complete" | "interrupted" | "failed";
@@ -253,7 +254,9 @@ async function insertAttempt(input: {
   await database.execute(sql`
     INSERT INTO generation_attempts (
       id,
+      user_id,
       assistant_message_id,
+      client_request_id,
       attempt_number,
       is_current,
       status,
@@ -268,7 +271,15 @@ async function insertAttempt(input: {
     )
     VALUES (
       ${id},
+      (
+        SELECT conversations.user_id
+        FROM conversation_messages
+        JOIN conversations
+          ON conversations.id = conversation_messages.conversation_id
+        WHERE conversation_messages.id = ${input.assistantMessageId}
+      ),
       ${input.assistantMessageId},
+      ${input.clientRequestId ?? null},
       ${input.attemptNumber ?? 1},
       ${input.isCurrent ?? true},
       ${input.status ?? "pending"},
@@ -344,6 +355,32 @@ describe("chat storage invariants", () => {
         characterVersionId: versionId,
       }),
       /one active conversation/i,
+    );
+  });
+
+  test("scopes generation idempotency keys to the owning user", async () => {
+    const first = await chatFixture("-first-idempotency");
+    const second = await chatFixture("-second-idempotency");
+    const clientRequestId = randomUUID();
+    await insertAttempt({
+      assistantMessageId: first.assistantMessageId,
+      clientRequestId,
+    });
+
+    await expect(
+      insertAttempt({
+        assistantMessageId: second.assistantMessageId,
+        clientRequestId,
+      }),
+    ).resolves.toEqual(expect.any(String));
+    await expectDatabaseError(
+      insertAttempt({
+        assistantMessageId: first.assistantMessageId,
+        clientRequestId,
+        attemptNumber: 2,
+        isCurrent: false,
+      }),
+      /generation_attempts_user_client_request_unique/i,
     );
   });
 

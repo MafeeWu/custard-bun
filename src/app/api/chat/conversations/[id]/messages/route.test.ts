@@ -67,6 +67,68 @@ async function responseJson(response: Response) {
   return JSON.parse(await response.text());
 }
 
+function cancellableStream(signal: AbortSignal, state: {
+  aborted: boolean;
+  settled: boolean;
+  returned: boolean;
+}): AsyncGenerator<ChatStreamEvent, void> {
+  let phase = 0;
+  return {
+    async next() {
+      if (phase === 0) {
+        phase = 1;
+        return {
+          done: false,
+          value: { type: "started", attemptId: retryAttemptId },
+        };
+      }
+      if (phase === 1) {
+        phase = 2;
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            state.aborted = true;
+            resolve();
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              state.aborted = true;
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        state.settled = true;
+        return {
+          done: false,
+          value: {
+            type: "interrupted",
+            attemptId: retryAttemptId,
+            code: "CHAT_STREAM_INTERRUPTED",
+            message: "The response stream ended before completion.",
+            retryable: true,
+          },
+        };
+      }
+      return { done: true, value: undefined };
+    },
+    async return() {
+      state.returned = true;
+      return { done: true, value: undefined };
+    },
+    async throw(error?: unknown) {
+      throw error;
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    async [Symbol.asyncDispose]() {
+      await this.return();
+    },
+  };
+}
+
 describe("POST conversation messages", () => {
   test.each([
     ["wrong content type", request("{}", "text/plain")],
@@ -170,9 +232,47 @@ describe("POST conversation messages", () => {
       conversationId,
       clientRequestId,
       content: "Hi",
-      signal: routeRequest.signal,
+      signal: expect.any(AbortSignal),
     });
+    const serviceSignal = mocks.startNewMessage.mock.calls[0]![0].signal;
+    expect(serviceSignal).not.toBe(routeRequest.signal);
+    expect(serviceSignal.aborted).toBe(false);
   });
+
+  test.each([
+    ["before the started event is read", false],
+    ["after the started event is read", true],
+  ] as const)(
+    "response cancellation %s aborts and drains interrupted settlement",
+    async (_label, readStarted) => {
+      const state = { aborted: false, settled: false, returned: false };
+      mocks.startNewMessage.mockImplementation(
+        ({ signal }: { signal: AbortSignal }) =>
+          cancellableStream(signal, state),
+      );
+      const response = await POST(
+        request(JSON.stringify({ clientRequestId, content: "Hi" })),
+        context(),
+      );
+
+      if (readStarted) {
+        const reader = response.body!.getReader();
+        const first = await reader.read();
+        expect(new TextDecoder().decode(first.value)).toContain(
+          '"type":"started"',
+        );
+        await reader.cancel();
+      } else {
+        await response.body!.cancel();
+      }
+
+      expect(state).toEqual({
+        aborted: true,
+        settled: true,
+        returned: false,
+      });
+    },
+  );
 
   test("dispatches the strict retry branch", async () => {
     mocks.retry.mockReturnValue(
@@ -197,8 +297,11 @@ describe("POST conversation messages", () => {
       conversationId,
       clientRequestId,
       attemptId: retryAttemptId,
-      signal: routeRequest.signal,
+      signal: expect.any(AbortSignal),
     });
+    expect(mocks.retry.mock.calls[0]![0].signal).not.toBe(
+      routeRequest.signal,
+    );
     expect(mocks.startNewMessage).not.toHaveBeenCalled();
   });
 

@@ -43,6 +43,13 @@
       "when": 1791516212270,
       "tag": "0005_streaming_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791524189984,
+      "tag": "0006_naive_lightspeed",
+      "breakpoints": true
     }
   ]
 }
