@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { characterContentDigest } from "@/server/characters/content-digest";
@@ -248,6 +249,36 @@ function expectChatError(
   });
 }
 
+async function waitForApplicationLockWait(
+  applicationName: string,
+): Promise<string> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    const result = await database.$client.query<{
+      query: string;
+      wait_event_type: string | null;
+    }>(
+      `
+        SELECT query, wait_event_type
+        FROM pg_stat_activity
+        WHERE application_name = $1
+          AND state = 'active'
+      `,
+      [applicationName],
+    );
+    const waiting = result.rows.find(
+      (row) => row.wait_event_type === "Lock",
+    );
+    if (waiting) {
+      return waiting.query;
+    }
+    await delay(10);
+  }
+
+  throw new Error(`${applicationName} did not wait on a PostgreSQL lock`);
+}
+
 describe("conversation lifecycle service", () => {
   test("first open pins the current default with one opening and later opens reuse it", async () => {
     const userId = await insertUser();
@@ -354,6 +385,160 @@ describe("conversation lifecycle service", () => {
       .where(eq(conversationMessage.conversationId, restarted.conversationId));
     expect(opening).toEqual([{ content: fixture.versionTwo.openingMessage }]);
   });
+
+  test.each(["open", "restart"] as const)(
+    "%s waits for an in-flight default change and pins the committed default",
+    async (operation) => {
+      const userId = await insertUser();
+      const fixture = await insertCharacterFixture();
+      const original =
+        operation === "restart"
+          ? await service.openOrCreate({
+              userId,
+              characterId: fixture.characterId,
+            })
+          : null;
+      const applicationName = `conversation-${operation}-default-race`;
+      const operationDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: applicationName,
+        max: 1,
+      });
+      const blocker = await database.$client.connect();
+      let blockerCommitted = false;
+      let lifecycleOperation: Promise<
+        { conversationId: string; created: boolean } | { conversationId: string }
+      > | undefined;
+
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          `
+            UPDATE characters
+            SET default_version_id = $2
+            WHERE id = $1
+          `,
+          [fixture.characterId, fixture.versionTwoId],
+        );
+
+        const operationService = createConversationService(operationDatabase);
+        lifecycleOperation =
+          operation === "open"
+            ? operationService.openOrCreate({
+                userId,
+                characterId: fixture.characterId,
+              })
+            : operationService.restart({
+                userId,
+                conversationId: original!.conversationId,
+              });
+        void lifecycleOperation.catch(() => undefined);
+
+        const waitingQuery = await waitForApplicationLockWait(applicationName);
+        expect(waitingQuery).toMatch(/characters/i);
+
+        await blocker.query("COMMIT");
+        blockerCommitted = true;
+
+        const result = await lifecycleOperation;
+        expect(await getConversationVersion(result.conversationId)).toBe(
+          fixture.versionTwoId,
+        );
+      } finally {
+        if (!blockerCommitted) {
+          await blocker.query("ROLLBACK").catch(() => undefined);
+        }
+        blocker.release();
+        await Promise.allSettled(
+          lifecycleOperation ? [lifecycleOperation] : [],
+        );
+        await operationDatabase.$client.end();
+      }
+    },
+  );
+
+  test.each(["open", "restart"] as const)(
+    "%s waits for an in-flight archive and observes the committed lifecycle",
+    async (operation) => {
+      const userId = await insertUser();
+      const fixture = await insertCharacterFixture();
+      const original =
+        operation === "restart"
+          ? await service.openOrCreate({
+              userId,
+              characterId: fixture.characterId,
+            })
+          : null;
+      const applicationName = `conversation-${operation}-archive-race`;
+      const operationDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: applicationName,
+        max: 1,
+      });
+      const blocker = await database.$client.connect();
+      let blockerCommitted = false;
+      let lifecycleOperation: Promise<
+        { conversationId: string; created: boolean } | { conversationId: string }
+      > | undefined;
+
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          `
+            UPDATE characters
+            SET lifecycle = 'archived',
+                archived_at = NOW()
+            WHERE id = $1
+          `,
+          [fixture.characterId],
+        );
+
+        const operationService = createConversationService(operationDatabase);
+        lifecycleOperation =
+          operation === "open"
+            ? operationService.openOrCreate({
+                userId,
+                characterId: fixture.characterId,
+              })
+            : operationService.restart({
+                userId,
+                conversationId: original!.conversationId,
+              });
+        void lifecycleOperation.catch(() => undefined);
+
+        const waitingQuery = await waitForApplicationLockWait(applicationName);
+        expect(waitingQuery).toMatch(/characters/i);
+
+        await blocker.query("COMMIT");
+        blockerCommitted = true;
+
+        await expect(lifecycleOperation).rejects.toMatchObject({
+          code: "CHAT_READ_ONLY",
+        });
+        if (original) {
+          await expect(
+            getConversationRows(userId, fixture.characterId),
+          ).resolves.toEqual([
+            expect.objectContaining({
+              id: original.conversationId,
+              lifecycle: "active",
+            }),
+          ]);
+        } else {
+          await expect(
+            getConversationRows(userId, fixture.characterId),
+          ).resolves.toEqual([]);
+        }
+      } finally {
+        if (!blockerCommitted) {
+          await blocker.query("ROLLBACK").catch(() => undefined);
+        }
+        blocker.release();
+        await Promise.allSettled(
+          lifecycleOperation ? [lifecycleOperation] : [],
+        );
+        await operationDatabase.$client.end();
+      }
+    },
+  );
 
   test("an archived character keeps its existing active conversation readable and reusable", async () => {
     const userId = await insertUser();
@@ -581,7 +766,7 @@ describe("conversation lifecycle service", () => {
   );
 
   test.each(["restart", "delete"] as const)(
-    "%s races admission without deadlocking and observes the committed lease",
+    "%s waits behind admission's user lock and completes without reversed-lock deadlock",
     async (operation) => {
       const userId = await insertUser();
       const fixture = await insertCharacterFixture();
@@ -593,18 +778,35 @@ describe("conversation lifecycle service", () => {
         application_name: `conversation-${operation}-admission`,
         max: 1,
       });
+      const mutationApplicationName = `conversation-${operation}-mutation`;
+      const mutationDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: mutationApplicationName,
+        max: 1,
+      });
+      let admissionHasUserLock!: () => void;
+      const admissionUserLocked = new Promise<void>((resolve) => {
+        admissionHasUserLock = resolve;
+      });
+      let allowAdmissionConversationLock!: () => void;
+      const admissionMayLockConversation = new Promise<void>((resolve) => {
+        allowAdmissionConversationLock = resolve;
+      });
+      let admissionHasLease!: () => void;
+      const admissionLeaseInserted = new Promise<void>((resolve) => {
+        admissionHasLease = resolve;
+      });
       let releaseAdmission!: () => void;
       const admissionRelease = new Promise<void>((resolve) => {
         releaseAdmission = resolve;
       });
-      let admissionLocked!: () => void;
-      const admissionHasLease = new Promise<void>((resolve) => {
-        admissionLocked = resolve;
-      });
+      let admission: Promise<void> | undefined;
+      let mutation: Promise<{ conversationId: string } | void> | undefined;
 
       try {
-        const admission = admissionDatabase.transaction(async (transaction) => {
+        admission = admissionDatabase.transaction(async (transaction) => {
           await lockUserChatMutation(transaction, userId);
+          admissionHasUserLock();
+          await admissionMayLockConversation;
           await transaction
             .select({ id: conversation.id })
             .from(conversation)
@@ -620,22 +822,32 @@ describe("conversation lifecycle service", () => {
             userId,
             executor: transaction,
           });
-          admissionLocked();
+          admissionHasLease();
           await admissionRelease;
         });
+        void admission.catch(() => undefined);
 
-        await admissionHasLease;
-        const mutation =
+        await admissionUserLocked;
+        const mutationService = createConversationService(mutationDatabase);
+        mutation =
           operation === "restart"
-            ? service.restart({
+            ? mutationService.restart({
                 userId,
                 conversationId: opened.conversationId,
               })
-            : service.delete({
+            : mutationService.delete({
                 userId,
                 conversationId: opened.conversationId,
               });
         void mutation.catch(() => undefined);
+
+        const waitingQuery = await waitForApplicationLockWait(
+          mutationApplicationName,
+        );
+        expect(waitingQuery).toMatch(/chat_settings/i);
+
+        allowAdmissionConversationLock();
+        await admissionLeaseInserted;
         releaseAdmission();
 
         await admission;
@@ -644,8 +856,14 @@ describe("conversation lifecycle service", () => {
           retryable: true,
         });
       } finally {
+        allowAdmissionConversationLock();
         releaseAdmission();
+        await Promise.allSettled([
+          ...(admission ? [admission] : []),
+          ...(mutation ? [mutation] : []),
+        ]);
         await admissionDatabase.$client.end();
+        await mutationDatabase.$client.end();
       }
     },
     5_000,

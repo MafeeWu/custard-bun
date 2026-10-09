@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { resolveDefaultCharacterVersion } from "@/server/characters/character-queries";
 import type { Database } from "@/server/db/client";
-import { character } from "@/server/db/character-schema";
+import {
+  character,
+  characterVersion,
+} from "@/server/db/character-schema";
 import {
   conversation,
   conversationMessage,
@@ -206,6 +208,7 @@ async function resolveMutableDefault(
     })
     .from(character)
     .where(eq(character.id, characterId))
+    .for("update")
     .limit(1);
 
   if (!selectedCharacter) {
@@ -218,10 +221,19 @@ async function resolveMutableDefault(
     throw readOnly();
   }
 
-  const resolved = await resolveDefaultCharacterVersion(
-    transaction as unknown as Database,
-    characterId,
-  );
+  const [resolved] = await transaction
+    .select({
+      id: characterVersion.id,
+      openingMessage: characterVersion.openingMessage,
+    })
+    .from(characterVersion)
+    .where(
+      and(
+        eq(characterVersion.id, selectedCharacter.defaultVersionId),
+        eq(characterVersion.characterId, characterId),
+      ),
+    )
+    .limit(1);
   if (!resolved) {
     throw readOnly();
   }
