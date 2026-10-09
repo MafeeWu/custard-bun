@@ -172,6 +172,23 @@ function waitForRetry(
   });
 }
 
+function throwIfCancelledOrTimedOut(
+  callerSignal: AbortSignal,
+  totalSignal: AbortSignal,
+  requestId?: string,
+): void {
+  if (callerSignal.aborted) {
+    throw new ModelGatewayError("cancelled", {
+      providerRequestId: requestId,
+    });
+  }
+  if (totalSignal.aborted) {
+    throw new ModelGatewayError("total_timeout", {
+      providerRequestId: requestId,
+    });
+  }
+}
+
 export class OpenAiCompatibleGateway implements ModelGateway {
   private readonly endpoint: URL;
 
@@ -244,10 +261,6 @@ export class OpenAiCompatibleGateway implements ModelGateway {
             signal: requestSignal,
           });
           requestId = providerRequestId(response);
-          if (requestId) {
-            yield { type: "request-id", requestId };
-          }
-
           if (!response.ok) {
             const responseError = errorForResponse(response);
             await discardBody(response);
@@ -258,14 +271,27 @@ export class OpenAiCompatibleGateway implements ModelGateway {
               providerRequestId: requestId,
             });
           }
+          if (requestId) {
+            yield { type: "request-id", requestId };
+          }
 
           for await (const event of parseOpenAiStream(response.body)) {
+            throwIfCancelledOrTimedOut(
+              input.signal,
+              totalController.signal,
+              requestId,
+            );
             if (event.type === "delta") {
               hasEmittedDelta = true;
               clearTimeout(firstTokenTimer);
             }
             yield event;
           }
+          throwIfCancelledOrTimedOut(
+            input.signal,
+            totalController.signal,
+            requestId,
+          );
           clearTimeout(firstTokenTimer);
           return;
         } catch (error) {

@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 
 export type FakeModelScenario =
   | "standard"
+  | "buffered-events"
   | "missing-usage"
   | "authentication-error"
   | "rate-limit"
@@ -38,6 +39,7 @@ export interface FakeModelServer {
 
 const requestIds: Record<FakeModelScenario, string> = {
   standard: "req-standard",
+  "buffered-events": "req-buffered-events",
   "missing-usage": "req-missing-usage",
   "authentication-error": "req-authentication",
   "rate-limit": "req-rate-limit",
@@ -99,6 +101,15 @@ async function runScenario(
       response.end();
       return;
     }
+    case "buffered-events":
+      startEventStream(response, scenario);
+      response.end(
+        'data: {"choices":[{"delta":{"content":"first"}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"second"}}]}\n\n' +
+          'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2}}\n\n' +
+          "data: [DONE]\n\n",
+      );
+      return;
     case "missing-usage":
       startEventStream(response, scenario);
       response.end(

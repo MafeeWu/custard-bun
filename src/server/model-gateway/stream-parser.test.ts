@@ -27,6 +27,23 @@ function expectProtocolError(error: unknown): boolean {
 }
 
 describe("parseOpenAiStream", () => {
+  test.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+    ["CR", "\r"],
+  ])("parses %s event separators", async (_name, separator) => {
+    const source = chunksFrom([
+      encoder.encode(
+        `data: {"choices":[{"delta":{"content":"hello"}}]}${separator}${separator}` +
+          `data: [DONE]${separator}${separator}`,
+      ),
+    ]);
+
+    await expect(collect(parseOpenAiStream(source))).resolves.toEqual([
+      { type: "delta", text: "hello" },
+    ]);
+  });
+
   test("parses fragmented UTF-8 bytes, multiple frames, comments, blank lines, usage, and DONE", async () => {
     const payload = [
       ": provider keep-alive\r\n\r\n",
@@ -96,5 +113,23 @@ describe("parseOpenAiStream", () => {
     await expect(collect(parseOpenAiStream(source))).rejects.toSatisfy(
       expectProtocolError,
     );
+  });
+
+  test("does not dispatch an unterminated data event at EOF", async () => {
+    const iterator = parseOpenAiStream(
+      chunksFrom([
+        encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}]}'),
+      ]),
+    );
+
+    await expect(iterator.next()).rejects.toSatisfy(expectProtocolError);
+  });
+
+  test("does not accept an unterminated DONE event at EOF", async () => {
+    const iterator = parseOpenAiStream(
+      chunksFrom([encoder.encode("data: [DONE]")]),
+    );
+
+    await expect(iterator.next()).rejects.toSatisfy(expectProtocolError);
   });
 });

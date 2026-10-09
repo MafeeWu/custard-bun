@@ -120,15 +120,28 @@ export async function* parseOpenAiStream(
     return [];
   };
 
-  const processText = function* (text: string): Generator<ParsedStreamEvent> {
+  const processText = function* (
+    text: string,
+    endOfStream = false,
+  ): Generator<ParsedStreamEvent> {
     lineBuffer += text;
     while (true) {
-      const newlineIndex = lineBuffer.indexOf("\n");
-      if (newlineIndex === -1) {
+      const separatorIndex = lineBuffer.search(/[\r\n]/);
+      if (separatorIndex === -1) {
         return;
       }
-      const line = lineBuffer.slice(0, newlineIndex);
-      lineBuffer = lineBuffer.slice(newlineIndex + 1);
+      const separator = lineBuffer[separatorIndex];
+      if (
+        separator === "\r" &&
+        separatorIndex === lineBuffer.length - 1 &&
+        !endOfStream
+      ) {
+        return;
+      }
+      const separatorLength =
+        separator === "\r" && lineBuffer[separatorIndex + 1] === "\n" ? 2 : 1;
+      const line = lineBuffer.slice(0, separatorIndex);
+      lineBuffer = lineBuffer.slice(separatorIndex + separatorLength);
       const result = processLine(line);
       if (result === "done") {
         completed = true;
@@ -146,24 +159,7 @@ export async function* parseOpenAiStream(
   }
 
   if (!completed) {
-    yield* processText(decoder.decode());
-  }
-  if (!completed && lineBuffer.length > 0) {
-    const result = processLine(lineBuffer);
-    lineBuffer = "";
-    if (result === "done") {
-      completed = true;
-    } else {
-      yield* result;
-    }
-  }
-  if (!completed && dataLines.length > 0) {
-    const result = processLine("");
-    if (result === "done") {
-      completed = true;
-    } else {
-      yield* result;
-    }
+    yield* processText(decoder.decode(), true);
   }
   if (!completed) {
     throw protocolError();

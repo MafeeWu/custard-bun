@@ -32,6 +32,24 @@ async function consume(
   }
 }
 
+async function consumeWithRequestIdDelay(
+  source: AsyncIterable<GatewayStreamEvent>,
+  delayMs: number,
+): Promise<Consumption> {
+  const events: GatewayStreamEvent[] = [];
+  try {
+    for await (const event of source) {
+      events.push(event);
+      if (event.type === "request-id") {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    return { events };
+  } catch (error) {
+    return { events, error };
+  }
+}
+
 function expectGatewayError(
   error: unknown,
   category: ModelGatewayError["category"],
@@ -141,6 +159,24 @@ describe("OpenAiCompatibleGateway", () => {
     });
   });
 
+  test("handles authentication before slow consumers can trigger first-token timeout or retry", async () => {
+    provider.enqueue("authentication-error", "standard");
+
+    const result = await consumeWithRequestIdDelay(
+      stream({ firstTokenTimeoutMs: 200, requestTimeoutMs: 1_000 }),
+      300,
+    );
+    const error = expectGatewayError(result.error, "authentication");
+
+    expect(error).toMatchObject({
+      status: 401,
+      providerRequestId: "req-authentication",
+      retryable: false,
+    });
+    expect(result.events).toEqual([{ type: "provider-call", callNumber: 1 }]);
+    expect(provider.requests).toHaveLength(1);
+  });
+
   test("bounds Retry-After and does not wait when it exceeds the total deadline", async () => {
     provider.enqueue("rate-limit-long");
 
@@ -158,7 +194,7 @@ describe("OpenAiCompatibleGateway", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
-  test("retries one retryable server failure before output", async () => {
+  test("retries one server failure and emits a request ID only for the accepted response", async () => {
     provider.enqueue("server-error", "standard");
 
     const result = await consume(stream());
@@ -171,7 +207,6 @@ describe("OpenAiCompatibleGateway", () => {
       ),
     ).toEqual([
       { type: "provider-call", callNumber: 1 },
-      { type: "request-id", requestId: "req-server-error" },
       { type: "provider-call", callNumber: 2 },
       { type: "request-id", requestId: "req-standard" },
     ]);
@@ -249,6 +284,35 @@ describe("OpenAiCompatibleGateway", () => {
 
     expectGatewayError(result.error, "cancelled");
     await vi.waitFor(() => expect(provider.requests[0]?.aborted).toBe(true));
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("does not forward buffered events after caller cancellation", async () => {
+    provider.enqueue("buffered-events");
+    const controller = new AbortController();
+    const iterator = stream({ signal: controller.signal });
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: "provider-call", callNumber: 1 },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: {
+        type: "request-id",
+        requestId: "req-buffered-events",
+      },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: "delta", text: "first" },
+    });
+
+    controller.abort();
+
+    await expect(iterator.next()).rejects.toMatchObject({
+      category: "cancelled",
+    });
     expect(provider.requests).toHaveLength(1);
   });
 
