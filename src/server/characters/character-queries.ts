@@ -28,7 +28,7 @@ export interface PublicCharacterDetail extends PublicCharacterSummary {
   relationshipBoundaries: string[];
 }
 
-type PublishedCharacterVersion = CharacterContent & {
+export type PublishedCharacterVersion = CharacterContent & {
   id: string;
   characterId: string;
   versionNumber: number;
