@@ -373,6 +373,30 @@ DECLARE
   source_kind conversation_message_kind;
 BEGIN
   IF TG_OP = 'UPDATE'
+     AND ROW(
+       NEW.id,
+       NEW.conversation_id,
+       NEW.sequence,
+       NEW.role,
+       NEW.kind,
+       NEW.in_reply_to
+     ) IS DISTINCT FROM ROW(
+       OLD.id,
+       OLD.conversation_id,
+       OLD.sequence,
+       OLD.role,
+       OLD.kind,
+       OLD.in_reply_to
+     )
+     AND EXISTS (
+       SELECT 1
+       FROM generation_attempts
+       WHERE assistant_message_id = OLD.id
+     ) THEN
+    RAISE EXCEPTION 'attempt-bound assistant message identity fields are immutable';
+  END IF;
+
+  IF TG_OP = 'UPDATE'
      AND ROW(NEW.id, NEW.kind, NEW.conversation_id)
          IS DISTINCT FROM ROW(OLD.id, OLD.kind, OLD.conversation_id)
      AND EXISTS (
@@ -391,7 +415,8 @@ BEGIN
   SELECT conversation_id, role, kind
   INTO source_conversation_id, source_role, source_kind
   FROM conversation_messages
-  WHERE id = NEW.in_reply_to;
+  WHERE id = NEW.in_reply_to
+  FOR UPDATE;
 
   IF NOT FOUND OR source_role <> 'user' OR source_kind <> 'user' THEN
     RAISE EXCEPTION 'generated assistant slots must reference one user message';
@@ -444,6 +469,25 @@ CREATE TRIGGER generation_attempts_enforce_current
 BEFORE INSERT OR UPDATE ON generation_attempts
 FOR EACH ROW
 EXECUTE FUNCTION enforce_current_attempt_invariant();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION preserve_generation_attempt_identity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF ROW(NEW.assistant_message_id, NEW.attempt_number)
+     IS DISTINCT FROM ROW(OLD.assistant_message_id, OLD.attempt_number) THEN
+    RAISE EXCEPTION 'generation attempt identity fields are immutable';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+
+CREATE TRIGGER generation_attempts_preserve_identity
+BEFORE UPDATE ON generation_attempts
+FOR EACH ROW
+EXECUTE FUNCTION preserve_generation_attempt_identity();--> statement-breakpoint
 
 CREATE OR REPLACE FUNCTION preserve_terminal_generation_attempt()
 RETURNS trigger

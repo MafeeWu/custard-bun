@@ -532,6 +532,135 @@ describe("chat storage invariants", () => {
     );
   });
 
+  test.each(["source-update-first", "generated-insert-first"] as const)(
+    "serializes generated-message creation with source mutation: %s",
+    async (ordering) => {
+      const userId = await insertUser();
+      const firstCharacter = await insertCharacterWithVersion(
+        `source-race-${ordering}`,
+      );
+      const secondCharacter = await insertCharacterWithVersion(
+        `target-race-${ordering}`,
+      );
+      const sourceConversationId = await insertConversation({
+        userId,
+        characterId: firstCharacter.characterId,
+        characterVersionId: firstCharacter.versionId,
+      });
+      const targetConversationId = await insertConversation({
+        userId,
+        characterId: secondCharacter.characterId,
+        characterVersionId: secondCharacter.versionId,
+      });
+      const sourceMessageId = await insertMessage({
+        conversationId: sourceConversationId,
+        sequence: 1,
+        role: "user",
+        kind: "user",
+        content: "Race source",
+        clientRequestId: randomUUID(),
+      });
+      const generatedMessageId = randomUUID();
+      const secondApplicationName = `chat-source-race-${ordering}`;
+      const firstDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: `chat-source-race-first-${ordering}`,
+        max: 1,
+      });
+      const secondDatabase = createDatabase(testDatabaseUrl(), {
+        application_name: secondApplicationName,
+        max: 1,
+      });
+      const first = await firstDatabase.$client.connect();
+      const second = await secondDatabase.$client.connect();
+      let secondOperation: Promise<unknown> | undefined;
+
+      try {
+        await first.query("BEGIN");
+        await second.query("BEGIN");
+
+        if (ordering === "source-update-first") {
+          await first.query(
+            `UPDATE conversation_messages
+             SET conversation_id = $1
+             WHERE id = $2`,
+            [targetConversationId, sourceMessageId],
+          );
+          secondOperation = second.query(
+            `INSERT INTO conversation_messages (
+               id,
+               conversation_id,
+               sequence,
+               role,
+               kind,
+               in_reply_to
+             )
+             VALUES ($1, $2, 2, 'assistant', 'generated', $3)`,
+            [generatedMessageId, sourceConversationId, sourceMessageId],
+          );
+        } else {
+          await first.query(
+            `INSERT INTO conversation_messages (
+               id,
+               conversation_id,
+               sequence,
+               role,
+               kind,
+               in_reply_to
+             )
+             VALUES ($1, $2, 2, 'assistant', 'generated', $3)`,
+            [generatedMessageId, sourceConversationId, sourceMessageId],
+          );
+          secondOperation = second.query(
+            `UPDATE conversation_messages
+             SET conversation_id = $1
+             WHERE id = $2`,
+            [targetConversationId, sourceMessageId],
+          );
+        }
+        void secondOperation.catch(() => undefined);
+
+        await waitForApplicationLockWait(secondApplicationName);
+        await first.query("COMMIT");
+        await expect(secondOperation).rejects.toThrow(
+          ordering === "source-update-first"
+            ? /same conversation/i
+            : /referenced user message.*conversation.*immutable/i,
+        );
+
+        const source = await database.$client.query<{
+          conversation_id: string;
+        }>(
+          "SELECT conversation_id FROM conversation_messages WHERE id = $1",
+          [sourceMessageId],
+        );
+        const generated = await database.$client.query(
+          "SELECT id FROM conversation_messages WHERE id = $1",
+          [generatedMessageId],
+        );
+
+        if (ordering === "source-update-first") {
+          expect(source.rows).toEqual([
+            { conversation_id: targetConversationId },
+          ]);
+          expect(generated.rows).toHaveLength(0);
+        } else {
+          expect(source.rows).toEqual([
+            { conversation_id: sourceConversationId },
+          ]);
+          expect(generated.rows).toHaveLength(1);
+        }
+      } finally {
+        await first.query("ROLLBACK").catch(() => undefined);
+        await second.query("ROLLBACK").catch(() => undefined);
+        first.release();
+        second.release();
+        await Promise.allSettled(secondOperation ? [secondOperation] : []);
+        await firstDatabase.$client.end();
+        await secondDatabase.$client.end();
+      }
+    },
+  );
+
   test("allows only one current attempt per assistant slot", async () => {
     const fixture = await chatFixture();
     await insertAttempt({ assistantMessageId: fixture.assistantMessageId });
@@ -641,6 +770,92 @@ describe("chat storage invariants", () => {
       `),
       /generation lease user.*conversation owner/i,
     );
+  });
+
+  test("leased generation attempts cannot be rebound across users", async () => {
+    const firstFixture = await chatFixture("-lease-rebind-first");
+    const secondFixture = await chatFixture("-lease-rebind-second");
+    const secondUserMessageId = await insertMessage({
+      conversationId: secondFixture.conversationId,
+      sequence: 3,
+      role: "user",
+      kind: "user",
+      content: "Rebind target",
+      clientRequestId: randomUUID(),
+    });
+    const attemptId = await insertAttempt({
+      assistantMessageId: firstFixture.assistantMessageId,
+    });
+
+    await database.execute(sql`
+      INSERT INTO generation_leases (
+        attempt_id,
+        user_id,
+        owner_token,
+        expires_at
+      )
+      VALUES (
+        ${attemptId},
+        ${firstFixture.userId},
+        'stable-owner',
+        NOW() + INTERVAL '1 minute'
+      )
+    `);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE generation_attempts
+        SET assistant_message_id = ${secondFixture.assistantMessageId}
+        WHERE id = ${attemptId}
+      `),
+      /generation attempt identity.*immutable/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE generation_attempts
+        SET attempt_number = 2
+        WHERE id = ${attemptId}
+      `),
+      /generation attempt identity.*immutable/i,
+    );
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE conversation_messages
+        SET conversation_id = ${secondFixture.conversationId},
+            sequence = 4,
+            in_reply_to = ${secondUserMessageId}
+        WHERE id = ${firstFixture.assistantMessageId}
+      `),
+      /attempt-bound assistant message identity.*immutable/i,
+    );
+
+    const binding = await database.execute<{
+      assistant_message_id: string;
+      attempt_number: number;
+      conversation_id: string;
+      lease_user_id: string;
+    }>(sql`
+      SELECT
+        generation_attempts.assistant_message_id,
+        generation_attempts.attempt_number,
+        conversation_messages.conversation_id,
+        generation_leases.user_id AS lease_user_id
+      FROM generation_attempts
+      JOIN conversation_messages
+        ON conversation_messages.id = generation_attempts.assistant_message_id
+      JOIN generation_leases
+        ON generation_leases.attempt_id = generation_attempts.id
+      WHERE generation_attempts.id = ${attemptId}
+    `);
+    expect(binding.rows).toEqual([
+      {
+        assistant_message_id: firstFixture.assistantMessageId,
+        attempt_number: 1,
+        conversation_id: firstFixture.conversationId,
+        lease_user_id: firstFixture.userId,
+      },
+    ]);
   });
 
   test("serializes terminal finalization against lease and reservation inserts", async () => {
