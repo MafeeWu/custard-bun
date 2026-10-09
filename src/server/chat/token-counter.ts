@@ -6,6 +6,8 @@ import cl100k_base from "js-tiktoken/ranks/cl100k_base";
 const MESSAGE_OVERHEAD_TOKENS = 4;
 const REPLY_PRIMER_TOKENS = 2;
 const SAFETY_MARGIN_MULTIPLIER = 1.2;
+const ALLOWED_SPECIAL_TOKENS: string[] = [];
+const DISALLOWED_SPECIAL_TOKENS: string[] = [];
 
 export interface TokenCounterMessage {
   role: "system" | "user" | "assistant";
@@ -27,6 +29,14 @@ function requireEncoding(encoding: Tiktoken | undefined): Tiktoken {
   return encoding;
 }
 
+function countTokens(encoding: Tiktoken, value: string): number {
+  return encoding.encode(
+    value,
+    ALLOWED_SPECIAL_TOKENS,
+    DISALLOWED_SPECIAL_TOKENS,
+  ).length;
+}
+
 export function createTokenCounter(_modelId: string): TokenCounter {
   let encoding: Tiktoken | undefined = new Tiktoken(cl100k_base);
 
@@ -36,14 +46,14 @@ export function createTokenCounter(_modelId: string): TokenCounter {
         return 0;
       }
 
-      return requireEncoding(encoding).encode(value).length;
+      return countTokens(requireEncoding(encoding), value);
     },
     estimateMessages(messages: TokenCounterMessage[]): number {
       const encoder = requireEncoding(encoding);
 
       const contentTokens = messages.reduce((total, message) => {
         void message.role;
-        return total + encoder.encode(message.content).length;
+        return total + countTokens(encoder, message.content);
       }, 0);
 
       return (

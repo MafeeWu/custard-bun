@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ChatDomainError } from "./chat-errors";
-import type { ChatStreamEvent } from "./chat-events";
+import {
+  createFailedChatStreamEvent,
+  createInterruptedChatStreamEvent,
+  type ChatStreamEvent,
+} from "./chat-events";
 import { createTokenCounter, type TokenCounter } from "./token-counter";
 
 describe("chat stream events", () => {
@@ -23,38 +27,64 @@ describe("chat stream events", () => {
   });
 
   test("keeps failed and interrupted payloads provider-safe", () => {
-    const failed: ChatStreamEvent = {
-      type: "failed",
-      attemptId: "attempt-1",
-      code: "CHAT_PROVIDER_TIMEOUT",
-      message: "Timed out while waiting for the provider.",
-      retryable: true,
-      resetAt: "2026-10-09T16:00:00.000Z",
-    };
-    const interrupted: ChatStreamEvent = {
-      type: "interrupted",
-      attemptId: "attempt-1",
-      code: "CHAT_STREAM_INTERRUPTED",
-      message: "The stream ended before completion.",
-      retryable: true,
-    };
+    const failed = createFailedChatStreamEvent(
+      "attempt-1",
+      new ChatDomainError(
+        "CHAT_PROVIDER_TIMEOUT",
+        "provider said rawBody={...} apiKey=secret",
+        {
+          retryable: true,
+          resetAt: new Date("2026-10-09T16:00:00.000Z"),
+          metadata: {
+            rawBody: '{"secret":true}',
+            responseBody: "timed out",
+            authorizationHeader: "Bearer secret",
+          },
+        },
+      ),
+    );
+    const interrupted = createInterruptedChatStreamEvent(
+      "attempt-1",
+      new ChatDomainError(
+        "CHAT_STREAM_INTERRUPTED",
+        "provider stream closed with responseBody=oops",
+        {
+          retryable: true,
+          metadata: {
+            providerRawContent: "sensitive delta",
+          },
+        },
+      ),
+    );
 
     expect(failed).not.toHaveProperty("metadata");
     expect(interrupted).not.toHaveProperty("metadata");
+    expect(failed.message).toBe("The model provider took too long to respond.");
+    expect(interrupted.message).toBe(
+      "The response stream ended before completion.",
+    );
   });
 });
 
 describe("ChatDomainError", () => {
-  test("serializes stable codes and safe metadata", () => {
+  test("serializes stable codes, safe copy, and safe metadata", () => {
     const error = new ChatDomainError(
       "CHAT_PROVIDER_TIMEOUT",
-      "Timed out while waiting for the provider.",
+      "provider said apiKey=abc rawBody={...}",
       {
         retryable: true,
         resetAt: new Date("2026-10-09T16:00:00.000Z"),
         metadata: {
+          apiKey: "abc",
+          rawBody: '{"secret":true}',
+          responseBody: '{"error":"timeout"}',
+          authorizationHeader: "Bearer top-secret",
+          credentialScope: "model",
+          providerMessage: "provider leaked details",
+          providerRawContent: "sensitive chunk",
           providerStatus: 504,
           provider: "gateway-a",
+          requestId: "req-123",
           prompt: "secret prompt",
           nested: { unsafe: true },
         },
@@ -63,12 +93,13 @@ describe("ChatDomainError", () => {
 
     expect(error.toJSON()).toEqual({
       code: "CHAT_PROVIDER_TIMEOUT",
-      message: "Timed out while waiting for the provider.",
+      message: "The model provider took too long to respond.",
       retryable: true,
       resetAt: "2026-10-09T16:00:00.000Z",
       metadata: {
         providerStatus: 504,
         provider: "gateway-a",
+        requestId: "req-123",
       },
     });
   });
@@ -104,5 +135,25 @@ describe("createTokenCounter", () => {
       userTokens - plainTextTokens,
     );
     expect(counter.withSafetyMargin(100)).toBe(120);
+  });
+
+  test("counts special-token-looking text for raw text and messages", () => {
+    const tokenCounter = (counter = createTokenCounter("test-chat-model"));
+
+    expect(() => tokenCounter.estimateText("<|endoftext|>")).not.toThrow();
+    expect(tokenCounter.estimateText("<|endoftext|>")).toBeGreaterThan(0);
+
+    expect(() =>
+      tokenCounter.estimateMessages([
+        { role: "user", content: "prefix <|endoftext|> suffix" },
+      ]),
+    ).not.toThrow();
+    expect(
+      tokenCounter.estimateMessages([
+        { role: "user", content: "prefix <|endoftext|> suffix" },
+      ]),
+    ).toBeGreaterThan(
+      tokenCounter.estimateText("prefix <|endoftext|> suffix"),
+    );
   });
 });

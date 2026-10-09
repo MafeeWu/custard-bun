@@ -18,16 +18,76 @@ export type ChatErrorCode =
 export type ChatErrorMetadataValue = string | number | boolean | null;
 export type ChatErrorMetadata = Record<string, ChatErrorMetadataValue>;
 
-const blockedMetadataKeys = new Set([
+export interface PublicChatError {
+  code: ChatErrorCode;
+  message: string;
+  retryable: boolean;
+  resetAt?: string;
+  metadata?: ChatErrorMetadata;
+}
+
+const blockedMetadataKeys = new Set(["body", "content", "message"]);
+const blockedMetadataFragments = [
+  "accesskey",
+  "apikey",
   "authorization",
-  "content",
   "cookie",
+  "credential",
   "message",
   "password",
+  "privatekey",
   "prompt",
+  "providerraw",
+  "rawbody",
+  "rawcontent",
+  "requestbody",
+  "requestcontent",
+  "responsebody",
+  "responsecontent",
   "secret",
+  "secretkey",
   "token",
-]);
+] as const;
+const publicChatErrorMessages: Record<ChatErrorCode, string> = {
+  CHAT_VALIDATION: "The chat request is invalid.",
+  CHAT_NOT_FOUND: "The requested chat was not found.",
+  CHAT_READ_ONLY: "This chat is read-only.",
+  CHAT_GENERATION_IN_PROGRESS:
+    "A response is already being generated for this chat.",
+  CHAT_USER_REQUEST_QUOTA: "You have reached today's chat request limit.",
+  CHAT_USER_TOKEN_QUOTA: "You have reached today's chat token limit.",
+  CHAT_INSTANCE_REQUEST_BUDGET:
+    "This deployment has reached its request budget.",
+  CHAT_INSTANCE_TOKEN_BUDGET: "This deployment has reached its token budget.",
+  CHAT_INSTANCE_CONCURRENCY:
+    "This deployment is already generating the maximum number of responses.",
+  CHAT_PROVIDER_AUTH: "The model provider rejected the request.",
+  CHAT_PROVIDER_RATE_LIMIT: "The model provider is rate limiting requests.",
+  CHAT_PROVIDER_TIMEOUT: "The model provider took too long to respond.",
+  CHAT_PROVIDER_PROTOCOL: "The model provider returned an unexpected response.",
+  CHAT_STREAM_INTERRUPTED: "The response stream ended before completion.",
+  CHAT_INTERNAL: "Something went wrong while generating a response.",
+};
+
+function normalizeMetadataKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isBlockedMetadataKey(key: string): boolean {
+  const normalizedKey = normalizeMetadataKey(key);
+
+  if (blockedMetadataKeys.has(normalizedKey)) {
+    return true;
+  }
+
+  return blockedMetadataFragments.some((fragment) =>
+    normalizedKey.includes(fragment),
+  );
+}
+
+export function getPublicChatErrorMessage(code: ChatErrorCode): string {
+  return publicChatErrorMessages[code];
+}
 
 function isChatErrorMetadataValue(
   value: unknown,
@@ -57,7 +117,7 @@ function sanitizeMetadata(metadata: unknown): ChatErrorMetadata | undefined {
 
   const sanitized: ChatErrorMetadata = {};
   for (const [key, value] of Object.entries(metadata)) {
-    if (blockedMetadataKeys.has(key.toLowerCase())) {
+    if (isBlockedMetadataKey(key)) {
       continue;
     }
     if (!isChatErrorMetadataValue(value)) {
@@ -79,6 +139,7 @@ export class ChatDomainError extends Error {
   public readonly retryable: boolean;
   public readonly resetAt?: string;
   public readonly metadata?: ChatErrorMetadata;
+  public readonly publicMessage: string;
 
   constructor(
     public readonly code: ChatErrorCode,
@@ -89,6 +150,7 @@ export class ChatDomainError extends Error {
     this.name = new.target.name;
     Object.setPrototypeOf(this, new.target.prototype);
     this.retryable = options.retryable;
+    this.publicMessage = getPublicChatErrorMessage(code);
     this.resetAt =
       typeof options.resetAt === "string"
         ? options.resetAt
@@ -96,19 +158,17 @@ export class ChatDomainError extends Error {
     this.metadata = sanitizeMetadata(options.metadata);
   }
 
-  toJSON(): {
-    code: ChatErrorCode;
-    message: string;
-    retryable: boolean;
-    resetAt?: string;
-    metadata?: ChatErrorMetadata;
-  } {
+  toPublicError(): PublicChatError {
     return {
       code: this.code,
-      message: this.message,
+      message: this.publicMessage,
       retryable: this.retryable,
       ...(this.resetAt ? { resetAt: this.resetAt } : {}),
       ...(this.metadata ? { metadata: this.metadata } : {}),
     };
+  }
+
+  toJSON(): PublicChatError {
+    return this.toPublicError();
   }
 }
