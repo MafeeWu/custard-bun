@@ -653,6 +653,7 @@ export async function admitGeneration(
     .where(
       and(
         eq(generationAttempt.assistantMessageId, input.assistantMessageId),
+        eq(generationAttempt.isCurrent, true),
         eq(conversationMessage.conversationId, input.conversationId),
         eq(conversationMessage.kind, "generated"),
       ),
