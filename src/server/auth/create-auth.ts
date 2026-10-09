@@ -8,6 +8,7 @@ import {
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { admin } from "better-auth/plugins";
+import { deleteUserWithGenerationSettlement } from "../chat/quota-service";
 import type { RuntimeConfig } from "../config/schema";
 import { createDatabase } from "../db/client";
 import * as schema from "../db/schema";
@@ -156,6 +157,13 @@ export function createAuth({
     user: {
       deleteUser: {
         enabled: true,
+        beforeDelete: async (user) => {
+          await deleteUserWithGenerationSettlement(
+            database,
+            user.id,
+            new Date(),
+          );
+        },
         sendDeleteAccountVerification: async ({ user, url }) => {
           await acceptEmail({
             kind: "delete-account",

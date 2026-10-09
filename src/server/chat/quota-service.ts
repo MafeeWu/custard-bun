@@ -104,6 +104,10 @@ interface SettlementCall {
   latencyMs: number | null;
 }
 
+interface SettlementRequirements {
+  leaseExpiredAtOrBefore?: Date;
+}
+
 export function userPeriod(now: Date): Period {
   const start = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
@@ -294,6 +298,7 @@ async function settleLockedGeneration(
   transaction: ChatTransaction,
   input: GenerationSettlement,
   knownReservation?: typeof quotaReservation.$inferSelect,
+  requirements?: SettlementRequirements,
 ): Promise<boolean> {
   const reservationPreview =
     knownReservation ??
@@ -340,13 +345,22 @@ async function settleLockedGeneration(
     return false;
   }
 
-  const [lease] = await transaction
+  const leaseQuery = transaction
     .select()
     .from(generationLease)
-    .where(eq(generationLease.attemptId, input.attemptId))
-    .for("update")
-    .limit(1);
-  if (lease && lease.ownerToken !== input.leaseOwner) {
+    .where(eq(generationLease.attemptId, input.attemptId));
+  const [lease] = requirements?.leaseExpiredAtOrBefore
+    ? await leaseQuery.for("update", { skipLocked: true }).limit(1)
+    : await leaseQuery.for("update").limit(1);
+  if (requirements?.leaseExpiredAtOrBefore) {
+    if (
+      !lease ||
+      lease.ownerToken !== input.leaseOwner ||
+      lease.expiresAt > requirements.leaseExpiredAtOrBefore
+    ) {
+      return false;
+    }
+  } else if (lease && lease.ownerToken !== input.leaseOwner) {
     throw new ChatDomainError(
       "CHAT_INTERNAL",
       "Generation lease owner does not match.",
@@ -464,15 +478,22 @@ async function reconcileExpiredWithinAdmission(
     .where(lte(generationLease.expiresAt, now));
 
   for (const lease of expired) {
-    await settleLockedGeneration(transaction, {
-      attemptId: lease.attemptId,
-      leaseOwner: lease.ownerToken,
-      outcome: "interrupted",
-      now,
-      providerCalls: [],
-      errorCategory: "CHAT_STREAM_INTERRUPTED",
-      retryable: true,
-    });
+    await settleLockedGeneration(
+      transaction,
+      {
+        attemptId: lease.attemptId,
+        leaseOwner: lease.ownerToken,
+        outcome: "interrupted",
+        now,
+        providerCalls: [],
+        errorCategory: "CHAT_STREAM_INTERRUPTED",
+        retryable: true,
+      },
+      undefined,
+      {
+        leaseExpiredAtOrBefore: now,
+      },
+    );
   }
 }
 
@@ -488,6 +509,19 @@ export async function admitGeneration(
   },
 ): Promise<GenerationAdmission> {
   await lockUserChatMutation(transaction, input.userId);
+
+  const [userRow] = await transaction
+    .select({ id: user.id, banned: user.banned })
+    .from(user)
+    .where(eq(user.id, input.userId))
+    .for("update")
+    .limit(1);
+  if (!userRow) {
+    throw new ChatDomainError("CHAT_NOT_FOUND", "User not found.");
+  }
+  if (userRow.banned) {
+    throw new ChatDomainError("CHAT_READ_ONLY", "This account is disabled.");
+  }
 
   const [settings] = await transaction
     .select()
@@ -512,11 +546,11 @@ export async function admitGeneration(
   const effectiveLimits = resolveEffectiveLimits(settings, override);
   const reservedTokens =
     input.estimatedInputTokens + input.maxOutputTokens;
-  const instanceBucket = await lockBucket(transaction, {
+  let instanceBucket = await lockBucket(transaction, {
     scope: "instance",
     period: instancePeriod(input.now),
   });
-  const userBucket = await lockBucket(transaction, {
+  let userBucket = await lockBucket(transaction, {
     scope: "user",
     userId: input.userId,
     period: userPeriod(input.now),
@@ -530,6 +564,12 @@ export async function admitGeneration(
     .limit(1);
 
   await reconcileExpiredWithinAdmission(transaction, input.now);
+
+  instanceBucket =
+    (await lockExistingBucket(transaction, instanceBucket.id)) ??
+    instanceBucket;
+  userBucket =
+    (await lockExistingBucket(transaction, userBucket.id)) ?? userBucket;
 
   if (existingUserLease && existingUserLease.expiresAt > input.now) {
     throw new ChatDomainError(
@@ -582,10 +622,8 @@ export async function admitGeneration(
     .select({
       id: conversation.id,
       lifecycle: conversation.lifecycle,
-      banned: user.banned,
     })
     .from(conversation)
-    .innerJoin(user, eq(user.id, conversation.userId))
     .where(
       and(
         eq(conversation.id, input.conversationId),
@@ -596,9 +634,6 @@ export async function admitGeneration(
     .limit(1);
   if (!conversationRow) {
     throw new ChatDomainError("CHAT_NOT_FOUND", "Conversation not found.");
-  }
-  if (conversationRow.banned) {
-    throw new ChatDomainError("CHAT_READ_ONLY", "This account is disabled.");
   }
   if (conversationRow.lifecycle !== "active") {
     throw new ChatDomainError("CHAT_READ_ONLY", "Conversation is read-only.");
@@ -749,6 +784,9 @@ export async function reconcileExpiredLeases(
           retryable: true,
         },
         preview,
+        {
+          leaseExpiredAtOrBefore: now,
+        },
       );
     });
     if (didSettle) {
@@ -757,4 +795,61 @@ export async function reconcileExpiredLeases(
   }
 
   return reconciled;
+}
+
+export async function deleteUserWithGenerationSettlement(
+  database: Database,
+  userId: string,
+  now: Date,
+): Promise<void> {
+  await database.transaction(async (transaction) => {
+    await lockUserChatMutation(transaction, userId);
+
+    const reservations = await transaction
+      .select()
+      .from(quotaReservation)
+      .where(
+        and(
+          eq(quotaReservation.userId, userId),
+          eq(quotaReservation.status, "active"),
+        ),
+      );
+
+    for (const reservation of reservations) {
+      const [lease] = await transaction
+        .select({ ownerToken: generationLease.ownerToken })
+        .from(generationLease)
+        .where(eq(generationLease.attemptId, reservation.attemptId))
+        .limit(1);
+      const [attempt] = await transaction
+        .select({ leaseOwner: generationAttempt.leaseOwner })
+        .from(generationAttempt)
+        .where(eq(generationAttempt.id, reservation.attemptId))
+        .limit(1);
+
+      await settleLockedGeneration(
+        transaction,
+        {
+          attemptId: reservation.attemptId,
+          leaseOwner: lease?.ownerToken ?? attempt?.leaseOwner ?? "",
+          outcome: "interrupted",
+          now,
+          providerCalls: [],
+          errorCategory: "CHAT_STREAM_INTERRUPTED",
+          retryable: false,
+        },
+        reservation,
+      );
+    }
+
+    await transaction
+      .update(usageLedger)
+      .set({
+        userId: null,
+        conversationId: null,
+        attemptId: null,
+      })
+      .where(eq(usageLedger.userId, userId));
+    await transaction.delete(user).where(eq(user.id, userId));
+  });
 }

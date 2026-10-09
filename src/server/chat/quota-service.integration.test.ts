@@ -22,6 +22,7 @@ import {
 import { testDatabaseUrl } from "@/test/database-target";
 import {
   admitGeneration,
+  deleteUserWithGenerationSettlement,
   instancePeriod,
   reconcileExpiredLeases,
   resolveEffectiveLimits,
@@ -309,65 +310,196 @@ describe("quota periods and effective limits", () => {
 });
 
 describe("transactional admission", () => {
-  test("admits only one concurrent request for the final user request slot", async () => {
+  test("waits for a racing final user request slot and returns the user quota code", async () => {
     await replaceSettings({ userDailyRequestLimit: 1 });
     const userId = await insertUser();
-    const first = await insertPendingAttempt({ userId });
-    const second = await insertPendingAttempt({ userId });
-    const firstDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
-    const secondDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
+    const attempt = await insertPendingAttempt({ userId });
+    const period = userPeriod(now);
+    const userBucketId = `user:${userId}:${period.start.toISOString()}`;
+    await database.insert(quotaBucket).values({
+      id: userBucketId,
+      scope: "user",
+      userId,
+      periodStart: period.start,
+      periodEnd: period.end,
+    });
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `user-slot-winner-${randomUUID()}`,
+      max: 1,
+    });
+    const admissionName = `user-slot-loser-${randomUUID()}`;
+    const admissionDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: admissionName,
+      max: 1,
+    });
+    const blocker = await blockerDatabase.$client.connect();
+    let admission: ReturnType<typeof admit> | undefined;
 
     try {
-      const results = await Promise.allSettled([
-        admit(firstDatabase, { userId, ...first }),
-        admit(secondDatabase, { userId, ...second }),
-      ]);
-
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(
-        1,
+      await blocker.query("BEGIN");
+      await blocker.query(
+        `UPDATE quota_buckets
+         SET consumed_requests = 1
+         WHERE id = $1`,
+        [userBucketId],
       );
-      expect(await database.select().from(generationLease)).toHaveLength(1);
-      const [userBucket] = (await bucketRows()).filter(
-        (bucket) => bucket.scope === "user",
+
+      admission = admit(admissionDatabase, { userId, ...attempt });
+      void admission.catch(() => undefined);
+      expect(await waitForWaitingQuery(admissionName)).toMatch(
+        /quota_buckets/i,
       );
-      expect(userBucket?.reservedRequests).toBe(1);
-    } finally {
-      await firstDatabase.$client.end();
-      await secondDatabase.$client.end();
-    }
-  });
+      await blocker.query("COMMIT");
 
-  test("admits only one concurrent reservation for the final instance tokens", async () => {
-    await replaceSettings({ instanceMonthlyTokenBudget: 200 });
-    const firstUserId = await insertUser();
-    const secondUserId = await insertUser();
-    const first = await insertPendingAttempt({ userId: firstUserId });
-    const second = await insertPendingAttempt({ userId: secondUserId });
-    const firstDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
-    const secondDatabase = createDatabase(testDatabaseUrl(), { max: 1 });
-
-    try {
-      const results = await Promise.allSettled([
-        admit(firstDatabase, { userId: firstUserId, ...first }),
-        admit(secondDatabase, { userId: secondUserId, ...second }),
-      ]);
-
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(
-        1,
-      );
-      const rejected = results.find((result) => result.status === "rejected");
-      expect(rejected).toMatchObject({
-        reason: { code: "CHAT_INSTANCE_TOKEN_BUDGET" },
+      await expect(admission).rejects.toMatchObject({
+        code: "CHAT_USER_REQUEST_QUOTA",
       });
-      const [instanceBucket] = (await bucketRows()).filter(
-        (bucket) => bucket.scope === "instance",
-      );
-      expect(instanceBucket?.reservedTokens).toBe(200);
+      expect(await database.select().from(generationLease)).toHaveLength(0);
+      expect(await database.select().from(quotaReservation)).toHaveLength(0);
     } finally {
-      await firstDatabase.$client.end();
-      await secondDatabase.$client.end();
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled(admission ? [admission] : []);
+      await blockerDatabase.$client.end();
+      await admissionDatabase.$client.end();
     }
+  }, 10_000);
+
+  test("waits for racing instance tokens and returns the instance token code", async () => {
+    await replaceSettings({ instanceMonthlyTokenBudget: 200 });
+    const userId = await insertUser();
+    const attempt = await insertPendingAttempt({ userId });
+    const period = instancePeriod(now);
+    const instanceBucketId = `instance:global:${period.start.toISOString()}`;
+    await database.insert(quotaBucket).values({
+      id: instanceBucketId,
+      scope: "instance",
+      periodStart: period.start,
+      periodEnd: period.end,
+    });
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `instance-token-winner-${randomUUID()}`,
+      max: 1,
+    });
+    const admissionName = `instance-token-loser-${randomUUID()}`;
+    const admissionDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: admissionName,
+      max: 1,
+    });
+    const blocker = await blockerDatabase.$client.connect();
+    let admission: ReturnType<typeof admit> | undefined;
+
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        `UPDATE quota_buckets
+         SET consumed_tokens = 1
+         WHERE id = $1`,
+        [instanceBucketId],
+      );
+
+      admission = admit(admissionDatabase, { userId, ...attempt });
+      void admission.catch(() => undefined);
+      expect(await waitForWaitingQuery(admissionName)).toMatch(
+        /quota_buckets/i,
+      );
+      await blocker.query("COMMIT");
+
+      await expect(admission).rejects.toMatchObject({
+        code: "CHAT_INSTANCE_TOKEN_BUDGET",
+      });
+      expect(await database.select().from(generationLease)).toHaveLength(0);
+      expect(await database.select().from(quotaReservation)).toHaveLength(0);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled(admission ? [admission] : []);
+      await blockerDatabase.$client.end();
+      await admissionDatabase.$client.end();
+    }
+  }, 10_000);
+
+  test("uses quota released by expiry reconciliation for the new admission", async () => {
+    await replaceSettings({
+      userDailyTokenLimit: 300,
+      instanceMonthlyTokenBudget: 300,
+    });
+    const userId = await insertUser();
+    const expired = await insertPendingAttempt({ userId });
+    await admit(database, {
+      userId,
+      ...expired,
+      estimatedInputTokens: 100,
+      maxOutputTokens: 100,
+    });
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date(now.getTime() - 1) })
+      .where(eq(generationLease.attemptId, expired.attemptId));
+    const next = await insertPendingAttempt({ userId });
+
+    await expect(
+      admit(database, {
+        userId,
+        ...next,
+        estimatedInputTokens: 100,
+        maxOutputTokens: 100,
+      }),
+    ).resolves.toMatchObject({ attemptId: next.attemptId });
+
+    for (const bucket of await bucketRows()) {
+      expect(bucket).toMatchObject({
+        consumedRequests: 1,
+        reservedRequests: 1,
+        consumedTokens: 100,
+        reservedTokens: 200,
+      });
+    }
+    expect(await database.select().from(usageLedger)).toHaveLength(1);
   });
+
+  test("waits for an in-flight disable and rejects the newly disabled user", async () => {
+    const userId = await insertUser();
+    const attempt = await insertPendingAttempt({ userId });
+    const disableDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `disable-winner-${randomUUID()}`,
+      max: 1,
+    });
+    const admissionName = `disabled-admission-loser-${randomUUID()}`;
+    const admissionDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: admissionName,
+      max: 1,
+    });
+    const disabling = await disableDatabase.$client.connect();
+    let admission: ReturnType<typeof admit> | undefined;
+
+    try {
+      await disabling.query("BEGIN");
+      await disabling.query(
+        `UPDATE "user"
+         SET banned = TRUE, ban_reason = 'Disabled during admission'
+         WHERE id = $1`,
+        [userId],
+      );
+
+      admission = admit(admissionDatabase, { userId, ...attempt });
+      void admission.catch(() => undefined);
+      expect(await waitForWaitingQuery(admissionName)).toMatch(/"user"/i);
+      await disabling.query("COMMIT");
+
+      await expect(admission).rejects.toMatchObject({
+        code: "CHAT_READ_ONLY",
+      });
+      expect(await database.select().from(generationLease)).toHaveLength(0);
+      expect(await database.select().from(quotaReservation)).toHaveLength(0);
+    } finally {
+      await disabling.query("ROLLBACK");
+      disabling.release();
+      await Promise.allSettled(admission ? [admission] : []);
+      await disableDatabase.$client.end();
+      await admissionDatabase.$client.end();
+    }
+  }, 10_000);
 
   test("permits only one user lease across different characters", async () => {
     const userId = await insertUser();
@@ -536,21 +668,51 @@ describe("transactional admission", () => {
     expect(await database.select().from(quotaReservation)).toHaveLength(0);
   });
 
-  test("does not create leases for banned users and cascades leases for deleted users", async () => {
+  test("does not create leases for banned users", async () => {
     const bannedUserId = await insertUser({ banned: true });
     const bannedAttempt = await insertPendingAttempt({ userId: bannedUserId });
     await expect(
       admit(database, { userId: bannedUserId, ...bannedAttempt }),
     ).rejects.toBeInstanceOf(ChatDomainError);
     expect(await database.select().from(generationLease)).toHaveLength(0);
+  });
 
+  test("settles an active generation before atomically deleting its user", async () => {
     const deletedUserId = await insertUser();
     const deletedAttempt = await insertPendingAttempt({
       userId: deletedUserId,
     });
     await admit(database, { userId: deletedUserId, ...deletedAttempt });
-    await database.delete(user).where(eq(user.id, deletedUserId));
+
+    await deleteUserWithGenerationSettlement(database, deletedUserId, now);
+
+    const [instanceBucket] = (await bucketRows()).filter(
+      (bucket) => bucket.scope === "instance",
+    );
+    expect(instanceBucket).toMatchObject({
+      reservedRequests: 0,
+      reservedTokens: 0,
+      consumedRequests: 1,
+      consumedTokens: 100,
+    });
+    expect(
+      (await bucketRows()).filter((bucket) => bucket.scope === "user"),
+    ).toHaveLength(0);
     expect(await database.select().from(generationLease)).toHaveLength(0);
+    expect(await database.select().from(quotaReservation)).toHaveLength(0);
+    expect(await database.select().from(user)).toHaveLength(0);
+    const ledgerRows = await database.select().from(usageLedger);
+    expect(ledgerRows).toHaveLength(1);
+    expect(ledgerRows[0]).toMatchObject({
+      userId: null,
+      conversationId: null,
+      attemptId: null,
+      userRequestUnits: 1,
+      inputTokens: 100,
+      outputTokens: 0,
+      usageIsEstimated: true,
+      outcome: "interrupted",
+    });
   });
 });
 
@@ -736,6 +898,70 @@ describe("settlement and reconciliation", () => {
     }
     expect(admission.leaseOwner).toBeTruthy();
   });
+
+  test("does not reconcile a lease refreshed after the expiry scan", async () => {
+    const userId = await insertUser();
+    const attempt = await insertPendingAttempt({ userId });
+    await admit(database, { userId, ...attempt });
+    await database
+      .update(generationLease)
+      .set({ expiresAt: new Date(now.getTime() - 1) })
+      .where(eq(generationLease.attemptId, attempt.attemptId));
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `reconcile-scan-blocker-${randomUUID()}`,
+      max: 1,
+    });
+    const reconcileName = `reconcile-after-scan-${randomUUID()}`;
+    const reconcileDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: reconcileName,
+      max: 1,
+    });
+    const refreshDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `lease-refresher-${randomUUID()}`,
+      max: 1,
+    });
+    const blocker = await blockerDatabase.$client.connect();
+    const refreshedExpiry = new Date(now.getTime() + 60_000);
+    let reconciliation: ReturnType<typeof reconcileExpiredLeases> | undefined;
+
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE",
+      );
+      reconciliation = reconcileExpiredLeases(reconcileDatabase, now);
+      void reconciliation.catch(() => undefined);
+      expect(await waitForWaitingQuery(reconcileName)).toMatch(/chat_settings/i);
+
+      await refreshDatabase.transaction(async (transaction) => {
+        await transaction
+          .update(generationLease)
+          .set({ expiresAt: refreshedExpiry, updatedAt: now })
+          .where(eq(generationLease.attemptId, attempt.attemptId));
+        await transaction
+          .update(generationAttempt)
+          .set({ leaseExpiresAt: refreshedExpiry, updatedAt: now })
+          .where(eq(generationAttempt.id, attempt.attemptId));
+      });
+      await blocker.query("COMMIT");
+
+      await expect(reconciliation).resolves.toBe(0);
+      expect(await database.select().from(generationLease)).toMatchObject([
+        { attemptId: attempt.attemptId, expiresAt: refreshedExpiry },
+      ]);
+      expect(await database.select().from(quotaReservation)).toMatchObject([
+        { attemptId: attempt.attemptId, status: "active" },
+      ]);
+      expect(await database.select().from(usageLedger)).toHaveLength(0);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await Promise.allSettled(reconciliation ? [reconciliation] : []);
+      await blockerDatabase.$client.end();
+      await reconcileDatabase.$client.end();
+      await refreshDatabase.$client.end();
+    }
+  }, 10_000);
 
   test("conversation deletion preserves consumed bucket accounting and numeric ledger usage", async () => {
     const userId = await insertUser();
