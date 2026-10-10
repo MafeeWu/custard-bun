@@ -5,13 +5,14 @@ import { requireSession } from "@/server/auth/require-session";
 import { getDatabase } from "@/server/db/database";
 import { listMemoryRelationships } from "@/server/memory/memory-queries";
 import { MemoryRelationshipOverview } from "@/components/memory/memory-relationship-overview";
+import { DataExportPanel } from "@/components/account/data-export-panel";
+import { listDataExportsForUser } from "@/server/privacy/data-export-service";
 
 export default async function AccountPage() {
   const session = await requireSession(await headers());
-  const relationships = await listMemoryRelationships(
-    await getDatabase(),
-    session.user.id,
-  );
+  const database = await getDatabase();
+  const relationships = await listMemoryRelationships(database, session.user.id);
+  const exports = await listDataExportsForUser(database, { userId: session.user.id, now: new Date() });
 
   return (
     <main>
@@ -37,6 +38,7 @@ export default async function AccountPage() {
         <MemoryRelationshipOverview relationships={relationships} />
       </section>
 
+      <DataExportPanel exports={exports} />
       <DeleteAccountForm email={session.user.email} />
     </main>
   );

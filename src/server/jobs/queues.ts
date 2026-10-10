@@ -8,6 +8,9 @@ export const MEMORY_EXTRACTION_DEAD_LETTER_QUEUE =
 export const RELATIONSHIP_SUMMARY_QUEUE = "relationship-summary";
 export const RELATIONSHIP_SUMMARY_DEAD_LETTER_QUEUE =
   "relationship-summary-dead-letter";
+export const DATA_EXPORT_QUEUE = "data-export";
+export const DATA_EXPORT_DEAD_LETTER_QUEUE = "data-export-dead-letter";
+export const DATA_EXPORT_EXPIRY_QUEUE = "data-export-expiry";
 
 interface EnsureQueuesOptions {
   authEmailRetryDelay?: number;
@@ -56,4 +59,8 @@ export async function ensureQueues(
     ...extractionOptions,
     deadLetter: null,
   });
+  await boss.createQueue(DATA_EXPORT_DEAD_LETTER_QUEUE);
+  await boss.createQueue(DATA_EXPORT_QUEUE, { ...extractionOptions, policy: "exclusive" });
+  await boss.updateQueue(DATA_EXPORT_QUEUE, { ...extractionOptions, deadLetter: null });
+  await boss.createQueue(DATA_EXPORT_EXPIRY_QUEUE);
 }

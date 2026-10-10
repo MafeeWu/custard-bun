@@ -4,6 +4,12 @@ import { requireSession } from "@/server/auth/require-session";
 import AccountPage from "./page";
 import { listMemoryRelationships } from "@/server/memory/memory-queries";
 vi.mock("@/server/db/database", () => ({ getDatabase: async () => ({}) }));
+vi.mock("@/server/privacy/data-export-service", () => ({
+  listDataExportsForUser: vi.fn(async () => []),
+}));
+vi.mock("@/components/account/data-export-panel", () => ({
+  DataExportPanel: () => <div data-testid="data-export-panel">Export your data</div>,
+}));
 vi.mock("@/server/memory/memory-queries", () => ({
   listMemoryRelationships: vi.fn(async () => [
     {
@@ -66,4 +72,5 @@ test("shows the current account details and deletion form", async () => {
     "/app/memories/character-1",
   );
   expect(screen.getByText(/Chat usage stopped/)).toBeVisible();
+  expect(screen.getByTestId("data-export-panel")).toBeVisible();
 });

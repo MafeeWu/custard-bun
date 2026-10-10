@@ -30,6 +30,7 @@ import {
 } from "@/server/db/schema";
 import { ChatDomainError } from "./chat-errors";
 import { lockUserChatMutation, type ChatTransaction } from "./chat-locks";
+import { cancelDataExportsForUser } from "@/server/privacy/data-export-service";
 import { createTokenCounter } from "./token-counter";
 
 const GENERATION_LEASE_DURATION_MS = 5 * 60_000;
@@ -971,6 +972,7 @@ export async function deleteUserWithGenerationSettlement(
 ): Promise<void> {
   await database.transaction(async (transaction) => {
     await lockUserChatMutation(transaction, userId);
+    await cancelDataExportsForUser(transaction, userId, now);
     const relationships = await transaction
       .select({ characterId: userCharacterMemorySetting.characterId })
       .from(userCharacterMemorySetting)

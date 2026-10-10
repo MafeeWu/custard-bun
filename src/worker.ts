@@ -13,6 +13,7 @@ import { createTokenCounter } from "@/server/chat/token-counter";
 import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
 import { registerRelationshipSummaryWorker } from "@/server/memory/relationship-summary-job";
 import { relationshipSummaryPolicyFromConfig } from "@/server/memory/relationship-summary-service";
+import { registerDataExportWorker } from "@/server/privacy/data-export-job";
 
 async function main(): Promise<void> {
   const config = await loadRuntimeConfig();
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   const summaryPolicy = relationshipSummaryPolicyFromConfig(config);
   let stopMemoryWorker: (() => Promise<void>) | undefined;
   let stopSummaryWorker: (() => Promise<void>) | undefined;
+  let stopExportWorker: (() => Promise<void>) | undefined;
 
   await runWorkerProcess({
     createDatabase: () => database,
@@ -36,6 +38,7 @@ async function main(): Promise<void> {
         stop: async () => {
           await stopMemoryWorker?.();
           await stopSummaryWorker?.();
+          await stopExportWorker?.();
           await heartbeat.stop();
         },
       };
@@ -64,6 +67,9 @@ async function main(): Promise<void> {
         console,
         summaryPolicy,
       );
+      stopExportWorker = await registerDataExportWorker(database, boss, console, {
+        maxArchiveBytes: config.public.memory.maxExportArchiveBytes,
+      });
     },
     onSignal: (signal, listener) => process.once(signal, listener),
     logger: console,

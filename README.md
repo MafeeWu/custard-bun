@@ -6,8 +6,8 @@ character administration, version-pinned conversations, an OpenAI-compatible
 model gateway, explicit interruption/retry states, transactional quotas, and
 aggregate-only usage administration. Phase 4 now includes durable automatic
 memory extraction, versioned relationship summaries, prompt recall, and
-owner-scoped memory management. Export and account-purge operations are still
-being implemented.
+owner-scoped memory management and private asynchronous data exports.
+Confirmed account-purge operations are still being implemented.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -142,6 +142,36 @@ character version instead of overwriting a file that an existing version
 references.
 
 ## Chat behavior and safety bounds
+
+### Private data exports
+
+The account privacy page can request an asynchronous ZIP of versioned JSON:
+safe profile fields, character relationships and pinned public character metadata,
+conversations/messages and attempts, memories/evidence, current and historical
+summaries, relationship controls/effective chat quotas, user-facing usage, and
+audit actions targeting the owner. Credentials, sessions, verification values,
+provider identities, recovery candidates, operation internals, and private audit
+metadata are excluded. Exports contain private product content; handle downloaded
+copies securely.
+
+Only the current authenticated owner can download an unexpired archive. ZIP
+bytes live in PostgreSQL `bytea`, never on disk or in queue payloads; SHA-256 and
+size are verified again at download. Downloads use `private, no-store` headers.
+Expiry is exactly 24 hours after completion; scheduled cleanup and owner reads
+remove expired archive bytes. The `memory.maxExportArchiveBytes` configuration
+defaults to 262144000 bytes and can be lowered; oversized exports fail without
+partial storage. An explicit failed-job retry creates a new job, preserving
+terminal database invariants.
+
+The worker registers export generation, ID-only dead letters, and minutely
+expiry cleanup alongside email, extraction, and summary work. Database retry
+counts/backoff and periodic reconciliation survive lost enqueue attempts and
+worker restarts. Snapshot generation holds canonical global/user mutation locks
+through a separate repeatable-read snapshot and archive publication; its database
+pool therefore needs at least two connections. Account-deletion integration must
+invoke `cancelDataExportsForUser` in the transaction that marks the user pending
+deletion: it cancels nonterminal jobs and physically removes completed archives.
+The existing hard-delete owning service already calls this seam.
 
 Signed-in users can start one active conversation per character. The opening
 message is persisted locally and does not call the provider. Each conversation

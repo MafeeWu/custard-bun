@@ -814,6 +814,9 @@ export const dataExportJob = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     status: dataExportStatusEnum("status").notNull().default("pending"),
     jobId: text("job_id"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    deadLetterPublishedAt: timestamp("dead_letter_published_at", { withTimezone: true }),
     archiveBytes: bytea("archive_bytes"),
     archiveSize: bigint("archive_size", { mode: "number" }),
     archiveSha256: text("archive_sha256"),
@@ -830,6 +833,8 @@ export const dataExportJob = pgTable(
       .notNull(),
   },
   (table) => [
+    check("data_export_jobs_attempt_count_range", sql`${table.attemptCount} BETWEEN 0 AND 5`),
+    check("data_export_jobs_retry_shape_check", sql`${table.nextRetryAt} IS NULL OR ${table.status} = 'pending'`),
     uniqueIndex("data_export_jobs_one_active_per_user_idx")
       .on(table.userId)
       .where(sql`${table.status} IN ('pending', 'running')`),
