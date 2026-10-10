@@ -17,6 +17,7 @@ import { characterVersion } from "@/server/db/character-schema";
 import { disableOrdinaryUser } from "@/server/admin/user-service";
 import { createCharacterService } from "@/server/characters/character-service";
 import { OFFICIAL_CHARACTER_SEEDS } from "@/server/characters/seed-definitions";
+import { seedChatSettings } from "@/server/chat/chat-settings-seed";
 import { createEmailQueue, type EmailQueue } from "@/server/email/email-queue";
 import { createBoss } from "@/server/jobs/boss";
 import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
@@ -68,6 +69,19 @@ const baseConfig: RuntimeConfig = {
       defaultInstanceMonthlyRequestLimit: 10000,
       defaultInstanceMonthlyTokenBudget: 10000000,
       maxConcurrentGenerations: 4,
+    },
+    memory: {
+      enabled: true,
+      promptTokenBudget: 2048,
+      relationshipSummaryTokenBudget: 512,
+      memoryItemsTokenBudget: 1536,
+      maxActiveItemsPerCharacter: 200,
+      maxItemCharacters: 500,
+      maxSummaryCharacters: 4000,
+      extractionRetryLimit: 5,
+      extractionRetryDelaySeconds: 60,
+      exportRetentionHours: 24,
+      maxExportArchiveBytes: 262144000,
     },
   },
   secret: {
@@ -134,6 +148,10 @@ async function countPersistedAuthRecords() {
     userCount: persistedUsers.length,
     credentialAccountCount: persistedAccounts.length,
   };
+}
+
+async function ensureChatSettings() {
+  await seedChatSettings(database, baseConfig.public.chat);
 }
 
 function normalizeSignUpResponse(body: Record<string, unknown>) {
@@ -205,10 +223,12 @@ describe("createAuth", () => {
     await boss.start();
     await ensureQueues(boss, { authEmailRetryDelay: 60 });
     await truncateTestState();
+    await ensureChatSettings();
   });
 
   beforeEach(async () => {
     await truncateTestState();
+    await ensureChatSettings();
   });
 
   afterAll(async () => {

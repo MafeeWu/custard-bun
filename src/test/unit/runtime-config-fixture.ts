@@ -23,6 +23,18 @@ chat:
   defaultInstanceMonthlyRequestLimit: 10000
   defaultInstanceMonthlyTokenBudget: 10000000
   maxConcurrentGenerations: 4
+memory:
+  enabled: true
+  promptTokenBudget: 2048
+  relationshipSummaryTokenBudget: 512
+  memoryItemsTokenBudget: 1536
+  maxActiveItemsPerCharacter: 200
+  maxItemCharacters: 500
+  maxSummaryCharacters: 4000
+  extractionRetryLimit: 5
+  extractionRetryDelaySeconds: 60
+  exportRetentionHours: 24
+  maxExportArchiveBytes: 262144000
 `;
 
 export const validSecretEnv = {

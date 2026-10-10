@@ -37,6 +37,31 @@ export const chatConfigSchema = z
     path: ["maxOutputTokens"],
   });
 
+export const memoryConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    promptTokenBudget: z.number().int().min(1).max(2_048),
+    relationshipSummaryTokenBudget: z.number().int().min(1).max(512),
+    memoryItemsTokenBudget: z.number().int().min(1).max(1_536),
+    maxActiveItemsPerCharacter: z.number().int().min(1).max(1_000),
+    maxItemCharacters: z.number().int().min(1).max(500),
+    maxSummaryCharacters: z.number().int().min(1).max(4_000),
+    extractionRetryLimit: z.number().int().min(1).max(10),
+    extractionRetryDelaySeconds: z.number().int().min(1).max(86_400),
+    exportRetentionHours: z.literal(24),
+    maxExportArchiveBytes: z.number().int().min(1).max(262_144_000),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.relationshipSummaryTokenBudget + value.memoryItemsTokenBudget <=
+      value.promptTokenBudget,
+    {
+      message: "summary and item budgets must fit within the memory prompt budget",
+      path: ["relationshipSummaryTokenBudget"],
+    },
+  );
+
 export const publicAppConfigSchema = z
   .object({
     branding: z
@@ -62,8 +87,14 @@ export const publicAppConfigSchema = z
       })
       .strict(),
     chat: chatConfigSchema,
+    memory: memoryConfigSchema,
   })
-  .strict();
+  .strict()
+  .refine((value) => value.memory.promptTokenBudget < value.chat.promptTokenBudget, {
+    message:
+      "memory prompt budget must be below the overall chat prompt budget",
+    path: ["memory", "promptTokenBudget"],
+  });
 
 const booleanString = z
   .enum(["true", "false"])
@@ -89,6 +120,7 @@ export const secretConfigSchema = z
 
 export type PublicAppConfig = z.infer<typeof publicAppConfigSchema>;
 export type ChatDeploymentConfig = z.infer<typeof chatConfigSchema>;
+export type MemoryDeploymentConfig = z.infer<typeof memoryConfigSchema>;
 
 export interface ModelSecretConfig {
   apiBaseUrl: string;

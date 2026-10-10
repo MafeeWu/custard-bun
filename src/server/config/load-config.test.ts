@@ -6,6 +6,20 @@ import { loadRuntimeConfig } from "./load-config";
 import { validSecretEnv, validYaml } from "@/test/unit/runtime-config-fixture";
 
 const directories: string[] = [];
+const validMemoryBlock = `memory:
+  enabled: true
+  promptTokenBudget: 2048
+  relationshipSummaryTokenBudget: 512
+  memoryItemsTokenBudget: 1536
+  maxActiveItemsPerCharacter: 200
+  maxItemCharacters: 500
+  maxSummaryCharacters: 4000
+  extractionRetryLimit: 5
+  extractionRetryDelaySeconds: 60
+  exportRetentionHours: 24
+  maxExportArchiveBytes: 262144000
+`;
+
 afterEach(async () => {
   await Promise.all(
     directories
@@ -27,6 +41,24 @@ async function writeConfig(contents: string) {
   return configPath;
 }
 
+function fixtureWithMemory(replacement: string) {
+  if (replacement.startsWith("memory:\n")) {
+    return validYaml.replace(validMemoryBlock, `${replacement}\n`);
+  }
+
+  const key = replacement.split(":")[0]?.trim();
+  const currentLine = validMemoryBlock
+    .trimEnd()
+    .split("\n")
+    .find((line) => line.trimStart().startsWith(`${key}:`));
+
+  if (!currentLine) {
+    throw new Error(`Unknown memory replacement: ${replacement}`);
+  }
+
+  return validYaml.replace(currentLine, `  ${replacement}`);
+}
+
 describe("loadRuntimeConfig", () => {
   test("loads public branding and secrets", async () => {
     const configPath = await writeConfig(validYaml);
@@ -38,6 +70,19 @@ describe("loadRuntimeConfig", () => {
     expect(config.public.branding.name).toBe("Custard Bun");
     expect(config.public.registration.open).toBe(true);
     expect(config.public.chat.promptTokenBudget).toBe(8192);
+    expect(config.public.memory).toEqual({
+      enabled: true,
+      promptTokenBudget: 2048,
+      relationshipSummaryTokenBudget: 512,
+      memoryItemsTokenBudget: 1536,
+      maxActiveItemsPerCharacter: 200,
+      maxItemCharacters: 500,
+      maxSummaryCharacters: 4000,
+      extractionRetryLimit: 5,
+      extractionRetryDelaySeconds: 60,
+      exportRetentionHours: 24,
+      maxExportArchiveBytes: 262144000,
+    });
     expect(config.secret.databaseUrl).toContain("postgresql://");
     expect(config.secret.model.modelId).toBe("test-chat-model");
   });
@@ -142,5 +187,36 @@ describe("loadRuntimeConfig", () => {
     } catch (error) {
       expect(String(error)).not.toContain("private-token");
     }
+  });
+
+  test.each([
+    ["unknown memory key", "memory:\n  unknown: true", "memory"],
+    [
+      "memory item and summary budgets exceed the memory prompt budget",
+      "relationshipSummaryTokenBudget: 1025",
+      "relationshipSummaryTokenBudget",
+    ],
+    [
+      "memory prompt budget matches the overall chat prompt budget",
+      "promptTokenBudget: 8192",
+      "promptTokenBudget",
+    ],
+    ["retention other than 24 hours", "exportRetentionHours: 12", "24"],
+    ["zero active-item limit", "maxActiveItemsPerCharacter: 0", "maxActiveItemsPerCharacter"],
+    ["zero max item characters", "maxItemCharacters: 0", "maxItemCharacters"],
+    ["zero max summary characters", "maxSummaryCharacters: 0", "maxSummaryCharacters"],
+    ["zero extraction retry limit", "extractionRetryLimit: 0", "extractionRetryLimit"],
+    [
+      "zero extraction retry delay",
+      "extractionRetryDelaySeconds: 0",
+      "extractionRetryDelaySeconds",
+    ],
+    ["zero export archive bytes", "maxExportArchiveBytes: 0", "maxExportArchiveBytes"],
+  ])("rejects %s", async (_title, replacement, expectedField) => {
+    const configPath = await writeConfig(fixtureWithMemory(replacement));
+
+    await expect(
+      loadRuntimeConfig({ configPath, env: validSecretEnv }),
+    ).rejects.toThrow(expectedField);
   });
 });
