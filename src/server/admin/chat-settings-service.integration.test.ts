@@ -5,6 +5,7 @@ import { createDatabase } from "@/server/db/client";
 import {
   adminAuditEvent,
   chatSettings,
+  memorySettings,
   user,
   userChatQuotaOverride,
 } from "@/server/db/schema";
@@ -78,10 +79,34 @@ beforeEach(async () => {
     deploymentDefaultInstanceMonthlyTokenBudget: 50_000,
     deploymentDefaultMaxConcurrentGenerations: 2,
   });
+  await database
+    .insert(memorySettings)
+    .values({
+      id: "global",
+      enabled: true,
+      deploymentDefaultEnabled: true,
+    })
+    .onConflictDoNothing();
 });
 
 afterAll(async () => {
   await database.$client.end();
+});
+
+test("rejects quota overrides targeting deletion-pending ordinary users without audit identity", async () => {
+  await database
+    .update(user)
+    .set({ deletionPendingAt: new Date() })
+    .where(eq(user.id, "ordinary-1"));
+  await expect(
+    setUserChatQuotaOverride(database, actor, {
+      userId: "ordinary-1",
+      dailyRequestLimit: 20,
+      dailyTokenLimit: 200,
+    }),
+  ).rejects.toThrow("Only ordinary users can be managed");
+  expect(await database.select().from(userChatQuotaOverride)).toHaveLength(0);
+  expect(await database.select().from(adminAuditEvent)).toHaveLength(0);
 });
 
 async function settings() {

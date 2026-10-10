@@ -195,18 +195,26 @@ Better Auth direct deletion, including administrator hard removal, is disabled.
 Session lookups, auth mutation fences, product services, and SMTP eligibility
 reject deletion-pending owners. SMTP delivery and signup publication serialize
 with confirmation; successful email jobs are stripped of recipient/token data.
+Impersonated sessions also require an eligible, existing impersonator, and both
+session relationships are revoked on lockout and final purge. Recovery record
+insertion validates the exact current owner under the canonical deletion fence;
+delayed recovery against a pending or removed owner stays a uniform no-op.
+Administrator user-state and quota mutations cannot target pending accounts.
 
 The worker dispatches the ID-only `account-purge` queue at high priority. Each
 stage commits independently: settlement, exports, memory/operations,
 conversations, audit de-identification, and final auth removal. The final
-transaction removes auth dependents, completes a content-free tombstone with
-`user_id = null`, then deletes the auth user before committing. Numeric usage
-totals and de-identified audit event counts survive; private content, credentials,
-verification data, owned rate-limit keys, and background identities do not.
+transaction repeats audit de-identification, removes auth dependents, completes
+a content-free tombstone with `user_id = null`, then deletes the auth user before
+committing. Numeric usage totals and de-identified audit event counts survive;
+private content, credentials, verification data, owned rate-limit keys, and
+background identities do not.
 Previously published public character snapshots remain immutable.
 
 Five failures at one stage produce an ID-only `account-purge-dead-letter`;
 periodic database reconciliation survives lost dispatches or worker restarts.
+Runnable dispatch has its own batch, independent of exhausted dead letters;
+already-published dead letters cannot starve newer confirmed deletions.
 `getAccountPurgeState` exposes only safe state and the oldest stuck purge;
 `retryAccountPurge` resumes that same request/stage, including harmless completed
 tombstone retries. Administrative retry/dashboard UI is a later phase.

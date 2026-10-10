@@ -7,6 +7,7 @@ import { requireAdminWrite } from "@/server/admin/require-admin-write";
 import { user } from "@/server/db/auth-schema";
 import { chatSettings, userChatQuotaOverride } from "@/server/db/chat-schema";
 import type { Database } from "@/server/db/client";
+import { lockUserChatMutation } from "@/server/chat/chat-locks";
 
 export type ChatSettingsAdminErrorCode =
   "INVALID_SETTINGS" | "SETTINGS_CONFLICT" | "SETTINGS_NOT_INITIALIZED";
@@ -257,14 +258,19 @@ export async function setUserChatQuotaOverride(
   validateOverride(input.dailyTokenLimit, "Daily token limit");
 
   await database.transaction(async (transaction) => {
+    await lockUserChatMutation(transaction, input.userId);
     await requireAdminWrite(transaction, actor);
     const [target] = await transaction
-      .select({ id: user.id, role: user.role })
+      .select({
+        id: user.id,
+        role: user.role,
+        deletionPendingAt: user.deletionPendingAt,
+      })
       .from(user)
       .where(eq(user.id, input.userId))
       .for("update")
       .limit(1);
-    if (!target || target.role !== "user") {
+    if (!target || target.role !== "user" || target.deletionPendingAt) {
       throw new Error("Only ordinary users can be managed");
     }
 

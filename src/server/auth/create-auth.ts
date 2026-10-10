@@ -15,8 +15,9 @@ import type { EmailQueue } from "../email/email-queue";
 import { assertRegistrationOpen } from "./registration-policy";
 import type { EmailQueueJob } from "../email/email-job";
 import { safeErrorName, type SafeLogger } from "../logging/safe-error";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { lockUserChatMutation } from "../chat/chat-locks";
+import { randomUUID } from "node:crypto";
 
 export interface AuthDependencies {
   database: ReturnType<typeof createDatabase>;
@@ -83,6 +84,18 @@ export function createAuth({
           }
           return result;
         } catch (error) {
+          const cause = error instanceof Error ? error.cause : undefined;
+          if (
+            input.model === "verification" &&
+            cause instanceof Error &&
+            "code" in cause &&
+            cause.code === "23514" &&
+            cause.message === "recovery owner is unavailable"
+          ) {
+            // A stale recovery lookup gets the same public response as a missing
+            // owner. Nothing is persisted; email acceptance rechecks eligibility.
+            return { ...input.data, id: randomUUID() } as R;
+          }
           rethrowSessionError(error);
         }
       },
@@ -114,15 +127,40 @@ export function createAuth({
       ): Promise<T | null> {
         const result = await instance.findOne<T>(input);
         // Better Auth's authoritative session lookup joins the current user.
-        const owner = (
-          result as {
-            user?: { banned?: boolean; deletionPendingAt?: Date | null };
-          } | null
-        )?.user;
-        return input.model === "session" &&
-          (owner?.banned === true || owner?.deletionPendingAt)
-          ? null
-          : result;
+        const record = result as {
+          user?: { banned?: boolean; deletionPendingAt?: Date | null };
+          id?: string;
+          userId?: string;
+          impersonatedBy?: string | null;
+        } | null;
+        if (input.model !== "session" || !record) return result;
+        if (record.user?.banned === true || record.user?.deletionPendingAt)
+          return null;
+        if (!record.impersonatedBy) return result;
+        if (!record.id || !record.userId) return null;
+        const sessionId = record.id;
+        const ownerIds = [
+          ...new Set([record.userId, record.impersonatedBy]),
+        ].sort();
+        return database.transaction(async (tx) => {
+          for (const id of ownerIds) await lockUserChatMutation(tx, id);
+          const owners = await tx
+            .select()
+            .from(schema.user)
+            .where(inArray(schema.user.id, ownerIds))
+            .for("share");
+          const [current] = await tx
+            .select()
+            .from(schema.session)
+            .where(eq(schema.session.id, sessionId));
+          return current &&
+            current.userId === record.userId &&
+            current.impersonatedBy === record.impersonatedBy &&
+            owners.length === ownerIds.length &&
+            owners.every((owner) => !owner.banned && !owner.deletionPendingAt)
+            ? result
+            : null;
+        });
       },
     };
   }
@@ -276,7 +314,7 @@ export function createAuth({
               .select({ deletionPendingAt: schema.user.deletionPendingAt })
               .from(schema.user)
               .where(eq(schema.user.id, existing.user.id));
-            if (owner?.deletionPendingAt) {
+            if (!owner || owner.deletionPendingAt) {
               await acceptEmail({ kind: "noop" });
               return ctx.json(
                 ctx.path === "/request-password-reset"

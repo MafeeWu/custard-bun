@@ -9,6 +9,7 @@ import {
   vi,
 } from "vitest";
 import type { PgBoss } from "pg-boss";
+import type { EmailQueueJob } from "@/server/email/email-job";
 import { eq, sql } from "drizzle-orm";
 import type { RuntimeConfig } from "@/server/config/schema";
 import { createDatabase, type Database } from "@/server/db/client";
@@ -723,6 +724,497 @@ describe("createAuth", () => {
     expect(await session()).toBeNull();
   });
 
+  async function impersonatingSession(auth: ReturnType<typeof createAuth>) {
+    const adminCookie = await signInVerified(auth);
+    const [administrator] = await database
+      .update(user)
+      .set({ role: "admin" })
+      .where(eq(user.email, signUpBody.email))
+      .returning();
+    await database.insert(user).values({
+      id: "impersonation-target",
+      name: "Target",
+      email: "impersonation-target@example.com",
+      emailVerified: true,
+      role: "user",
+    });
+    const request = post("/admin/impersonate-user", {
+      userId: "impersonation-target",
+    });
+    request.headers.set("cookie", adminCookie);
+    const response = await auth.handler(request);
+    expect(response.status).toBe(200);
+    const cookies = new Map<string, string>();
+    for (const item of response.headers.getSetCookie()) {
+      const pair = item.split(";")[0];
+      cookies.set(pair.slice(0, pair.indexOf("=")), pair);
+    }
+    const cookie = [...cookies.values()].join("; ");
+    expect(
+      (await auth.api.getSession({ headers: new Headers({ cookie }) }))?.user
+        .id,
+    ).toBe("impersonation-target");
+    return { administrator, cookie };
+  }
+
+  test.each(["pending", "deleted", "banned"])(
+    "retained impersonation cookie rejects a %s impersonator at API and page boundaries",
+    async (state) => {
+      const { auth } = await createTestAuth({ registrationOpen: true });
+      const { administrator, cookie } = await impersonatingSession(auth);
+      if (state === "deleted")
+        await database.delete(user).where(eq(user.id, administrator.id));
+      else
+        await database
+          .update(user)
+          .set(
+            state === "pending"
+              ? { deletionPendingAt: new Date() }
+              : { banned: true },
+          )
+          .where(eq(user.id, administrator.id));
+      const headers = new Headers({ cookie });
+      expect(await auth.api.getSession({ headers })).toBeNull();
+      vi.mocked(getAuth).mockResolvedValue(auth);
+      await expect(requireSession(headers)).rejects.toThrow(
+        "redirect:/auth/sign-in",
+      );
+    },
+  );
+
+  test.each(["pending", "deleted"])(
+    "impersonation insertion paused across %s impersonator deletion cannot commit",
+    async (state) => {
+      const { auth } = await createTestAuth({ registrationOpen: true });
+      const { administrator } = await impersonatingSession(auth);
+      const now = new Date();
+      const requested = await requestAccountDeletion(database, {
+        userId: administrator.id,
+        email: administrator.email,
+        now,
+      });
+      const inserting = createDatabase(databaseUrl, {
+        application_name: "impersonation-insertion-race",
+      });
+      await database.execute(sql`
+        CREATE FUNCTION task10_pause_impersonation() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.id = 'late-impersonation' THEN
+            PERFORM pg_advisory_xact_lock(hashtextextended('task10-impersonation', 0));
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER a_task10_pause_impersonation BEFORE INSERT ON session
+        FOR EACH ROW EXECUTE FUNCTION task10_pause_impersonation()
+      `);
+      let insertion: Promise<boolean> | undefined;
+      try {
+        await database.transaction(async (tx) => {
+          await tx.execute(sql`
+            SELECT pg_advisory_xact_lock(hashtextextended('task10-impersonation', 0))
+          `);
+          insertion = inserting
+            .insert(session)
+            .values({
+              id: "late-impersonation",
+              token: leakedToken,
+              userId: "impersonation-target",
+              impersonatedBy: administrator.id,
+              expiresAt: new Date(Date.now() + 86_400_000),
+            })
+            .then(
+              () => true,
+              () => false,
+            );
+          await waitForDatabaseLock("impersonation-insertion-race");
+          await confirmAccountDeletion(database, {
+            token: requested.verificationToken,
+            now,
+          });
+          if (state === "deleted")
+            while (
+              (await processAccountPurgeStage(
+                database,
+                requested.requestId,
+                now,
+              )) === "continue"
+            ) {}
+        });
+        expect(await insertion).toBe(false);
+        expect(
+          await database
+            .select()
+            .from(session)
+            .where(eq(session.impersonatedBy, administrator.id)),
+        ).toHaveLength(0);
+      } finally {
+        await insertion;
+        await database.execute(sql`
+          DROP TRIGGER a_task10_pause_impersonation ON session;
+          DROP FUNCTION task10_pause_impersonation()
+        `);
+        await inserting.$client.end();
+      }
+    },
+  );
+
+  test.each(["/request-password-reset", "/send-verification-email"])(
+    "recovery lookup paused across final purge leaves no verification or email private bytes: %s",
+    async (path) => {
+      const output = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { auth } = await createTestAuth({
+        registrationOpen: true,
+        emailQueue: createEmailQueue(boss),
+      });
+      await auth.handler(post("/sign-up/email", signUpBody));
+      const [owner] = await database.select().from(user);
+      const now = new Date();
+      const requested = await requestAccountDeletion(database, {
+        userId: owner.id,
+        email: owner.email,
+        now,
+      });
+      const context = await auth.$context;
+      const original = context.internalAdapter.findUserByEmail.bind(
+        context.internalAdapter,
+      );
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let lookups = 0;
+      vi.spyOn(context.internalAdapter, "findUserByEmail").mockImplementation(
+        async (...args) => {
+          const result = await original(...args);
+          if (++lookups === 2) {
+            entered();
+            await gate;
+          }
+          return result;
+        },
+      );
+      const recovering = auth.handler(post(path, { email: owner.email }));
+      try {
+        await started;
+        await confirmAccountDeletion(database, {
+          token: requested.verificationToken,
+          now,
+        });
+        while (
+          (await processAccountPurgeStage(
+            database,
+            requested.requestId,
+            now,
+          )) === "continue"
+        ) {}
+        release();
+        const response = await recovering;
+        const missing = await auth.handler(
+          post(path, { email: "missing@example.com" }, "192.0.2.11"),
+        );
+        expect(response.status).toBe(missing.status);
+        expect(await response.text()).toBe(await missing.text());
+        expect(await database.select().from(verification)).toHaveLength(0);
+        const jobs = await boss.findJobs<EmailQueueJob>(AUTH_EMAIL_QUEUE, {});
+        expect(jobs.every((job) => job.data.kind === "noop")).toBe(true);
+        expect(JSON.stringify(jobs)).not.toMatch(
+          /person@example|reset-password:|private|actionUrl/,
+        );
+        expect(inspect(output.mock.calls)).not.toMatch(
+          /Failed query|params:|person@example|reset-password:/,
+        );
+      } finally {
+        release();
+        await recovering;
+      }
+    },
+  );
+
+  test.each(["pending", "missing"])(
+    "database rejects recovery verification for a %s authoritative owner",
+    async (state) => {
+      if (state === "pending")
+        await database.insert(user).values({
+          id: "recovery-owner",
+          name: "Recovery",
+          email: "recovery@example.com",
+          deletionPendingAt: new Date(),
+        });
+      const accepted = await database
+        .insert(verification)
+        .values({
+          id: "late-recovery",
+          identifier: "reset-password:private-reset-token",
+          value: "recovery-owner",
+          expiresAt: new Date(Date.now() + 3_600_000),
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      expect(accepted).toBe(false);
+      expect(await database.select().from(verification)).toHaveLength(0);
+    },
+  );
+
+  test("Better Auth admin mutations cannot rewrite a pending target or publish its identity", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    await database
+      .update(user)
+      .set({ role: "admin" })
+      .where(eq(user.email, signUpBody.email));
+    await database.insert(user).values({
+      id: "pending-admin-target",
+      name: "Pending",
+      email: "pending-target@example.com",
+      role: "user",
+      deletionPendingAt: new Date(),
+    });
+
+    for (const [path, body] of [
+      [
+        "/admin/ban-user",
+        { userId: "pending-admin-target", banReason: leakedToken },
+      ],
+      ["/admin/set-role", { userId: "pending-admin-target", role: "admin" }],
+      [
+        "/admin/update-user",
+        { userId: "pending-admin-target", data: { name: leakedToken } },
+      ],
+    ] as const) {
+      const request = post(path, body);
+      request.headers.set("cookie", cookie);
+      const response = await auth.handler(request);
+      expect(response.status).toBe(403);
+      expect(await response.text()).not.toMatch(
+        /Failed query|params:|private-session/,
+      );
+    }
+    expect(
+      await database
+        .select()
+        .from(user)
+        .where(eq(user.id, "pending-admin-target")),
+    ).toMatchObject([
+      {
+        name: "Pending",
+        role: "user",
+        banned: false,
+        banReason: null,
+      },
+    ]);
+  });
+
+  test("session refresh already holding its row cannot invert the canonical deletion locks", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    await signInVerified(auth);
+    const [owner] = await database.select().from(user);
+    const [retained] = await database.select().from(session);
+    const now = new Date();
+    const requested = await requestAccountDeletion(database, {
+      userId: owner.id,
+      email: owner.email,
+      now,
+    });
+    const refreshing = createDatabase(databaseUrl, {
+      application_name: "session-refresh-before-delete",
+    });
+    const confirming = createDatabase(databaseUrl, {
+      application_name: "delete-after-session-refresh",
+    });
+    await database.execute(sql`
+      CREATE FUNCTION task10_pause_session_refresh() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_advisory_xact_lock(hashtextextended('task10-session-refresh', 0)); RETURN NEW; END $$;
+      CREATE TRIGGER a_task10_pause_session_refresh BEFORE UPDATE ON session
+      FOR EACH ROW EXECUTE FUNCTION task10_pause_session_refresh()
+    `);
+    let refresh: Promise<boolean> | undefined;
+    let confirmation: Promise<boolean> | undefined;
+    try {
+      await database.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended('task10-session-refresh', 0))`,
+        );
+        refresh = refreshing
+          .update(session)
+          .set({ updatedAt: now })
+          .where(eq(session.id, retained.id))
+          .then(
+            () => true,
+            () => false,
+          );
+        await waitForDatabaseLock("session-refresh-before-delete");
+        confirmation = confirmAccountDeletion(confirming, {
+          token: requested.verificationToken,
+          now,
+        }).then(
+          () => true,
+          () => false,
+        );
+        await waitForDatabaseLock("delete-after-session-refresh");
+        const { rows } = await database.$client.query(
+          "SELECT query FROM pg_stat_activity WHERE application_name = $1",
+          ["delete-after-session-refresh"],
+        );
+        expect(rows[0].query).toMatch(/delete from "session"/i);
+      });
+      expect(await refresh).toBe(true);
+      expect(await confirmation).toBe(true);
+      expect(await database.select().from(session)).toHaveLength(0);
+    } finally {
+      await Promise.allSettled([refresh, confirmation].filter(Boolean));
+      await database.execute(sql`
+        DROP TRIGGER a_task10_pause_session_refresh ON session;
+        DROP FUNCTION task10_pause_session_refresh()
+      `);
+      await refreshing.$client.end();
+      await confirming.$client.end();
+    }
+  });
+
+  test("session identity relationships cannot be reassigned by an update", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const { administrator } = await impersonatingSession(auth);
+    const accepted = await database
+      .update(session)
+      .set({ impersonatedBy: null })
+      .where(eq(session.impersonatedBy, administrator.id))
+      .then(
+        () => true,
+        () => false,
+      );
+    expect(accepted).toBe(false);
+    expect(
+      await database
+        .select()
+        .from(session)
+        .where(eq(session.impersonatedBy, administrator.id)),
+    ).toHaveLength(1);
+  });
+
+  test("impersonation API insertion delayed until final purge returns only a safe denial", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    const [administrator] = await database
+      .update(user)
+      .set({ role: "admin" })
+      .where(eq(user.email, signUpBody.email))
+      .returning();
+    await database.insert(user).values({
+      id: "delayed-api-target",
+      name: "Target",
+      email: "delayed-target@example.com",
+      emailVerified: true,
+      role: "user",
+    });
+    const context = await auth.$context;
+    const original = context.internalAdapter.createSession.bind(
+      context.internalAdapter,
+    );
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(context.internalAdapter, "createSession").mockImplementation(
+      async (...args) => {
+        entered();
+        await gate;
+        return original(...args);
+      },
+    );
+    const request = post("/admin/impersonate-user", {
+      userId: "delayed-api-target",
+    });
+    request.headers.set("cookie", cookie);
+    const impersonating = auth.handler(request);
+    try {
+      await started;
+      const now = new Date();
+      const requested = await requestAccountDeletion(database, {
+        userId: administrator.id,
+        email: administrator.email,
+        now,
+      });
+      await confirmAccountDeletion(database, {
+        token: requested.verificationToken,
+        now,
+      });
+      while (
+        (await processAccountPurgeStage(database, requested.requestId, now)) ===
+        "continue"
+      ) {}
+      release();
+      const response = await impersonating;
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "BANNED_USER",
+      });
+      expect(response.headers.getSetCookie().join(";")).not.toMatch(
+        /session_token=[^;]/,
+      );
+      expect(await database.select().from(session)).toHaveLength(0);
+      expect(inspect(output.mock.calls)).not.toMatch(
+        /Failed query|params:|session_token|person@example/,
+      );
+    } finally {
+      release();
+      await impersonating;
+    }
+  });
+
+  test("impersonated session lookup queued behind confirmation rechecks both relationships", async () => {
+    const reader = createDatabase(databaseUrl, {
+      application_name: "impersonation-lookup-after-confirm",
+    });
+    const confirming = createDatabase(databaseUrl, {
+      application_name: "impersonation-confirm-before-lookup",
+    });
+    const { auth } = await createTestAuth({
+      registrationOpen: true,
+      database: reader,
+    });
+    const { administrator, cookie } = await impersonatingSession(auth);
+    const now = new Date();
+    const requested = await requestAccountDeletion(database, {
+      userId: administrator.id,
+      email: administrator.email,
+      now,
+    });
+    let confirmation: ReturnType<typeof confirmAccountDeletion> | undefined;
+    let lookup: ReturnType<typeof auth.api.getSession> | undefined;
+    try {
+      await database.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE`,
+        );
+        confirmation = confirmAccountDeletion(confirming, {
+          token: requested.verificationToken,
+          now,
+        });
+        await waitForDatabaseLock("impersonation-confirm-before-lookup");
+        lookup = auth.api.getSession({ headers: new Headers({ cookie }) });
+        await waitForDatabaseLock("impersonation-lookup-after-confirm");
+      });
+      await confirmation;
+      expect(await lookup).toBeNull();
+      expect(await database.select().from(session)).toHaveLength(0);
+    } finally {
+      await Promise.allSettled([confirmation, lookup].filter(Boolean));
+      await reader.$client.end();
+      await confirming.$client.end();
+    }
+  });
+
   test("Better Auth administrator removal cannot bypass the application purge owner", async () => {
     const { auth } = await createTestAuth({ registrationOpen: true });
     const cookie = await signInVerified(auth);
@@ -731,13 +1223,11 @@ describe("createAuth", () => {
       .set({ role: "admin" })
       .where(eq(user.email, signUpBody.email))
       .returning();
-    await database
-      .insert(user)
-      .values({
-        id: "removal-target",
-        name: "Target",
-        email: "target@example.com",
-      });
+    await database.insert(user).values({
+      id: "removal-target",
+      name: "Target",
+      email: "target@example.com",
+    });
     const request = post("/admin/remove-user", { userId: "removal-target" });
     request.headers.set("cookie", cookie);
     const response = await auth.handler(request);

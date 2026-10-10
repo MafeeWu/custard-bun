@@ -6,7 +6,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import { getRuntimeConfig } from "@/server/config/load-config";
 import {
@@ -278,9 +278,17 @@ export async function confirmAccountDeletion(
       // Remove IP-linked rate limits before revoking the only durable association with those IPs.
       await tx.execute(sql`DELETE FROM rate_limit WHERE key IN (
         SELECT r.key FROM rate_limit r JOIN session s ON r.key LIKE s.ip_address || '|%'
-        WHERE s.user_id = ${request.userId} AND s.ip_address IS NOT NULL
+        WHERE (s.user_id = ${request.userId} OR s.impersonated_by = ${request.userId})
+          AND s.ip_address IS NOT NULL
       ) OR strpos(key, ${request.userId}) > 0`);
-      await tx.delete(session).where(eq(session.userId, request.userId));
+      await tx
+        .delete(session)
+        .where(
+          or(
+            eq(session.userId, request.userId),
+            eq(session.impersonatedBy, request.userId),
+          ),
+        );
       await lockAccountWork(tx, request.userId, input.now);
       // The locked row is the durable purge outbox; queue publication is restartable.
       await tx

@@ -1,5 +1,5 @@
 import "server-only";
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import type { PgBoss } from "pg-boss";
 import type { Database } from "@/server/db/client";
 import {
@@ -96,6 +96,19 @@ async function removePrivateQueueJobs(
     await tx.execute(sql`DELETE FROM job.job WHERE name IN ('auth-email', 'auth-email-dead-letter')
     AND data->>'to' = (SELECT email FROM "user" WHERE id = ${userId})`);
 }
+async function deidentifyAudit(tx: ChatTransaction, userId: string) {
+  await tx.update(adminAuditEvent).set({
+    actorUserId: null,
+    actorLabel: "deleted",
+    targetId: "deleted",
+    metadata: {},
+    operationId: "deleted",
+  }).where(sql`${adminAuditEvent.actorUserId} = ${userId}
+    OR ${adminAuditEvent.targetId} = ${userId}
+    OR strpos(${adminAuditEvent.metadata}::text, ${userId}) > 0
+    OR strpos(${adminAuditEvent.metadata}::text, (SELECT email FROM "user" WHERE id = ${userId})) > 0
+    OR ${adminAuditEvent.actorLabel} = (SELECT email FROM "user" WHERE id = ${userId})`);
+}
 async function purgeStage(
   tx: ChatTransaction,
   userId: string,
@@ -164,26 +177,21 @@ async function purgeStage(
       await tx.delete(conversation).where(eq(conversation.userId, userId));
       return;
     case "audit":
-      await tx.update(adminAuditEvent).set({
-        actorUserId: null,
-        actorLabel: "deleted",
-        targetId: "deleted",
-        metadata: {},
-        operationId: "deleted",
-      }).where(sql`${adminAuditEvent.actorUserId} = ${userId}
-        OR ${adminAuditEvent.targetId} = ${userId}
-        OR strpos(${adminAuditEvent.metadata}::text, ${userId}) > 0
-        OR strpos(${adminAuditEvent.metadata}::text, (SELECT email FROM "user" WHERE id = ${userId})) > 0
-        OR ${adminAuditEvent.actorLabel} = (SELECT email FROM "user" WHERE id = ${userId})`);
+      await deidentifyAudit(tx, userId);
       return;
     case "auth":
+      await deidentifyAudit(tx, userId);
       await removePrivateQueueJobs(tx, userId, stage);
       await tx.execute(sql`DELETE FROM verification WHERE strpos(identifier, ${userId}) > 0 OR strpos(value, ${userId}) > 0
         OR strpos(identifier, (SELECT email FROM "user" WHERE id = ${userId})) > 0
         OR strpos(value, (SELECT email FROM "user" WHERE id = ${userId})) > 0`);
       await tx.execute(sql`DELETE FROM rate_limit WHERE strpos(key, ${userId}) > 0
         OR strpos(key, (SELECT email FROM "user" WHERE id = ${userId})) > 0`);
-      await tx.delete(session).where(eq(session.userId, userId));
+      await tx
+        .delete(session)
+        .where(
+          or(eq(session.userId, userId), eq(session.impersonatedBy, userId)),
+        );
       await tx.delete(account).where(eq(account.userId, userId));
       return;
   }
@@ -340,23 +348,28 @@ export async function enqueuePendingAccountPurges(
   boss: Pick<PgBoss, "send">,
   now: Date,
 ) {
-  const rows = await database
+  const runnable = await database
     .select({
       requestId: accountDeletionRequest.id,
       status: accountDeletionRequest.status,
     })
     .from(accountDeletionRequest)
+    .where(inArray(accountDeletionRequest.status, ["locked", "purging"]))
+    .orderBy(asc(accountDeletionRequest.lockedAt))
+    .limit(50);
+  const deadLetters = await database
+    .select({ requestId: accountDeletionRequest.id })
+    .from(accountDeletionRequest)
     .where(
-      inArray(accountDeletionRequest.status, [
-        "locked",
-        "purging",
-        "dead_letter",
-      ]),
+      and(
+        eq(accountDeletionRequest.status, "dead_letter"),
+        sql`${accountDeletionRequest.jobId} IS DISTINCT FROM ${accountDeletionRequest.id}`,
+      ),
     )
     .orderBy(asc(accountDeletionRequest.lockedAt))
     .limit(50);
   let sent = 0;
-  for (const row of rows) {
+  for (const row of [...runnable, ...deadLetters]) {
     const client = await database.$client.connect();
     try {
       await client.query("BEGIN");
@@ -382,6 +395,12 @@ export async function enqueuePendingAccountPurges(
             [row.requestId, id],
           );
           if (!dead) sent++;
+        } else if (dead) {
+          // The fixed dead-letter job ID already exists from an earlier attempt.
+          await client.query(
+            "UPDATE account_deletion_requests SET job_id = id WHERE id = $1",
+            [row.requestId],
+          );
         }
       }
       await client.query("COMMIT");

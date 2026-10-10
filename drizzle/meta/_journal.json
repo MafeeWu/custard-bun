@@ -134,6 +134,20 @@
       "when": 1791637243881,
       "tag": "0018_auth_email_publication_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791639650563,
+      "tag": "0019_auth_deletion_fences",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791639864961,
+      "tag": "0020_session_refresh_lock_order",
+      "breakpoints": true
     }
   ]
 }

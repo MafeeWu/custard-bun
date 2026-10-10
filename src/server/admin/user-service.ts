@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { recordAdminAudit } from "@/server/admin/audit";
 import type { AdminActor } from "@/server/admin/admin-actor";
 import type { Database } from "@/server/db/client";
@@ -39,13 +39,18 @@ export async function disableOrdinaryUser(
     await lockUserChatMutation(transaction, input.userId);
     await requireAdminWrite(transaction, actor);
     const [target] = await transaction
-      .select({ id: user.id, role: user.role, banned: user.banned })
+      .select({
+        id: user.id,
+        role: user.role,
+        banned: user.banned,
+        deletionPendingAt: user.deletionPendingAt,
+      })
       .from(user)
       .where(eq(user.id, input.userId))
       .for("update")
       .limit(1);
 
-    if (!target || target.role !== "user") {
+    if (!target || target.role !== "user" || target.deletionPendingAt) {
       throw new Error("Only ordinary users can be managed");
     }
     if (target.banned === true) {
@@ -80,7 +85,14 @@ export async function disableOrdinaryUser(
           isNull(generationAttempt.cancelRequestedAt),
         ),
       );
-    await transaction.delete(session).where(eq(session.userId, input.userId));
+    await transaction
+      .delete(session)
+      .where(
+        or(
+          eq(session.userId, input.userId),
+          eq(session.impersonatedBy, input.userId),
+        ),
+      );
     await recordAdminAudit(transaction, actor, {
       action: "user.disable",
       targetType: "user",
@@ -100,15 +112,21 @@ export async function restoreOrdinaryUser(
   rejectSelfTarget(actor, input.userId);
 
   await database.transaction(async (transaction) => {
+    await lockUserChatMutation(transaction, input.userId);
     await requireAdminWrite(transaction, actor);
     const [target] = await transaction
-      .select({ id: user.id, role: user.role, banned: user.banned })
+      .select({
+        id: user.id,
+        role: user.role,
+        banned: user.banned,
+        deletionPendingAt: user.deletionPendingAt,
+      })
       .from(user)
       .where(eq(user.id, input.userId))
       .for("update")
       .limit(1);
 
-    if (!target || target.role !== "user") {
+    if (!target || target.role !== "user" || target.deletionPendingAt) {
       throw new Error("Only ordinary users can be managed");
     }
     if (target.banned !== true) {

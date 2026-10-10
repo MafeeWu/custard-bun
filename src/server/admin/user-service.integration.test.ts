@@ -92,6 +92,30 @@ afterAll(async () => {
   await database.$client.end();
 });
 
+test.each(["disable", "restore"])(
+  "rejects %s of a deletion-pending ordinary user without recreating audit identity",
+  async (operation) => {
+    await database
+      .update(user)
+      .set({
+        banned: operation === "restore",
+        deletionPendingAt: new Date(),
+      })
+      .where(eq(user.id, "ordinary-1"));
+    const before = await getUser("ordinary-1");
+    await expect(
+      operation === "disable"
+        ? disableOrdinaryUser(database, actor, {
+            userId: "ordinary-1",
+            reason: "private-reason",
+          })
+        : restoreOrdinaryUser(database, actor, { userId: "ordinary-1" }),
+    ).rejects.toThrow("Only ordinary users can be managed");
+    expect(await getUser("ordinary-1")).toEqual(before);
+    expect(await database.select().from(adminAuditEvent)).toHaveLength(0);
+  },
+);
+
 async function getUser(id: string) {
   const [row] = await database.select().from(user).where(eq(user.id, id));
   return row!;

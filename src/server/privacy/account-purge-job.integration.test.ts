@@ -15,6 +15,7 @@ import { summaryFixture } from "@/test/memory-summary-fixture";
 import { createBoss } from "@/server/jobs/boss";
 import type { EmailQueueJob } from "@/server/email/email-job";
 import { admitBackgroundModelWork } from "@/server/memory/background-usage-service";
+import { disableOrdinaryUser } from "@/server/admin/user-service";
 import {
   ensureQueues,
   ACCOUNT_PURGE_QUEUE,
@@ -114,8 +115,8 @@ async function fixture() {
   });
   await database.insert(schema.verification).values({
     id: randomUUID(),
-    identifier: `reset-password:${owner.userId}`,
-    value: "private-token",
+    identifier: "reset-password:private-token",
+    value: owner.userId,
     expiresAt: now,
   });
   await database.insert(schema.rateLimit).values({
@@ -438,7 +439,7 @@ test("five real failures exhaust the same stage, publish a safe dead letter, and
     }
     expect(await getAccountPurgeState(database, owner.requestId)).toMatchObject(
       {
-        status: "dead_letter",
+        status: "dead_letter" as const,
         stage: "settle",
         errorCategory: "PURGE_STAGE_FAILED",
       },
@@ -670,4 +671,220 @@ test("state projections and unavailable-database errors cannot disclose arbitrar
   await expect(
     getAccountPurgeState(unavailable, owner.requestId),
   ).rejects.toThrow(/^PURGE_STATE_UNAVAILABLE$/);
+});
+
+test("fifty published exhausted requests cannot starve a newly confirmed deletion", async () => {
+  const exhausted = Array.from({ length: 50 }, () => ({
+    id: randomUUID(),
+    userId: randomUUID(),
+  }));
+  await database.insert(schema.user).values(
+    exhausted.map((request) => ({
+      id: request.userId,
+      name: "Exhausted",
+      email: `${request.userId}@example.com`,
+      deletionPendingAt: now,
+    })),
+  );
+  await database.insert(schema.accountDeletionRequest).values(
+    exhausted.map((request) => ({
+      ...request,
+      status: "dead_letter" as const,
+      currentStage: "settle",
+      attemptCount: 5,
+      verificationConsumedAt: now,
+      confirmedAt: now,
+      lockedAt: new Date(now.getTime() - 86_400_000),
+      errorCategory: "PURGE_STAGE_FAILED",
+    })),
+  );
+  await enqueuePendingAccountPurges(database, boss, now);
+  expect(await boss.findJobs(ACCOUNT_PURGE_DEAD_LETTER_QUEUE, {})).toHaveLength(
+    50,
+  );
+  const owner = await fixture();
+  expect(await enqueuePendingAccountPurges(database, boss, now)).toBe(1);
+  const stop = await registerAccountPurgeWorker(database, boss, console);
+  try {
+    await expect
+      .poll(async () => (await row(owner.requestId)).status, {
+        timeout: 10_000,
+      })
+      .toBe("complete");
+    expect(
+      await database
+        .select()
+        .from(schema.user)
+        .where(eq(schema.user.id, owner.userId)),
+    ).toHaveLength(0);
+    expect(
+      await boss.findJobs(ACCOUNT_PURGE_DEAD_LETTER_QUEUE, {}),
+    ).toHaveLength(50);
+  } finally {
+    await stop();
+    await boss.offWork(ACCOUNT_PURGE_QUEUE);
+  }
+}, 15_000);
+
+test("confirmation and final purge revoke both owned and impersonated sessions", async () => {
+  const owner = await summaryFixture(database);
+  const email = `${owner.userId}@example.com`;
+  await database.insert(schema.user).values({
+    id: "unrelated-session-owner",
+    name: "Unrelated",
+    email: "unrelated@example.com",
+  });
+  await database.insert(schema.session).values({
+    id: randomUUID(),
+    token: "impersonated-private-token",
+    userId: "unrelated-session-owner",
+    impersonatedBy: owner.userId,
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  const requested = await requestAccountDeletion(database, {
+    userId: owner.userId,
+    email,
+    now,
+  });
+  await confirmAccountDeletion(database, {
+    token: requested.verificationToken,
+    now,
+  });
+  expect(await database.select().from(schema.session)).toHaveLength(0);
+  while ((await row(requested.requestId)).currentStage !== "auth")
+    await processAccountPurgeStage(database, requested.requestId, now);
+  // Model a legacy retained session bypassing the current insertion guard.
+  await database.transaction(async (tx) => {
+    await tx.execute(
+      sql`ALTER TABLE session DISABLE TRIGGER session_enforce_user_eligibility`,
+    );
+    await tx.insert(schema.session).values({
+      id: randomUUID(),
+      token: "legacy-impersonated-private-token",
+      userId: "unrelated-session-owner",
+      impersonatedBy: owner.userId,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await tx.execute(
+      sql`ALTER TABLE session ENABLE TRIGGER session_enforce_user_eligibility`,
+    );
+  });
+  expect(
+    await processAccountPurgeStage(database, requested.requestId, now),
+  ).toBe("complete");
+  expect(await database.select().from(schema.session)).toHaveLength(0);
+  expect(
+    await database
+      .select()
+      .from(schema.user)
+      .where(eq(schema.user.id, "unrelated-session-owner")),
+  ).toHaveLength(1);
+});
+
+test("admin write ordered after audit stage is rejected and final fence re-cleans audit inventory", async () => {
+  const owner = await fixture();
+  while ((await row(owner.requestId)).currentStage !== "auth")
+    await processAccountPurgeStage(database, owner.requestId, now);
+  const actor = {
+    userId: "audit-race-admin",
+    label: "audit-admin@example.com",
+    operationId: "audit-race",
+  };
+  await database.insert(schema.user).values({
+    id: actor.userId,
+    name: "Admin",
+    email: actor.label,
+    role: "admin",
+  });
+
+  await database.insert(schema.adminAuditEvent).values({
+    id: randomUUID(),
+    actorUserId: null,
+    actorLabel: `${owner.userId}@example.com`,
+    action: "user.disable",
+    targetType: "user",
+    targetId: owner.userId,
+    metadata: { email: `${owner.userId}@example.com` },
+    operationId: "private-late-audit",
+  });
+  const writing = createDatabase(testDatabaseUrl(), {
+    application_name: "admin-write-after-audit",
+  });
+  const purging = createDatabase(testDatabaseUrl(), {
+    application_name: "final-purge-after-admin",
+  });
+  let write: Promise<boolean> | undefined;
+  let purge: ReturnType<typeof processAccountPurgeStage> | undefined;
+  try {
+    await database.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE`,
+      );
+      write = disableOrdinaryUser(writing, actor, {
+        userId: owner.userId,
+        reason: "private-late-reason",
+      }).then(
+        () => true,
+        () => false,
+      );
+      expect(
+        await waitForExtractionLock(database, "admin-write-after-audit"),
+      ).toContain("chat_settings");
+      purge = processAccountPurgeStage(purging, owner.requestId, now);
+      expect(
+        await waitForExtractionLock(database, "final-purge-after-admin"),
+      ).toContain("chat_settings");
+    });
+    expect(await write).toBe(false);
+    expect(await purge).toBe("complete");
+    const events = await database.select().from(schema.adminAuditEvent);
+    expect(events).toHaveLength(2);
+    for (const event of events)
+      expect(event).toMatchObject({
+        actorUserId: null,
+        actorLabel: "deleted",
+        targetId: "deleted",
+        metadata: {},
+        operationId: "deleted",
+      });
+    expect(JSON.stringify(events)).not.toContain(owner.userId);
+    expect(await row(owner.requestId)).toMatchObject({
+      status: "complete",
+      userId: null,
+    });
+  } finally {
+    await Promise.allSettled([write, purge].filter(Boolean));
+    await writing.$client.end();
+    await purging.$client.end();
+  }
+});
+
+test("final auth stage de-identifies audit rows arriving after the audit stage", async () => {
+  const owner = await fixture();
+  while ((await row(owner.requestId)).currentStage !== "auth")
+    await processAccountPurgeStage(database, owner.requestId, now);
+  await database.insert(schema.adminAuditEvent).values({
+    id: randomUUID(),
+    actorUserId: null,
+    actorLabel: `${owner.userId}@example.com`,
+    action: "user.disable",
+    targetType: "user",
+    targetId: owner.userId,
+    metadata: { email: `${owner.userId}@example.com` },
+    operationId: "private-after-audit",
+  });
+  expect(await processAccountPurgeStage(database, owner.requestId, now)).toBe(
+    "complete",
+  );
+  const events = await database.select().from(schema.adminAuditEvent);
+  expect(events).toHaveLength(2);
+  for (const event of events)
+    expect(event).toMatchObject({
+      actorUserId: null,
+      actorLabel: "deleted",
+      targetId: "deleted",
+      metadata: {},
+      operationId: "deleted",
+    });
+  expect(JSON.stringify(events)).not.toContain(owner.userId);
 });
