@@ -26,6 +26,10 @@ const expectedActions = [
   "chat.settings.reset",
   "user.chat_quota.update",
   "user.chat_quota.clear",
+  "memory.settings.update",
+  "memory.settings.reset",
+  "memory.operation.retry",
+  "memory.character_forget",
 ] satisfies AdminAuditAction[];
 
 beforeEach(async () => {

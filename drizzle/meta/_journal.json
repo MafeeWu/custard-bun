@@ -50,6 +50,13 @@
       "when": 1791524189984,
       "tag": "0006_naive_lightspeed",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791613387681,
+      "tag": "0007_long_term_memory",
+      "breakpoints": true
     }
   ]
 }

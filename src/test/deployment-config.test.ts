@@ -43,7 +43,7 @@ test("production services construct DATABASE_URL at runtime from the raw passwor
   expect(entrypoint).toContain('exec "$@"');
 });
 
-test("deployment command migrates and seeds official characters and chat settings", async () => {
+test("deployment command migrates and seeds official characters, chat settings, and memory settings", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };
@@ -66,8 +66,11 @@ test("deployment command migrates and seeds official characters and chat setting
   expect(packageJson.scripts["db:seed:chat-settings"]).toBe(
     "node --env-file-if-exists=.env --import tsx src/server/db/seed-chat-settings.ts",
   );
+  expect(packageJson.scripts["db:seed:memory-settings"]).toBe(
+    "node --env-file-if-exists=.env --import tsx src/server/db/seed-memory-settings.ts",
+  );
   expect(packageJson.scripts["db:deploy"]).toBe(
-    "pnpm db:migrate && pnpm db:seed:characters && pnpm db:seed:chat-settings",
+    "pnpm db:migrate && pnpm db:seed:characters && pnpm db:seed:chat-settings && pnpm db:seed:memory-settings",
   );
   expect(compose["x-application"].image).toBe("ai-companion-web:phase-3");
   expect(compose["x-application"].volumes).toContain(

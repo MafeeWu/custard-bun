@@ -44,6 +44,12 @@ export const reservationStatusEnum = pgEnum("quota_reservation_status", [
   "released",
 ]);
 
+export const usageWorkloadTypeEnum = pgEnum("usage_workload_type", [
+  "chat_generation",
+  "memory_extraction",
+  "summary_refresh",
+]);
+
 export type ConversationLifecycle =
   (typeof conversationLifecycleEnum.enumValues)[number];
 export type ConversationMessageKind =
@@ -52,6 +58,8 @@ export type GenerationStatus = (typeof generationStatusEnum.enumValues)[number];
 export type QuotaScope = (typeof quotaScopeEnum.enumValues)[number];
 export type QuotaReservationStatus =
   (typeof reservationStatusEnum.enumValues)[number];
+export type UsageWorkloadType =
+  (typeof usageWorkloadTypeEnum.enumValues)[number];
 
 const nonnegative = (column: AnyPgColumn) => sql`${column} >= 0`;
 const positive = (column: AnyPgColumn) => sql`${column} > 0`;
@@ -577,6 +585,12 @@ export const usageLedger = pgTable(
     attemptId: text("attempt_id").references(() => generationAttempt.id, {
       onDelete: "set null",
     }),
+    backgroundOperationId: text("background_operation_id"),
+    memoryExtractionRunId: text("memory_extraction_run_id"),
+    relationshipSummaryVersionId: text("relationship_summary_version_id"),
+    workloadType: usageWorkloadTypeEnum("workload_type")
+      .notNull()
+      .default("chat_generation"),
     periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
     periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
     userRequestUnits: bigint("user_request_units", { mode: "number" })
@@ -603,6 +617,9 @@ export const usageLedger = pgTable(
     uniqueIndex("usage_ledger_attempt_provider_call_unique")
       .on(table.attemptId, table.providerCallNumber)
       .where(sql`${table.attemptId} IS NOT NULL`),
+    uniqueIndex("usage_ledger_background_operation_unique")
+      .on(table.backgroundOperationId)
+      .where(sql`${table.backgroundOperationId} IS NOT NULL`),
     index("usage_ledger_period_idx").on(table.periodStart, table.periodEnd),
     index("usage_ledger_user_period_idx").on(table.userId, table.periodStart),
     check(
@@ -635,7 +652,32 @@ export const usageLedger = pgTable(
     ),
     check(
       "usage_ledger_outcome_check",
-      sql`${table.outcome} IN ('complete', 'failed', 'interrupted')`,
+      sql`${table.outcome} IN ('complete', 'failed', 'interrupted', 'cancelled')`,
+    ),
+    check(
+      "usage_ledger_workload_shape_check",
+      sql`(
+        (
+          ${table.workloadType} = 'chat_generation'
+          AND ${table.backgroundOperationId} IS NULL
+          AND ${table.memoryExtractionRunId} IS NULL
+          AND ${table.relationshipSummaryVersionId} IS NULL
+        )
+        OR
+        (
+          ${table.workloadType} = 'memory_extraction'
+          AND ${table.backgroundOperationId} IS NOT NULL
+          AND ${table.userRequestUnits} = 0
+          AND ${table.relationshipSummaryVersionId} IS NULL
+        )
+        OR
+        (
+          ${table.workloadType} = 'summary_refresh'
+          AND ${table.backgroundOperationId} IS NOT NULL
+          AND ${table.userRequestUnits} = 0
+          AND ${table.memoryExtractionRunId} IS NULL
+        )
+      )`,
     ),
   ],
 );

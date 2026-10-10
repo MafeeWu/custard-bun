@@ -22,7 +22,8 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/server/db/migrate.ts",
     "db:seed:characters": "node --env-file-if-exists=.env --import tsx src/server/db/seed-characters.ts",
     "db:seed:chat-settings": "node --env-file-if-exists=.env --import tsx src/server/db/seed-chat-settings.ts",
-    "db:deploy": "pnpm db:migrate && pnpm db:seed:characters && pnpm db:seed:chat-settings",
+    "db:seed:memory-settings": "node --env-file-if-exists=.env --import tsx src/server/db/seed-memory-settings.ts",
+    "db:deploy": "pnpm db:migrate && pnpm db:seed:characters && pnpm db:seed:chat-settings && pnpm db:seed:memory-settings",
     "db:test:up": "docker compose -p ai-companion-test -f compose.test.yml up -d --wait",
     "db:test:down": "docker compose -p ai-companion-test -f compose.test.yml down -v"
   },
