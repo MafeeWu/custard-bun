@@ -1,15 +1,21 @@
 // @vitest-environment node
 import { afterAll, beforeEach, expect, test, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { createDatabase } from "@/server/db/client";
 import {
   conversation,
+  accountDeletionRequest,
+  backgroundModelReservation,
   generationAttempt,
+  memoryExtractionExecution,
   memoryExtractionRun,
   memorySettings,
   user,
   userCharacterMemorySetting,
+  usageLedger,
 } from "@/server/db/schema";
+import { processAccountPurgeStage } from "@/server/privacy/account-purge-job";
 import { testDatabaseUrl } from "@/test/database-target";
 import {
   extractionAttempt,
@@ -295,10 +301,82 @@ test("manual retry is owner scoped and cannot reset the five-execution ceiling",
     attemptCount: 1,
     finishedAt: null,
   });
+
   await database
     .update(memoryExtractionRun)
     .set({ status: "dead_letter", attemptCount: 5, finishedAt: extractionNow });
   await expect(
     retryMemoryExtraction(database, { ...input, runId: run!.runId }),
   ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+});
+
+test("exhausted extraction retry followed by purge removes old execution accounting links but retains settled totals", async () => {
+  const input = await fixtureWithAttempt();
+  const { runId } = (await database.transaction((tx) =>
+    createExtractionRunForCompletedAttempt(tx, input)))!;
+  const operationId = randomUUID();
+  await database.insert(memoryExtractionExecution).values(
+    Array.from({ length: 5 }, (_, index) => ({
+      id: index === 0 ? operationId : randomUUID(),
+      runId, executionNumber: index + 1, modelId: "test-model", estimatedInputTokens: 13,
+      errorCategory: "internal",
+    })),
+  );
+  const periodStart = new Date("2026-10-01T00:00:00Z");
+  const periodEnd = new Date("2026-11-01T00:00:00Z");
+  await database.insert(backgroundModelReservation).values({
+    id: randomUUID(), operationId, workloadType: "memory_extraction", periodStart, periodEnd,
+    reservedTokens: 20, consumedInputTokens: 13, consumedOutputTokens: 7,
+    settledAt: extractionNow,
+  });
+
+  await database.insert(usageLedger).values({
+    id: randomUUID(), backgroundOperationId: operationId, memoryExtractionRunId: runId,
+    workloadType: "memory_extraction", periodStart, periodEnd,
+    providerCallNumber: 1, inputTokens: 13, outputTokens: 7,
+    usageIsEstimated: false, modelId: "test-model", outcome: "failed",
+  });
+  await database.update(memoryExtractionRun).set({
+    status: "dead_letter", attemptCount: 5, finishedAt: extractionNow,
+    deadLetterPublishedAt: extractionNow,
+  }).where(eq(memoryExtractionRun.id, runId));
+  await retryMemoryExtraction(database, { ...input, runId, administrativeRetry: true });
+  const requestId = randomUUID();
+  await database.insert(accountDeletionRequest).values({
+    id: requestId, userId: input.userId, status: "purging", currentStage: "memory",
+    verificationConsumedAt: extractionNow, confirmedAt: extractionNow, lockedAt: extractionNow,
+  });
+  await expect(processAccountPurgeStage(database, requestId, extractionNow)).resolves.toBe("continue");
+  expect(await database.select().from(backgroundModelReservation)).toEqual([]);
+  expect(await database.select().from(usageLedger)).toMatchObject([{
+    backgroundOperationId: null, memoryExtractionRunId: null,
+    inputTokens: 13, outputTokens: 7,
+  }]);
+});
+
+test("exhausted extraction retry keeps receipts when a reservation is not settled", async () => {
+  const input = await fixtureWithAttempt();
+  const { runId } = (await database.transaction((tx) =>
+    createExtractionRunForCompletedAttempt(tx, input)))!;
+  const operationId = randomUUID();
+  await database.insert(memoryExtractionExecution).values({
+    id: operationId, runId, executionNumber: 1,
+    modelId: "test-model", estimatedInputTokens: 10,
+  });
+  await database.insert(backgroundModelReservation).values({
+    id: randomUUID(), operationId, workloadType: "memory_extraction",
+    periodStart: new Date("2026-10-01T00:00:00Z"),
+    periodEnd: new Date("2026-11-01T00:00:00Z"),
+    reservedTokens: 10,
+  });
+  await database.update(memoryExtractionRun).set({
+    status: "dead_letter", attemptCount: 5, finishedAt: extractionNow,
+    deadLetterPublishedAt: extractionNow,
+  }).where(eq(memoryExtractionRun.id, runId));
+  await expect(retryMemoryExtraction(database, { ...input, runId, administrativeRetry: true }))
+    .rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+  expect(await database.select({ id: memoryExtractionExecution.id }).from(memoryExtractionExecution))
+    .toEqual([{ id: operationId }]);
+  expect(await database.select({ operationId: backgroundModelReservation.operationId })
+    .from(backgroundModelReservation)).toEqual([{ operationId }]);
 });

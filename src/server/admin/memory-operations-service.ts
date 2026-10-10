@@ -116,7 +116,7 @@ export async function retryDeadLetterOperation(
     } catch {
       throw unavailable();
     }
-    await recordAdminAudit(tx, actor, {
+    await recordAdminAudit(tx, { ...actor, label: "administrator" }, {
       action: "memory.operation.retry",
       targetType: input.operationType,
       targetId: input.operationId,

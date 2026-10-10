@@ -222,7 +222,12 @@ Runnable dispatch has its own batch, independent of exhausted dead letters;
 already-published dead letters cannot starve newer confirmed deletions.
 `getAccountPurgeState` exposes only safe state and the oldest stuck purge;
 `retryAccountPurge` resumes that same request/stage, including harmless completed
-tombstone retries. Administrative retry/dashboard UI is a later phase.
+tombstone retries. `/admin/memory` exposes ID-only administrative retry of
+eligible dead letters and aggregate queue, export, and purge status. The
+administrative audit uses a fixed role label rather than an administrator's
+email. Restarting an exhausted extraction or summary cycle clears settled
+execution links while retaining numeric usage; unsettled reservations block
+receipt recycling until accounting is resolved.
 Purge dead letters do not degrade worker readiness by themselves.
 
 Signed-in users can start one active conversation per character. The opening

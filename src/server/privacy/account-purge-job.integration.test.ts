@@ -494,6 +494,23 @@ test("database outbox and exhausted purge dead letters contain request IDs only;
   );
 });
 
+test("retry after final auth-user removal leaves the completed tombstone and audit de-identified", async () => {
+  const owner = await fixture();
+  while ((await processAccountPurgeStage(database, owner.requestId, now)) === "continue") {}
+  expect(await database.select().from(schema.user).where(eq(schema.user.id, owner.userId))).toEqual([]);
+  await expect(retryAccountPurge(database, owner.requestId, now)).resolves.toBeUndefined();
+  expect(await getAccountPurgeState(database, owner.requestId)).toMatchObject({
+    status: "complete", stage: "complete",
+  });
+  const audits = await database.select().from(schema.adminAuditEvent);
+  expect(audits).toEqual([expect.objectContaining({
+    actorUserId: null, actorLabel: "deleted", targetId: "deleted",
+    operationId: "deleted", metadata: {},
+  })]);
+  expect(JSON.stringify(audits)).not.toContain(owner.userId);
+  expect(JSON.stringify(audits)).not.toContain(`${owner.userId}@example.com`);
+});
+
 test("named PostgreSQL verification publication holds confirmation out and late publication after final purge leaves no private queue bytes", async () => {
   const owner = await summaryFixture(database);
   const requested = await requestAccountDeletion(database, {

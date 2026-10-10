@@ -25,6 +25,7 @@ import { MemoryDomainError } from "./memory-errors";
 import { normalizeMemoryText } from "./memory-normalization";
 import { containsCredential } from "./memory-policy";
 import { lockUserMemoryMutation } from "./memory-locks";
+import { retireExhaustedExecutionAccounting } from "./background-usage-service";
 
 type Scope = { userId: string; characterId: string };
 export const MAX_SUMMARY_CHARACTERS = 4000;
@@ -657,9 +658,14 @@ export async function retrySummaryRefresh(
       throw new MemoryDomainError("MEMORY_VALIDATION", "Summary cannot be retried.");
     const restartExhausted = input.administrativeRetry &&
       run.status === "dead_letter" && run.attemptCount >= 5;
-    if (restartExhausted)
+    if (restartExhausted) {
+      const executions = await tx.select({ id: relationshipSummaryExecution.id })
+        .from(relationshipSummaryExecution)
+        .where(eq(relationshipSummaryExecution.runId, run.id));
+      await retireExhaustedExecutionAccounting(tx, executions.map(({ id }) => id));
       await tx.delete(relationshipSummaryExecution)
         .where(eq(relationshipSummaryExecution.runId, run.id));
+    }
     await tx.update(relationshipSummaryRun).set({
       status: "pending",
       attemptCount: restartExhausted ? 0 : run.attemptCount,

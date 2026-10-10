@@ -65,7 +65,7 @@ async function mutate(
     await transaction.update(memorySettings)
       .set({ enabled, revision, updatedAt: new Date() })
       .where(eq(memorySettings.id, "global"));
-    await recordAdminAudit(transaction, actor, {
+    await recordAdminAudit(transaction, { ...actor, label: "administrator" }, {
       action: reset ? "memory.settings.reset" : "memory.settings.update",
       targetType: "memory_settings",
       targetId: "global",

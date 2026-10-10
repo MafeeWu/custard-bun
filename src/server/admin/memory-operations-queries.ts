@@ -17,6 +17,9 @@ export interface MemoryOperationsDashboard {
   exports: { active: number; expiredBytes: number };
   purges: Array<{ stage: string; count: number; oldestAt: Date | null }>;
   failures: Array<{ category: string; count: number }>;
+}
+
+export interface MemoryOperationsDetails {
   oldestPendingAt: Date | null;
   exportStates: Array<{ state: string; count: number }>;
 }
@@ -44,20 +47,21 @@ const safePurgeStage = sql<string>`case when ${accountDeletionRequest.currentSta
 
 const number = (value: unknown) => Number(value ?? 0);
 const nullableNumber = (value: unknown) => value == null ? null : Number(value);
+const nullableDate = (value: Date | string | null): Date | null =>
+  value == null ? null : new Date(value);
 
 export async function getMemoryOperationsDashboard(
   database: Database,
   now: Date = new Date(),
 ): Promise<MemoryOperationsDashboard> {
   // Only numeric metadata from operation tables and the de-identified usage ledger is projected.
-  const [extraction, summary, tokens, exports, purgeRows, exportStates] = await Promise.all([
+  const [extraction, summary, tokens, exports, purgeRows] = await Promise.all([
     database.select({
       pending: sql<number>`count(*) filter (where ${memoryExtractionRun.status} in ('pending', 'queued'))::int`,
       running: sql<number>`count(*) filter (where ${memoryExtractionRun.status} = 'running')::int`,
       retrying: sql<number>`count(*) filter (where ${memoryExtractionRun.status} = 'retrying')::int`,
       failed: sql<number>`count(*) filter (where ${memoryExtractionRun.status} = 'failed')::int`,
       deadLetter: sql<number>`count(*) filter (where ${memoryExtractionRun.status} = 'dead_letter')::int`,
-      oldest: sql<Date | null>`min(${memoryExtractionRun.createdAt}) filter (where ${memoryExtractionRun.status} in ('pending', 'queued'))`,
     }).from(memoryExtractionRun),
     database.select({
       pending: sql<number>`count(*) filter (where ${relationshipSummaryRun.status} in ('pending', 'queued'))::int`,
@@ -65,7 +69,6 @@ export async function getMemoryOperationsDashboard(
       retrying: sql<number>`count(*) filter (where ${relationshipSummaryRun.status} = 'retrying')::int`,
       failed: sql<number>`count(*) filter (where ${relationshipSummaryRun.status} = 'failed')::int`,
       deadLetter: sql<number>`count(*) filter (where ${relationshipSummaryRun.status} = 'dead_letter')::int`,
-      oldest: sql<Date | null>`min(${relationshipSummaryRun.createdAt}) filter (where ${relationshipSummaryRun.status} in ('pending', 'queued'))`,
     }).from(relationshipSummaryRun),
     database.select({
       input: sql<number>`coalesce(sum(${usageLedger.inputTokens}), 0)::bigint`,
@@ -79,12 +82,10 @@ export async function getMemoryOperationsDashboard(
     database.select({
       stage: safePurgeStage,
       count: sql<number>`count(*)::int`,
-      oldestAt: sql<Date | null>`min(${accountDeletionRequest.lockedAt})`,
+      oldestAt: sql<Date | string | null>`min(${accountDeletionRequest.lockedAt})`,
     }).from(accountDeletionRequest)
       .where(inArray(accountDeletionRequest.status, ["locked", "purging", "dead_letter"]))
       .groupBy(safePurgeStage).orderBy(safePurgeStage),
-    database.select({ state: dataExportJob.status, count: sql<number>`count(*)::int` })
-      .from(dataExportJob).groupBy(dataExportJob.status).orderBy(asc(dataExportJob.status)),
   ]);
   const [extractionFailures, summaryFailures, exportFailures, purgeFailures] = await Promise.all([
     database.select({ category: safeCategory(memoryExtractionRun.errorCategory), count: sql<number>`count(*)::int` })
@@ -130,10 +131,27 @@ export async function getMemoryOperationsDashboard(
     },
     tokens: { input: number(tokens[0]?.input), output: number(tokens[0]?.output), estimatedRows: number(tokens[0]?.estimated) },
     exports: { active: number(exports[0]?.active), expiredBytes: number(exports[0]?.expiredBytes) },
-    purges: purgeRows.map((row) => ({ stage: row.stage, count: number(row.count), oldestAt: row.oldestAt })),
+    purges: purgeRows.map((row) => ({ stage: row.stage, count: number(row.count), oldestAt: nullableDate(row.oldestAt) })),
     failures: [...categories].sort(([a], [b]) => a.localeCompare(b))
       .map(([category, count]) => ({ category, count })),
-    oldestPendingAt: [e.oldest, s.oldest].filter((date): date is Date => date !== null)
+  };
+}
+
+export async function getMemoryOperationsDetails(database: Database): Promise<MemoryOperationsDetails> {
+  const [extraction, summary, exportStates] = await Promise.all([
+    database.select({
+      oldest: sql<Date | string | null>`min(${memoryExtractionRun.createdAt}) filter (where ${memoryExtractionRun.status} in ('pending', 'queued'))`,
+    }).from(memoryExtractionRun),
+    database.select({
+      oldest: sql<Date | string | null>`min(${relationshipSummaryRun.createdAt}) filter (where ${relationshipSummaryRun.status} in ('pending', 'queued'))`,
+    }).from(relationshipSummaryRun),
+    database.select({ state: dataExportJob.status, count: sql<number>`count(*)::int` })
+      .from(dataExportJob).groupBy(dataExportJob.status).orderBy(asc(dataExportJob.status)),
+  ]);
+  return {
+    oldestPendingAt: [extraction[0]?.oldest, summary[0]?.oldest]
+      .map((value) => nullableDate(value ?? null))
+      .filter((date): date is Date => date !== null)
       .sort((a, b) => a.getTime() - b.getTime())[0] ?? null,
     exportStates: exportStates.map((row) => ({ state: row.state, count: number(row.count) })),
   };

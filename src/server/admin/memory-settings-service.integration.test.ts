@@ -19,7 +19,7 @@ import {
 } from "./memory-settings-service";
 
 const database = createDatabase(testDatabaseUrl());
-const actor = { userId: "admin-memory", label: "administrator", operationId: "setting-op" };
+const actor = { userId: "admin-memory", label: "admin-memory@example.com", operationId: "setting-op" };
 beforeEach(async () => {
   await resetExtractionDatabase(database);
   await database.insert(user).values({
@@ -47,12 +47,15 @@ test("updates atomically, conflicts leave state unchanged, and reset uses stored
   expect(await getGlobalMemorySettings(database)).toMatchObject({ enabled: false, revision: 2 });
   expect(await resetGlobalMemorySettings(database, actor, { expectedRevision: 2 }))
     .toEqual({ enabled: false, revision: 3 });
-  const audits = await database.select({ action: adminAuditEvent.action, metadata: adminAuditEvent.metadata })
+  const audits = await database.select({
+    action: adminAuditEvent.action, metadata: adminAuditEvent.metadata, actorLabel: adminAuditEvent.actorLabel,
+  })
     .from(adminAuditEvent);
   expect(audits).toEqual([
-    { action: "memory.settings.update", metadata: { previousRevision: 1, nextRevision: 2, previousEnabled: true, enabled: false } },
-    { action: "memory.settings.reset", metadata: { previousRevision: 2, nextRevision: 3, previousEnabled: false, enabled: false } },
+    { action: "memory.settings.update", actorLabel: "administrator", metadata: { previousRevision: 1, nextRevision: 2, previousEnabled: true, enabled: false } },
+    { action: "memory.settings.reset", actorLabel: "administrator", metadata: { previousRevision: 2, nextRevision: 3, previousEnabled: false, enabled: false } },
   ]);
+  expect(JSON.stringify(audits)).not.toContain(actor.label);
 });
 
 test("rechecks administrator write authorization inside the transaction", async () => {

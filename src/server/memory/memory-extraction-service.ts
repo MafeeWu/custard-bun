@@ -22,6 +22,7 @@ import {
   MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
   MEMORY_EXTRACTION_QUEUE,
 } from "@/server/jobs/queues";
+import { retireExhaustedExecutionAccounting } from "./background-usage-service";
 import { lockUserMemoryMutation } from "./memory-locks";
 import { MemoryDomainError } from "./memory-errors";
 
@@ -467,8 +468,11 @@ export async function retryMemoryExtraction(
       run.status === "dead_letter" &&
       run.attemptCount >= EXTRACTION_MAX_EXECUTIONS;
     if (restartExhausted) {
-      // Usage and reservations are already settled independently by execution ID.
-      // Recycle only terminal execution records; a new attempt receives fresh IDs.
+      const executions = await transaction.select({ id: memoryExtractionExecution.id })
+        .from(memoryExtractionExecution)
+        .where(eq(memoryExtractionExecution.runId, run.id))
+        .for("update");
+      await retireExhaustedExecutionAccounting(transaction, executions.map(({ id }) => id));
       await transaction.delete(memoryExtractionExecution)
         .where(eq(memoryExtractionExecution.runId, run.id));
     }

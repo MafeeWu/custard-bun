@@ -6,6 +6,7 @@ import { createDatabase } from "@/server/db/client";
 import {
   adminAuditEvent,
   accountDeletionRequest,
+  account,
   dataExportJob,
   memoryExtractionExecution,
   memoryExtractionRun,
@@ -21,10 +22,11 @@ import {
   resetExtractionDatabase,
 } from "@/test/memory-extraction-fixture";
 import { createExtractionRunForCompletedAttempt } from "@/server/memory/memory-extraction-service";
+import { processAccountPurgeStage } from "@/server/privacy/account-purge-job";
 import { retryDeadLetterOperation } from "./memory-operations-service";
 
 const database = createDatabase(testDatabaseUrl());
-const actor = { userId: "admin-retry", label: "administrator", operationId: "retry-op" };
+const actor = { userId: "admin-retry", label: "admin-retry@example.com", operationId: "retry-op" };
 beforeEach(async () => {
   await resetExtractionDatabase(database);
   await database.insert(user).values({
@@ -51,7 +53,9 @@ test("enforces exact operation type, terminal state, and active owner with conte
     retryDeadLetterOperation(database, actor, { operationType: "memory_extraction", operationId: runId }),
   ]);
   expect((await database.select().from(memoryExtractionRun))[0].status).toBe("pending");
-  const audits = await database.select({ metadata: adminAuditEvent.metadata }).from(adminAuditEvent);
+  const audits = await database.select({
+    metadata: adminAuditEvent.metadata, actorLabel: adminAuditEvent.actorLabel,
+  }).from(adminAuditEvent);
   expect(audits).toHaveLength(1);
   expect(audits[0].metadata).toEqual({
     operationType: "memory_extraction", operationId: runId,
@@ -59,6 +63,8 @@ test("enforces exact operation type, terminal state, and active owner with conte
   });
 
   expect(JSON.stringify(audits)).not.toContain("PRIVATE SENTENCE");
+  expect(JSON.stringify(audits)).not.toContain(actor.label);
+  expect(audits[0].actorLabel).toBe("administrator");
 
   const exportId = randomUUID();
   await database.insert(dataExportJob).values({ id: exportId, userId: scope.userId, status: "failed" });
@@ -133,6 +139,10 @@ test("summary retry respects current epoch and revives an exhausted dead letter"
 
 test("purge retry delegates after authentication account removal", async () => {
   const { userId } = await extractionFixture(database);
+  await database.insert(account).values({
+    id: randomUUID(), userId, accountId: userId, providerId: "credential",
+    password: "private-password", updatedAt: extractionNow,
+  });
   await database.update(user).set({ deletionPendingAt: extractionNow })
     .where(eq(user.id, userId));
   const requestId = randomUUID();
@@ -141,6 +151,8 @@ test("purge retry delegates after authentication account removal", async () => {
     verificationConsumedAt: extractionNow, confirmedAt: extractionNow,
     lockedAt: extractionNow, attemptCount: 5, errorCategory: "PURGE_STAGE_FAILED",
   });
+  await database.delete(account).where(eq(account.userId, userId));
+  expect(await database.select().from(account)).toEqual([]);
 
   await retryDeadLetterOperation(database, actor, {
     operationType: "account_purge", operationId: requestId,
@@ -148,6 +160,26 @@ test("purge retry delegates after authentication account removal", async () => {
   expect((await database.select().from(accountDeletionRequest))[0]).toMatchObject({
     status: "purging", attemptCount: 0, currentStage: "auth",
   });
+  const [audit] = await database.select().from(adminAuditEvent);
+  expect(audit).toMatchObject({
+    actorLabel: "administrator", targetId: requestId,
+    metadata: { operationType: "account_purge", operationId: requestId,
+      previousState: "dead_letter", nextState: "purging" },
+  });
+  expect(JSON.stringify(audit)).not.toMatch(/admin-retry@example\.com|private-password/);
+  await expect(processAccountPurgeStage(database, requestId, extractionNow)).resolves.toBe("complete");
+  expect(await database.select().from(user).where(eq(user.id, userId))).toEqual([]);
+  await expect(retryDeadLetterOperation(database, actor, {
+    operationType: "account_purge", operationId: requestId,
+  })).resolves.toBeUndefined();
+  await expect(retryDeadLetterOperation(database, { ...actor, operationId: "new-action" }, {
+    operationType: "account_purge", operationId: requestId,
+  })).rejects.toMatchObject({ code: "RETRY_UNAVAILABLE" });
+  expect(await database.select({ status: accountDeletionRequest.status })
+    .from(accountDeletionRequest)).toEqual([{ status: "complete" }]);
+  const persistedAudits = await database.select().from(adminAuditEvent);
+  expect(persistedAudits).toHaveLength(1);
+  expect(JSON.stringify(persistedAudits)).not.toMatch(/admin-retry@example\.com|private-password/);
 });
 
 test("export retry creates one fresh job via the owning service and audits only the original ID", async () => {
@@ -166,8 +198,8 @@ test("export retry creates one fresh job via the owning service and audits only 
   expect(jobs).toHaveLength(2);
   expect(jobs).toContainEqual({ id: exportId, status: "failed" });
   expect(jobs).toContainEqual({ id: expect.any(String), status: "pending" });
-  const audits = await database.select({ metadata: adminAuditEvent.metadata }).from(adminAuditEvent);
-  expect(audits).toEqual([{ metadata: {
+  const audits = await database.select({ metadata: adminAuditEvent.metadata, actorLabel: adminAuditEvent.actorLabel }).from(adminAuditEvent);
+  expect(audits).toEqual([{ actorLabel: "administrator", metadata: {
     operationType: "data_export", operationId: exportId,
     previousState: "failed", nextState: "pending",
   } }]);

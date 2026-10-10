@@ -1,22 +1,29 @@
 // @vitest-environment node
 import { afterAll, beforeEach, expect, test, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { parse } from "yaml";
 import { eq } from "drizzle-orm";
 import { createDatabase } from "@/server/db/client";
 import {
   relationshipSummary,
+  accountDeletionRequest,
+  backgroundModelReservation,
+  relationshipSummaryExecution,
   relationshipSummaryRun,
   relationshipSummaryVersion,
   memoryItem,
   user,
   userCharacterMemorySetting,
+  usageLedger,
 } from "@/server/db/schema";
+import { processAccountPurgeStage } from "@/server/privacy/account-purge-job";
 import { testDatabaseUrl } from "@/test/database-target";
 import { validYaml } from "@/test/unit/runtime-config-fixture";
 import { publicAppConfigSchema } from "@/server/config/schema";
 import * as configLoader from "@/server/config/load-config";
 import {
   extractionCounter,
+  extractionNow,
   extractionGateway,
   resetExtractionDatabase,
   waitForExtractionLock,
@@ -28,6 +35,7 @@ import {
   editRelationshipSummaryInTransaction,
   getRelationshipSummary,
   requestSummaryRegeneration,
+  retrySummaryRefresh,
   ensureAutomaticSummaryRefresh,
   relationshipSummaryPolicyFromConfig,
 } from "./relationship-summary-service";
@@ -88,6 +96,49 @@ const editWithPolicy = (
   );
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
+
+test("exhausted summary retry followed by purge removes old execution accounting links but retains settled totals", async () => {
+  const input = await summaryFixture(database);
+  const runId = input.operationId!;
+  const operationId = randomUUID();
+  await database.insert(relationshipSummaryExecution).values(
+    Array.from({ length: 5 }, (_, index) => ({
+      id: index === 0 ? operationId : randomUUID(), runId,
+      executionNumber: index + 1, modelId: "test-model",
+      estimatedInputTokens: 13, errorCategory: "internal",
+    })),
+  );
+  const periodStart = new Date("2026-10-01T00:00:00Z");
+  const periodEnd = new Date("2026-11-01T00:00:00Z");
+  await database.insert(backgroundModelReservation).values({
+    id: randomUUID(), operationId, workloadType: "summary_refresh", periodStart, periodEnd,
+    reservedTokens: 20, consumedInputTokens: 13, consumedOutputTokens: 7,
+    settledAt: extractionNow,
+  });
+  const versionId = randomUUID();
+  await database.insert(usageLedger).values({
+    id: randomUUID(), backgroundOperationId: operationId, relationshipSummaryVersionId: versionId,
+    workloadType: "summary_refresh", periodStart, periodEnd,
+    providerCallNumber: 1, inputTokens: 13, outputTokens: 7,
+    usageIsEstimated: false, modelId: "test-model", outcome: "failed",
+  });
+  await database.update(relationshipSummaryRun).set({
+    status: "dead_letter", attemptCount: 5, finishedAt: extractionNow,
+    deadLetterPublishedAt: extractionNow,
+  }).where(eq(relationshipSummaryRun.id, runId));
+  await retrySummaryRefresh(database, { ...input, operationId: runId, administrativeRetry: true });
+  const requestId = randomUUID();
+  await database.insert(accountDeletionRequest).values({
+    id: requestId, userId: input.userId, status: "purging", currentStage: "memory",
+    verificationConsumedAt: extractionNow, confirmedAt: extractionNow, lockedAt: extractionNow,
+  });
+  await expect(processAccountPurgeStage(database, requestId, extractionNow)).resolves.toBe("continue");
+  expect(await database.select().from(backgroundModelReservation)).toEqual([]);
+  expect(await database.select().from(usageLedger)).toMatchObject([{
+    backgroundOperationId: null, relationshipSummaryVersionId: null,
+    inputTokens: 13, outputTokens: 7,
+  }]);
+});
 
 test.each([
   { entry: "database", intent: undefined },

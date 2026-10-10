@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
   lockGlobalChatMutation,
@@ -326,6 +326,28 @@ export async function settleBackgroundModelWorkInTransaction(
       settledAt: input.now,
     })
     .where(eq(backgroundModelReservation.id, reservation.id));
+}
+
+export async function retireExhaustedExecutionAccounting(
+  transaction: ChatTransaction,
+  executionIds: string[],
+): Promise<void> {
+  if (executionIds.length === 0) return;
+  const reservations = await transaction.select({
+    settledAt: backgroundModelReservation.settledAt,
+  }).from(backgroundModelReservation)
+    .where(inArray(backgroundModelReservation.operationId, executionIds))
+    .for("update");
+  if (reservations.some((reservation) => reservation.settledAt === null))
+    throw new MemoryDomainError("MEMORY_VALIDATION", "Execution accounting is not settled.");
+
+  await transaction.update(usageLedger).set({
+    backgroundOperationId: null,
+    memoryExtractionRunId: null,
+    relationshipSummaryVersionId: null,
+  }).where(inArray(usageLedger.backgroundOperationId, executionIds));
+  await transaction.delete(backgroundModelReservation)
+    .where(inArray(backgroundModelReservation.operationId, executionIds));
 }
 
 export async function settleUserExtractionWorkBeforeDeletion(
