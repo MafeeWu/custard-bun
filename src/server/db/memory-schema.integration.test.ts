@@ -173,7 +173,11 @@ async function insertCharacter(slug = randomUUID()) {
 async function insertRelationship(
   userId: string,
   characterId: string,
-  input: { memoryEpoch?: number; memoryRevision?: number; revision?: number } = {},
+  input: {
+    memoryEpoch?: number;
+    memoryRevision?: number;
+    revision?: number;
+  } = {},
 ) {
   await database.execute(sql`
     INSERT INTO user_character_memory_settings (
@@ -272,6 +276,7 @@ async function insertConversationFixture(
       input_tokens,
       output_tokens,
       usage_is_estimated,
+      extraction_memory_epoch,
       completed_at
     )
     VALUES (
@@ -286,6 +291,7 @@ async function insertConversationFixture(
       20,
       5,
       false,
+      0,
       NOW()
     )
   `);
@@ -940,11 +946,11 @@ describe("evidence and extraction invariants", () => {
     await database.execute(sql`
       INSERT INTO generation_attempts (
         id, user_id, assistant_message_id, attempt_number, is_current, status,
-        content, model_id, completed_at
+        content, model_id, completed_at, extraction_memory_epoch
       )
       VALUES (
         ${source.attemptId}, ${userId}, ${source.assistantMessageId}, 1, true,
-        'failed', '', 'test-model', NOW()
+        'failed', '', 'test-model', NOW(), 0
       )
     `);
 

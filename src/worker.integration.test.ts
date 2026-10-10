@@ -11,8 +11,14 @@ import {
   memoryItem,
   usageLedger,
 } from "@/server/db/schema";
-import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
-import { createExtractionRunForCompletedAttempt } from "@/server/memory/memory-extraction-service";
+import {
+  registerMemoryExtractionWorker,
+  processMemoryExtractionRun,
+} from "@/server/memory/memory-job";
+import {
+  createExtractionRunForCompletedAttempt,
+  enqueuePendingExtractionRuns,
+} from "@/server/memory/memory-extraction-service";
 import {
   extractionAttempt,
   extractionCandidate,
@@ -181,7 +187,7 @@ test("production extraction queue exhausts exactly five executions into a safe d
             (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, jobId!))?.state,
           { timeout: 6_000 },
         )
-        .toBe(count < 5 ? "retry" : "failed");
+        .toBe(count < 5 ? "retry" : "completed");
       if (count < 5) {
         await database
           .update(memoryExtractionRun)
@@ -211,6 +217,198 @@ test("production extraction queue exhausts exactly five executions into a safe d
     await database.$client.end();
   }
 }, 35_000);
+
+test("lost replacement jobs with divergent retry clocks publish exactly one durable dead letter", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  let stop: (() => Promise<void>) | undefined;
+  try {
+    await resetExtractionDatabase(database);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    const fixture = await extractionFixture(database);
+    const attempt = await extractionAttempt(database, fixture);
+    const run = await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    let calls = 0;
+    stop = await registerMemoryExtractionWorker(
+      database,
+      boss,
+      extractionGateway(async () => {
+        calls++;
+        throw new ModelGatewayError("server", { retryable: true });
+      }),
+      extractionCounter,
+      { error: vi.fn() },
+    );
+    for (let count = 1; count <= 5; count++) {
+      await expect
+        .poll(
+          async () => {
+            const [row] = await database.select().from(memoryExtractionRun);
+            return { count: row.attemptCount, status: row.status };
+          },
+          { timeout: 6_000 },
+        )
+        .toEqual({ count, status: count < 5 ? "retrying" : "dead_letter" });
+      const [row] = await database.select().from(memoryExtractionRun);
+      await expect
+        .poll(
+          async () =>
+            (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, row.jobId!))?.state,
+          { timeout: 6_000 },
+        )
+        .toBe(count < 5 ? "retry" : "completed");
+      expect(
+        (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, row.jobId!))
+          ?.retryCount,
+      ).toBe(0);
+      if (count < 5) {
+        await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+        await database
+          .update(memoryExtractionRun)
+          .set({ nextRetryAt: new Date(0) });
+        await enqueuePendingExtractionRuns(database, boss, new Date());
+      }
+    }
+    await Promise.all([
+      enqueuePendingExtractionRuns(database, boss, new Date()),
+      enqueuePendingExtractionRuns(database, boss, new Date()),
+    ]);
+    const letters = await boss.findJobs<{ runId: string }>(
+      MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+      { data: { runId: run!.runId } },
+    );
+    expect(letters).toHaveLength(1);
+    expect(letters[0].data).toEqual({ runId: run!.runId });
+    expect(calls).toBe(5);
+    expect(await database.select().from(usageLedger)).toHaveLength(5);
+  } finally {
+    await stop?.();
+    await boss.offWork(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    await database.$client.end();
+  }
+}, 40_000);
+
+test("database-terminal recovery atomically publishes with its marker and safely retries publication errors", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  const logger = { error: vi.fn() };
+  let stop: (() => Promise<void>) | undefined;
+  let trigger = false;
+  try {
+    await resetExtractionDatabase(database);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    const fixture = await extractionFixture(database);
+    const attempt = await extractionAttempt(database, fixture);
+    const run = await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    const gateway = extractionGateway(async () => {
+      throw new ModelGatewayError("server", { retryable: true });
+    });
+    for (let count = 0; count < 5; count++) {
+      await database
+        .update(memoryExtractionRun)
+        .set({ nextRetryAt: new Date(0) });
+      await expect(
+        processMemoryExtractionRun(
+          database,
+          gateway,
+          extractionCounter,
+          run!.runId,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ category: "server" });
+    }
+    await database.execute(
+      sql.raw(`
+      CREATE FUNCTION task5_fix_publication_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'fixture-private-publication-body'; END $$;
+      CREATE TRIGGER task5_fix_publication_fail BEFORE UPDATE OF dead_letter_published_at
+      ON memory_extraction_runs FOR EACH ROW EXECUTE FUNCTION task5_fix_publication_fail()
+    `),
+    );
+    trigger = true;
+    stop = await registerMemoryExtractionWorker(
+      database,
+      boss,
+      gateway,
+      extractionCounter,
+      logger,
+    );
+    expect(await boss.findJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE)).toEqual(
+      [],
+    );
+    expect(
+      (await database.select().from(memoryExtractionRun))[0]
+        .deadLetterPublishedAt,
+    ).toBeNull();
+    const wakeup = await boss.send(MEMORY_EXTRACTION_QUEUE, {
+      runId: run!.runId,
+    });
+    await expect
+      .poll(
+        async () =>
+          (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, wakeup!))?.state,
+        { timeout: 6_000 },
+      )
+      .toBe("retry");
+    expect(
+      JSON.stringify(
+        (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, wakeup!))?.output,
+      ),
+    ).not.toContain("fixture-private-publication-body");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+      "fixture-private-publication-body",
+    );
+    await database.execute(
+      sql.raw(
+        "DROP TRIGGER task5_fix_publication_fail ON memory_extraction_runs; DROP FUNCTION task5_fix_publication_fail()",
+      ),
+    );
+    trigger = false;
+    await enqueuePendingExtractionRuns(database, boss, new Date());
+    expect(
+      await boss.findJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE),
+    ).toHaveLength(1);
+    expect(
+      (await database.select().from(memoryExtractionRun))[0]
+        .deadLetterPublishedAt,
+    ).toBeInstanceOf(Date);
+    await expect(
+      database.update(memoryExtractionRun).set({ deadLetterPublishedAt: null }),
+    ).rejects.toThrow();
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    await enqueuePendingExtractionRuns(database, boss, new Date());
+    expect(await boss.findJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE)).toEqual(
+      [],
+    );
+    expect(await database.select().from(usageLedger)).toHaveLength(5);
+  } finally {
+    if (trigger)
+      await database.execute(
+        sql.raw(
+          "DROP TRIGGER task5_fix_publication_fail ON memory_extraction_runs; DROP FUNCTION task5_fix_publication_fail()",
+        ),
+      );
+    await stop?.();
+    await boss.offWork(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    await database.$client.end();
+  }
+}, 20_000);
 
 test("periodic production reconciler discovers completion after worker startup without an immediate send", async () => {
   const database = createDatabase(testDatabaseUrl());

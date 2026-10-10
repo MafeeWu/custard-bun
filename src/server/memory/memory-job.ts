@@ -32,6 +32,7 @@ import {
   EXTRACTION_MAX_EXECUTIONS,
   lockExtractionRelationship,
   readExtractionSource,
+  publishExtractionDeadLetters,
   type MemoryExtractionJob,
 } from "./memory-extraction-service";
 import {
@@ -600,20 +601,37 @@ export async function registerMemoryExtractionWorker(
           ? job.data.runId
           : undefined;
       if (!runId) throw new Error("Invalid memory extraction job.");
+      let logged = false;
       try {
-        await processMemoryExtractionRun(
-          database,
-          gateway,
-          tokenCounter,
-          runId,
-          controller.signal,
-        );
+        try {
+          await processMemoryExtractionRun(
+            database,
+            gateway,
+            tokenCounter,
+            runId,
+            controller.signal,
+          );
+        } catch (error) {
+          logger.error("memory extraction failed", {
+            runId,
+            category: failureDetails(error).category,
+            name: safeErrorName(error),
+          });
+          logged = true;
+          const [run] = await database
+            .select({ status: memoryExtractionRun.status })
+            .from(memoryExtractionRun)
+            .where(eq(memoryExtractionRun.id, runId));
+          if (run?.status !== "dead_letter") throw error;
+        }
+        await publishExtractionDeadLetters(database, boss, new Date());
       } catch (error) {
-        logger.error("memory extraction failed", {
-          runId,
-          category: failureDetails(error).category,
-          name: safeErrorName(error),
-        });
+        if (!logged)
+          logger.error("memory extraction failed", {
+            runId,
+            category: failureDetails(error).category,
+            name: safeErrorName(error),
+          });
         // pg-boss persists thrown errors. Never expose SQL parameters or provider bodies.
         throw new Error("Memory extraction execution failed.");
       }

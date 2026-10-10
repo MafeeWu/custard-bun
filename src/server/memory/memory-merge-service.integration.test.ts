@@ -161,6 +161,28 @@ test("credential and nonexplicit sensitive candidates never persist while ordina
   ).toEqual(["Likes green tea."]);
 });
 
+test("ordinary provider labels and unrelated remember consent cannot bypass local sensitive policy", async () => {
+  const input = await source();
+  const { conversationMessage } = await import("@/server/db/schema");
+  await database
+    .update(conversationMessage)
+    .set({
+      content: "Remember my tea preference. I have type 1 diabetes.",
+    })
+    .where(eq(conversationMessage.id, input.sourceMessageId));
+  await merge(input, [
+    extractionCandidate(input.sourceMessageId, {
+      content: "Has type 1 diabetes.",
+    }),
+    extractionCandidate(input.sourceMessageId, {
+      content: "Has type 1 diabetes.",
+      sensitivity: "personal_explicit",
+      userExplicitlyAskedToRemember: true,
+    }),
+  ]);
+  expect(await database.select().from(memoryItem)).toEqual([]);
+});
+
 test("strict raw JSON rejects extra provider keys before persistence", async () => {
   const input = await source();
   await expect(

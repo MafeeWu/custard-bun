@@ -39,7 +39,10 @@ import {
 import { createTokenCounter, type TokenCounter } from "./token-counter";
 import { getBoss } from "@/server/jobs/boss";
 import { ensureQueues } from "@/server/jobs/queues";
-import { enqueuePendingExtractionRuns } from "@/server/memory/memory-extraction-service";
+import {
+  captureExtractionAdmission,
+  enqueuePendingExtractionRuns,
+} from "@/server/memory/memory-extraction-service";
 
 const CHECKPOINT_INTERVAL_MS = 500;
 const CHECKPOINT_BYTES = 1_024;
@@ -541,6 +544,10 @@ export function createGenerationService(
         };
       }
 
+      const extractionMemoryEpoch = await captureExtractionAdmission(
+        transaction,
+        input,
+      );
       const context = await promptContext(transaction, {
         userId: input.userId,
         conversationId: input.conversationId,
@@ -583,6 +590,7 @@ export function createGenerationService(
         assistantMessageId,
         clientRequestId: input.clientRequestId,
         attemptNumber: 1,
+        extractionMemoryEpoch,
         modelId: dependencies.config.modelId,
         startedAt: now,
         createdAt: now,
@@ -630,6 +638,10 @@ export function createGenerationService(
         };
       }
 
+      const extractionMemoryEpoch = await captureExtractionAdmission(
+        transaction,
+        input,
+      );
       const [current] = await transaction
         .select({
           id: generationAttempt.id,
@@ -637,6 +649,7 @@ export function createGenerationService(
           attemptNumber: generationAttempt.attemptNumber,
           status: generationAttempt.status,
           isCurrent: generationAttempt.isCurrent,
+          extractionMemoryEpoch: generationAttempt.extractionMemoryEpoch,
           userMessageId: conversationMessage.inReplyTo,
         })
         .from(generationAttempt)
@@ -699,6 +712,10 @@ export function createGenerationService(
         assistantMessageId: current.assistantMessageId,
         clientRequestId: input.clientRequestId,
         attemptNumber: current.attemptNumber + 1,
+        extractionMemoryEpoch:
+          current.extractionMemoryEpoch === extractionMemoryEpoch
+            ? extractionMemoryEpoch
+            : null,
         modelId: dependencies.config.modelId,
         startedAt: now,
         createdAt: now,

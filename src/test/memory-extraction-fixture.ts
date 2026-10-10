@@ -15,6 +15,7 @@ import {
   user,
 } from "@/server/db/schema";
 import type { MemoryCandidate } from "@/server/memory/memory-contracts";
+import { captureExtractionAdmission } from "@/server/memory/memory-extraction-service";
 import type {
   ModelGateway,
   StructuredCompletionInput,
@@ -118,6 +119,9 @@ export async function extractionAttempt(
   userContent = "I prefer green tea.",
   status: typeof generationAttempt.$inferSelect.status = "complete",
 ) {
+  const extractionMemoryEpoch = await database.transaction((tx) =>
+    captureExtractionAdmission(tx, fixture),
+  );
   const sourceMessageId = randomUUID();
   const assistantMessageId = randomUUID();
   const attemptId = randomUUID();
@@ -146,6 +150,7 @@ export async function extractionAttempt(
     userId: fixture.userId,
     assistantMessageId,
     attemptNumber: 1,
+    extractionMemoryEpoch,
     status,
     content: "I'll remember your preference.",
     modelId: "test-model",

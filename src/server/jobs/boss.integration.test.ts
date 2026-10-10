@@ -31,8 +31,11 @@ test("extraction queue has five total executions, 60-second exponential backoff 
     retryLimit: 4,
     retryDelay: 60,
     retryBackoff: true,
-    deadLetter: MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
   });
+  expect((await boss.getQueue(MEMORY_EXTRACTION_QUEUE))?.deadLetter).toBeNull();
+  expect(
+    await boss.getQueue(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE),
+  ).not.toBeNull();
   expect(await boss.getQueue(AUTH_EMAIL_QUEUE)).toMatchObject({
     retryLimit: 5,
     retryDelay: 30,

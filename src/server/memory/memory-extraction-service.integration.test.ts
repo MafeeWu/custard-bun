@@ -22,6 +22,7 @@ import {
   enqueuePendingExtractionRuns,
   retryMemoryExtraction,
 } from "./memory-extraction-service";
+import { forgetCharacter, updateMemoryControls } from "./memory-service";
 
 const database = createDatabase(testDatabaseUrl());
 beforeEach(() => resetExtractionDatabase(database));
@@ -65,6 +66,94 @@ test("a transaction rollback removes the run with its completion", async () => {
   expect(await database.select().from(memoryExtractionRun)).toHaveLength(0);
 });
 
+test.each([
+  "forget",
+  "recording-disable",
+  "global-disable",
+  "account-lockout",
+] as const)(
+  "admission fence survives %s followed by restoration before completion",
+  async (kind) => {
+    const input = await fixtureWithAttempt("streaming");
+    expect((await database.select().from(generationAttempt))[0]).toMatchObject({
+      extractionMemoryEpoch: 0,
+    });
+    if (kind === "forget")
+      await forgetCharacter(database, { ...input, expectedRevision: 1 });
+    if (kind === "recording-disable") {
+      await updateMemoryControls(database, {
+        ...input,
+        expectedRevision: 1,
+        recordingEnabled: false,
+        usageEnabled: true,
+      });
+      await updateMemoryControls(database, {
+        ...input,
+        expectedRevision: 2,
+        recordingEnabled: true,
+        usageEnabled: true,
+      });
+    }
+    if (kind === "global-disable") {
+      await database.update(memorySettings).set({ enabled: false });
+      await database.update(memorySettings).set({ enabled: true });
+    }
+    if (kind === "account-lockout") {
+      await database
+        .update(user)
+        .set({ deletionPendingAt: extractionNow })
+        .where(eq(user.id, input.userId));
+      await database
+        .update(user)
+        .set({ deletionPendingAt: null })
+        .where(eq(user.id, input.userId));
+    }
+    await database
+      .update(generationAttempt)
+      .set({ status: "complete", completedAt: extractionNow })
+      .where(eq(generationAttempt.id, input.attemptId));
+    expect(
+      (await database.select().from(generationAttempt))[0]
+        .extractionMemoryEpoch,
+    ).toBeNull();
+    expect(
+      await database.transaction((tx) =>
+        createExtractionRunForCompletedAttempt(tx, input),
+      ),
+    ).toBeNull();
+    await expect(
+      database
+        .update(generationAttempt)
+        .set({ extractionMemoryEpoch: 0 })
+        .where(eq(generationAttempt.id, input.attemptId)),
+    ).rejects.toThrow();
+    expect(await database.select().from(memoryExtractionRun)).toEqual([]);
+  },
+);
+
+test("an attempt admitted with recording disabled stays ineligible after reenable", async () => {
+  const fixture = await extractionFixture(database);
+  await database
+    .insert(userCharacterMemorySetting)
+    .values({ ...fixture, recordingEnabled: false });
+  const attempt = await extractionAttempt(database, fixture);
+  await updateMemoryControls(database, {
+    ...fixture,
+    expectedRevision: 1,
+    recordingEnabled: true,
+    usageEnabled: true,
+  });
+  expect(
+    await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    ),
+  ).toBeNull();
+});
+
 test.each(["pending", "streaming", "failed", "interrupted"] as const)(
   "%s attempts create no extraction",
   async (status) => {
@@ -103,8 +192,9 @@ test.each([
       .where(eq(conversation.id, input.conversationId));
   if (kind === "disabled")
     await database
-      .insert(userCharacterMemorySetting)
-      .values({ ...input, recordingEnabled: false });
+      .update(userCharacterMemorySetting)
+      .set({ recordingEnabled: false })
+      .where(eq(userCharacterMemorySetting.userId, input.userId));
   if (kind === "global-disabled")
     await database.update(memorySettings).set({ enabled: false });
   if (kind === "deletion-pending")
@@ -128,8 +218,9 @@ test.each([
 test("usage disabled does not disable recording", async () => {
   const input = await fixtureWithAttempt();
   await database
-    .insert(userCharacterMemorySetting)
-    .values({ ...input, usageEnabled: false });
+    .update(userCharacterMemorySetting)
+    .set({ usageEnabled: false })
+    .where(eq(userCharacterMemorySetting.userId, input.userId));
   expect(
     await database.transaction((tx) =>
       createExtractionRunForCompletedAttempt(tx, input),
@@ -164,7 +255,6 @@ test("reconciler recovers commit-before-send and a lost queue job with the run s
       retryLimit: 4,
       retryBackoff: true,
       retryDelay: 60,
-      deadLetter: "memory-extraction-dead-letter",
     }),
   );
   send.mockResolvedValue(null);

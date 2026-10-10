@@ -292,6 +292,9 @@ export const memoryExtractionRun = pgTable(
       .notNull()
       .default("pending"),
     jobId: text("job_id"),
+    deadLetterPublishedAt: timestamp("dead_letter_published_at", {
+      withTimezone: true,
+    }),
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: text("claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
@@ -336,6 +339,10 @@ export const memoryExtractionRun = pgTable(
     check(
       "memory_extraction_runs_epoch_nonnegative",
       nonnegative(table.memoryEpoch),
+    ),
+    check(
+      "memory_extraction_runs_dead_letter_publication_shape",
+      sql`${table.deadLetterPublishedAt} IS NULL OR ${table.status} = 'dead_letter'`,
     ),
     check(
       "memory_extraction_runs_attempt_count_nonnegative",

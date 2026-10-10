@@ -204,6 +204,7 @@ export const generationAttempt = pgTable(
     inputTokens: bigint("input_tokens", { mode: "number" }),
     outputTokens: bigint("output_tokens", { mode: "number" }),
     usageIsEstimated: boolean("usage_is_estimated"),
+    extractionMemoryEpoch: integer("extraction_memory_epoch"),
     cancelRequestedAt: timestamp("cancel_requested_at", {
       withTimezone: true,
     }),
@@ -265,6 +266,10 @@ export const generationAttempt = pgTable(
         OR
         (${table.inputTokens} IS NOT NULL AND ${table.outputTokens} IS NOT NULL AND ${table.usageIsEstimated} IS NOT NULL)
       )`,
+    ),
+    check(
+      "generation_attempts_extraction_epoch_nonnegative",
+      sql`${table.extractionMemoryEpoch} IS NULL OR ${nonnegative(table.extractionMemoryEpoch)}`,
     ),
     check(
       "generation_attempts_lease_shape_check",

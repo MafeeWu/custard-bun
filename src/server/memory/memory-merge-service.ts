@@ -14,8 +14,14 @@ import {
   parseMemoryCandidates,
   type MemoryCandidate,
 } from "./memory-contracts";
-import { normalizeMemoryCandidate } from "./memory-normalization";
-import { assertMemoryCandidateAllowed } from "./memory-policy";
+import {
+  normalizeMemoryCandidate,
+  normalizeMemoryText,
+} from "./memory-normalization";
+import {
+  assertMemoryCandidateAllowed,
+  isPersonalSensitiveMemory,
+} from "./memory-policy";
 import {
   lockExtractionRelationship,
   readExtractionSource,
@@ -34,25 +40,94 @@ function hasRememberIntent(content: string): boolean {
   );
 }
 
+function hasCandidateRememberIntent(
+  userContent: string,
+  candidateContent: string,
+): boolean {
+  const source = normalizeMemoryText(userContent).toLocaleLowerCase("en-US");
+  if (!hasRememberIntent(source)) return false;
+  const words =
+    candidateContent
+      .toLocaleLowerCase("en-US")
+      .replace(/\bdiagnosed\b/g, "diagnosis")
+      .match(/[\p{L}\p{N}]+/gu) ?? [];
+  const generic = new Set([
+    "i",
+    "me",
+    "my",
+    "the",
+    "a",
+    "an",
+    "that",
+    "user",
+    "users",
+    "is",
+    "am",
+    "are",
+    "has",
+    "have",
+    "had",
+    "with",
+    "of",
+    "at",
+    "in",
+    "on",
+    "for",
+    "to",
+    "medical",
+    "condition",
+    "lives",
+    "practices",
+    "takes",
+  ]);
+  const facts = words.filter((word) => !generic.has(word));
+  if (!facts.length) return false;
+  // Consent is scoped to the request clause, not other facts elsewhere in the turn.
+  return userContent
+    .split(/[.!?;。\n]|,\s*|\b(?:and|but|also)\b/i)
+    .some((clause) => {
+      const normalized = normalizeMemoryText(clause).toLocaleLowerCase("en-US");
+      if (!hasRememberIntent(normalized)) return false;
+      if (
+        /\b(?:not|never|no|don't|dont|without)\b|不|没有|沒有/.test(normalized)
+      )
+        return false;
+      const requested = new Set(
+        normalized
+          .replace(/\bdiagnosed\b/g, "diagnosis")
+          .match(/[\p{L}\p{N}]+/gu) ?? [],
+      );
+      return facts.every((word) => requested.has(word));
+    });
+}
+
 export function allowedExtractionCandidates(
   candidates: unknown,
   source: { sourceMessageId: string; userContent: string },
 ): MemoryCandidate[] {
-  return parseMemoryCandidates(candidates).filter((raw) => {
-    if (raw.sourceMessageId !== source.sourceMessageId) return false;
+  return parseMemoryCandidates(candidates).flatMap((raw) => {
+    if (raw.sourceMessageId !== source.sourceMessageId) return [];
     if (raw.explicitness === "repeated_inference" && raw.type !== "preference")
-      return false;
-    if (
-      raw.sensitivity === "personal_explicit" &&
-      !hasRememberIntent(source.userContent)
-    )
-      return false;
+      return [];
     try {
-      assertMemoryCandidateAllowed(normalizeMemoryCandidate(raw));
-      return true;
+      const normalized = normalizeMemoryCandidate(raw);
+      const sensitive =
+        raw.sensitivity === "personal_explicit" ||
+        isPersonalSensitiveMemory(normalized.content);
+      const approved: MemoryCandidate = {
+        ...raw,
+        content: normalized.content,
+        sensitivity: sensitive ? "personal_explicit" : "ordinary",
+        userExplicitlyAskedToRemember: hasCandidateRememberIntent(
+          source.userContent,
+          normalized.content,
+        ),
+      };
+      assertMemoryCandidateAllowed(normalizeMemoryCandidate(approved));
+      return [approved];
     } catch (error) {
       if (error instanceof ChatDomainError && error.code === "CHAT_VALIDATION")
-        return false;
+        return [];
       throw error;
     }
   });

@@ -3,15 +3,23 @@ import type { NormalizedMemoryCandidate } from "./memory-contracts";
 
 const credentialPatterns = [
   /\bpassword\b/i,
+  /\b(?:passwd|pwd|token|credentials?|cvv|cvc)\b/i,
   /\bpasscode\b/i,
   /\botp\b/i,
-  /\bone-time code\b/i,
-  /\brecovery code\b/i,
+  /\bone[\s_-]?time[\s_-]?code\b/i,
+  /\b(?:recovery|backup)[\s_-]?(?:code|key|phrase)\b/i,
+  /\b(?:seed|mnemonic)[\s_-]?phrase\b/i,
   /\b(?:api|secret|private)[\s_-]?key\b/i,
   /\b(?:api|auth(?:entication)?|access|session|refresh|bearer)[\s_-]?token\b/i,
   /\b-----begin [a-z ]*private key-----\b/i,
-  /\bsk-(live|test)-[a-z0-9_-]+\b/i,
+  /\bsk[-_](?:(?:proj|svcacct|live|test)[-_])?[a-z0-9_-]{16,}\b/i,
   /\bgh[pousr]_[a-z0-9]+\b/i,
+  /\bgithub_pat_[a-z0-9_]+\b/i,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/i,
+  /\bAIza[a-z0-9_-]{30,}\b/i,
+  /\bxox[baprs]-[a-z0-9-]+\b/i,
+  /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i,
+  /\bbearer\s+[a-z0-9._~+/-]{8,}=*/i,
 ] as const;
 
 const bankCredentialMarkers = [
@@ -38,7 +46,27 @@ const bankingAuthMarkers = [
   "login",
   "username",
   "user id",
+  "cvv",
+  "cvc",
+  "security code",
 ] as const;
+
+const personalSensitivePatterns = [
+  /\b(?:health|medical|diagnos(?:is|ed|es|tic)|disease|disorder|syndrome|disability|disabled|medication|prescription|therapy|pregnan(?:t|cy)|mental health)\b/i,
+  /\b(?:diabet(?:es|ic)|insulin|hiv|aids|cancer|epilepsy|asthma|depression|anxiety|bipolar|schizophrenia|autism|adhd|ptsd)\b/i,
+  /\b(?:multiple sclerosis|allerg(?:y|ies|ic)|heart failure|hypertension|arthritis|dementia|alzheimer|parkinson|crohn|lupus)\b/i,
+  /\b(?:religio(?:n|us)|faith|christian|christianity|catholic|protestant|jewish|judaism|muslim|islam|hindu|hinduism|buddhis[mt]|sikh|atheis[mt])\b/i,
+  /\b(?:mormon|agnostic|orthodox|evangelical|sunni|shia|taois[mt])\b/i,
+  /\b(?:sexual(?:ity| orientation)?|gender(?: identity)?|transgender|transsexual|nonbinary|non-binary|bisexual|homosexual|heterosexual|gay|lesbian|queer|ethnicity|ethnic|racial|race|nationality|passport|social security|ssn|identity number)\b/i,
+  /\b(?:precise|exact|home|residential|street|mailing)\s+address\b/i,
+  /\b(?:is|am|identifies as)\s+(?:black|white|asian|african|hispanic|latino|latina|indigenous|arab)\b/i,
+  /\b\d{1,6}\s+(?:[\p{L}\d.-]+\s+){1,5}(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|court|ct|boulevard|blvd|way|place|pl)\b/iu,
+  /(?:诊断|診斷|糖尿病|艾滋|抑郁|抑鬱|宗教|信仰|性取向|性别认同|性別認同|身份证|身份證|住址)/,
+] as const;
+
+export function isPersonalSensitiveMemory(content: string): boolean {
+  return personalSensitivePatterns.some((pattern) => pattern.test(content));
+}
 
 function throwValidationError(message: string): never {
   throw new ChatDomainError("CHAT_VALIDATION", message);
@@ -100,9 +128,8 @@ function containsCredential(value: string): boolean {
 export function assertMemoryCandidateAllowed(
   candidate: NormalizedMemoryCandidate,
 ): void {
-  const normalizedLowerContent = candidate.normalizedContent.toLocaleLowerCase(
-    "en-US",
-  );
+  const normalizedLowerContent =
+    candidate.normalizedContent.toLocaleLowerCase("en-US");
 
   if (containsCredential(normalizedLowerContent)) {
     throwValidationError(
@@ -110,7 +137,10 @@ export function assertMemoryCandidateAllowed(
     );
   }
 
-  if (candidate.sensitivity !== "personal_explicit") {
+  if (
+    candidate.sensitivity !== "personal_explicit" &&
+    !isPersonalSensitiveMemory(candidate.normalizedContent)
+  ) {
     return;
   }
 

@@ -32,6 +32,42 @@ export interface MemoryExtractionJob {
   runId: string;
 }
 
+export async function captureExtractionAdmission(
+  transaction: ChatTransaction,
+  input: { userId: string; conversationId: string },
+): Promise<number | null> {
+  const [source] = await transaction
+    .select({ characterId: conversation.characterId })
+    .from(conversation)
+    .where(
+      and(
+        eq(conversation.id, input.conversationId),
+        eq(conversation.userId, input.userId),
+      ),
+    )
+    .limit(1);
+  if (!source) return null;
+  const settings = await lockExtractionRelationship(transaction, {
+    ...input,
+    ...source,
+  });
+  const [global] = await transaction
+    .select()
+    .from(memorySettings)
+    .where(eq(memorySettings.id, "global"));
+  const [owner] = await transaction
+    .select()
+    .from(user)
+    .where(eq(user.id, input.userId));
+  return global?.enabled &&
+    settings?.recordingEnabled &&
+    owner &&
+    !owner.banned &&
+    !owner.deletionPendingAt
+    ? settings.memoryEpoch
+    : null;
+}
+
 export async function lockExtractionRelationship(
   transaction: ChatTransaction,
   input: { userId: string; characterId: string },
@@ -132,6 +168,7 @@ export async function readExtractionSource(
         eq(generationAttempt.userId, input.userId),
         eq(generationAttempt.isCurrent, true),
         eq(generationAttempt.status, "complete"),
+        eq(generationAttempt.extractionMemoryEpoch, settings.memoryEpoch),
         sql`${generationAttempt.createdAt} >= ${global.createdAt}`,
         isNull(generationAttempt.cancelRequestedAt),
         eq(conversation.id, input.conversationId),
@@ -212,6 +249,7 @@ export async function enqueuePendingExtractionRuns(
   boss: Pick<PgBoss, "send">,
   now: Date,
 ): Promise<number> {
+  let sent = await publishExtractionDeadLetters(database, boss, now);
   const rows = await database
     .select()
     .from(memoryExtractionRun)
@@ -244,7 +282,6 @@ export async function enqueuePendingExtractionRuns(
     )
     .orderBy(asc(memoryExtractionRun.createdAt), asc(memoryExtractionRun.id))
     .limit(50);
-  let sent = 0;
   for (const row of rows) {
     const jobId = await boss.send(
       MEMORY_EXTRACTION_QUEUE,
@@ -254,7 +291,6 @@ export async function enqueuePendingExtractionRuns(
         retryLimit: EXTRACTION_MAX_EXECUTIONS - 1,
         retryDelay: 60,
         retryBackoff: true,
-        deadLetter: MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
         expireInSeconds: EXTRACTION_LEASE_MS / 1000,
       },
     );
@@ -279,6 +315,61 @@ export async function enqueuePendingExtractionRuns(
           );
       });
     sent++;
+  }
+  return sent;
+}
+
+export async function publishExtractionDeadLetters(
+  database: Database,
+  boss: Pick<PgBoss, "send">,
+  now: Date,
+): Promise<number> {
+  const rows = await database
+    .select({ id: memoryExtractionRun.id })
+    .from(memoryExtractionRun)
+    .where(
+      and(
+        eq(memoryExtractionRun.status, "dead_letter"),
+        isNull(memoryExtractionRun.deadLetterPublishedAt),
+      ),
+    )
+    .orderBy(asc(memoryExtractionRun.createdAt), asc(memoryExtractionRun.id))
+    .limit(50);
+  let sent = 0;
+  for (const row of rows) {
+    const client = await database.$client.connect();
+    try {
+      await client.query("BEGIN");
+      // Queue publication and its database receipt share one PostgreSQL transaction.
+      const locked = await client.query(
+        "SELECT id FROM memory_extraction_runs WHERE id = $1 AND status = 'dead_letter' AND dead_letter_published_at IS NULL FOR UPDATE",
+        [row.id],
+      );
+      if (locked.rowCount) {
+        const id = await boss.send(
+          MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+          { runId: row.id },
+          {
+            id: row.id,
+            singletonKey: row.id,
+            db: { executeSql: (text, values) => client.query(text, values) },
+          },
+        );
+        if (id) {
+          await client.query(
+            "UPDATE memory_extraction_runs SET dead_letter_published_at = $2 WHERE id = $1",
+            [row.id, now],
+          );
+          sent++;
+        }
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
   return sent;
 }

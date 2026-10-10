@@ -85,6 +85,20 @@
       "when": 1791623235868,
       "tag": "0011_extraction_recording_fences",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791625401804,
+      "tag": "0012_nifty_colossus",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791625633122,
+      "tag": "0013_extraction_publication_receipt",
+      "breakpoints": true
     }
   ]
 }

@@ -41,6 +41,11 @@ import {
   reconcileExpiredLeases,
 } from "./quota-service";
 import { getConversationForUser } from "./conversation-queries";
+import {
+  forgetCharacter,
+  updateMemoryControls,
+} from "@/server/memory/memory-service";
+import { lockUserChatMutation } from "./chat-locks";
 
 const database = createDatabase(testDatabaseUrl());
 const baseNow = new Date("2026-10-09T12:00:00.000Z");
@@ -295,6 +300,177 @@ test("successful current generation settlement atomically creates a durable extr
   expect(await database.select().from(quotaReservation)).toMatchObject([
     { status: "settled" },
   ]);
+});
+
+test.each([
+  "forget",
+  "recording-disable",
+  "global-disable",
+  "account-lockout",
+] as const)(
+  "%s committed while admitted generation completes cannot rebase extraction eligibility",
+  async (kind) => {
+    const userId = await insertUser();
+    const conversationId = await insertConversation(userId);
+    const [relationship] = await database
+      .select()
+      .from(conversation)
+      .where(eq(conversation.id, conversationId));
+    const completingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `task5-fix-${kind}-completion`,
+      max: 1,
+    });
+    const mutatingDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `task5-fix-${kind}-mutation`,
+      max: 1,
+    });
+    let finishProvider!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finishProvider = resolve;
+    });
+    const gateway = new FakeGateway(async function* () {
+      yield { type: "delta", text: "A complete reply." };
+      await gate;
+      yield {
+        type: "usage",
+        inputTokens: 10,
+        outputTokens: 5,
+        estimated: false,
+      };
+    });
+    const stream = serviceWith(gateway, {
+      database: completingDatabase,
+    }).startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "I prefer tea.",
+      signal: new AbortController().signal,
+    });
+    const blocker = await database.$client.connect();
+    let completion: Promise<unknown[]> | undefined;
+    let mutation: Promise<unknown> | undefined;
+    try {
+      await stream.next();
+      await stream.next();
+      expect(
+        (await database.select().from(generationAttempt))[0]
+          .extractionMemoryEpoch,
+      ).toBe(0);
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT id FROM chat_settings WHERE id = 'global' FOR UPDATE",
+      );
+      const input = {
+        userId,
+        characterId: relationship.characterId,
+        expectedRevision: 1,
+      };
+      if (kind === "forget")
+        mutation = forgetCharacter(mutatingDatabase, input);
+      if (kind === "recording-disable") {
+        mutation = (async () => {
+          await updateMemoryControls(mutatingDatabase, {
+            ...input,
+            recordingEnabled: false,
+            usageEnabled: true,
+          });
+          await updateMemoryControls(mutatingDatabase, {
+            ...input,
+            expectedRevision: 2,
+            recordingEnabled: true,
+            usageEnabled: true,
+          });
+        })();
+      }
+      if (kind === "global-disable" || kind === "account-lockout") {
+        mutation = mutatingDatabase.transaction(async (tx) => {
+          await lockUserChatMutation(tx, userId);
+          if (kind === "global-disable") {
+            await tx.update(memorySettings).set({ enabled: false });
+            await tx.update(memorySettings).set({ enabled: true });
+          } else {
+            await tx
+              .update(user)
+              .set({ deletionPendingAt: baseNow })
+              .where(eq(user.id, userId));
+            await tx
+              .update(user)
+              .set({ deletionPendingAt: null })
+              .where(eq(user.id, userId));
+          }
+        });
+      }
+      await waitForApplicationLockWait(`task5-fix-${kind}-mutation`);
+      finishProvider();
+      completion = collect(stream);
+      await waitForApplicationLockWait(`task5-fix-${kind}-completion`);
+      await blocker.query("COMMIT");
+      await mutation;
+      await completion;
+      expect(await database.select().from(generationAttempt)).toMatchObject([
+        { status: "complete" },
+      ]);
+      expect(await database.select().from(memoryExtractionRun)).toEqual([]);
+      expect(await database.select().from(usageLedger)).toHaveLength(1);
+      expect(
+        (await database.select().from(generationAttempt))[0]
+          .extractionMemoryEpoch,
+      ).toBeNull();
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      finishProvider();
+      await mutation;
+      await completion;
+      await completingDatabase.$client.end();
+      await mutatingDatabase.$client.end();
+    }
+  },
+);
+
+test("retrying a pre-forget user turn cannot give its old evidence a new admission epoch", async () => {
+  const userId = await insertUser();
+  const conversationId = await insertConversation(userId);
+  const first = await collect(
+    serviceWith(
+      new FakeGateway(async function* () {
+        yield { type: "provider-call", callNumber: 1 };
+        throw new ModelGatewayError("authentication");
+      }),
+    ).startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "I prefer tea.",
+      signal: new AbortController().signal,
+    }),
+  );
+  const [relationship] = await database
+    .select()
+    .from(conversation)
+    .where(eq(conversation.id, conversationId));
+  await forgetCharacter(database, {
+    userId,
+    characterId: relationship.characterId,
+    expectedRevision: 1,
+  });
+  const retry = await collect(
+    serviceWith(
+      new FakeGateway(async function* () {
+        yield { type: "delta", text: "A complete retry." };
+      }),
+    ).retry({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      attemptId: (first[0] as { attemptId: string }).attemptId,
+      signal: new AbortController().signal,
+    }),
+  );
+  expect(retry.at(-1)).toMatchObject({ type: "completed" });
+  expect(await database.select().from(memoryExtractionRun)).toEqual([]);
+  expect(await database.select().from(usageLedger)).toHaveLength(2);
 });
 
 test("extraction insertion failure rolls back chat attempt settlement and all quota accounting", async () => {

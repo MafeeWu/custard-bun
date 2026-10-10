@@ -34,11 +34,14 @@ export async function ensureQueues(
     retryLimit: 4,
     retryBackoff: true,
     retryDelay: 60,
-    deadLetter: MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
   };
   await boss.createQueue(MEMORY_EXTRACTION_QUEUE, {
     ...extractionOptions,
     policy: "exclusive",
   });
-  await boss.updateQueue(MEMORY_EXTRACTION_QUEUE, extractionOptions);
+  // Database execution state owns forwarding; replacement jobs have independent retry clocks.
+  await boss.updateQueue(MEMORY_EXTRACTION_QUEUE, {
+    ...extractionOptions,
+    deadLetter: null,
+  });
 }

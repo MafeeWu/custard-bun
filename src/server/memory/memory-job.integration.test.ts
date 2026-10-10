@@ -61,6 +61,215 @@ async function source() {
   return { ...fixture, ...attempt, runId: run!.runId };
 }
 
+async function recoveryReceipt(
+  candidates: unknown,
+  input: Awaited<ReturnType<typeof source>>,
+) {
+  await database.execute(
+    sql.raw(`
+    CREATE FUNCTION task5_fix_receipt_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'pause after receipt'; END $$;
+    CREATE TRIGGER task5_fix_receipt_pause BEFORE INSERT ON usage_ledger
+    FOR EACH ROW EXECUTE FUNCTION task5_fix_receipt_pause()
+  `),
+  );
+  try {
+    await expect(
+      processMemoryExtractionRun(
+        database,
+        extractionGateway(async () => extractionResult(candidates)),
+        extractionCounter,
+        input.runId,
+        signal,
+      ),
+    ).rejects.toBeDefined();
+    const [receipt] = await database.select().from(memoryExtractionExecution);
+    expect(receipt.responseAt).toBeInstanceOf(Date);
+    expect(receipt.settledAt).toBeNull();
+    return receipt.candidates;
+  } finally {
+    await database.execute(
+      sql.raw(
+        "DROP TRIGGER task5_fix_receipt_pause ON usage_ledger; DROP FUNCTION task5_fix_receipt_pause()",
+      ),
+    );
+  }
+}
+
+test.each([
+  "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789_ABC",
+  "sk-svcacct-abcdefghijklmnopqrstuvwxyz0123456789",
+  "sk-abcdefghijklmnopqrstuvwxyz0123456789",
+  ["sk", "live", "abcdefghijklmnopqrstuvwxyz"].join("_"),
+  "sk-test-abcdefghijklmnopqrstuvwxyz",
+  "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  "github_pat_abcdefghijklmnopqrstuvwxyz0123456789",
+  "AKIAIOSFODNN7EXAMPLE",
+  "AIzaSyabcdefghijklmnopqrstuvwxyz0123456",
+  ["xoxb", "123456789012-abcdefghijklmnopqrstuvwxyz"].join("-"),
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuv",
+  "Bearer abcdefghijklmnopqrstuvwxyz",
+  "-----BEGIN RSA PRIVATE KEY----- abcdef -----END RSA PRIVATE KEY-----",
+  "-----BEGIN OPENSSH PRIVATE KEY----- abcdef",
+  "My recovery-code is AX91-BQ22",
+  "My backup code is AX91-BQ22",
+  "My seed phrase is alpha beta gamma",
+  "My API key is live_abcdef123456",
+  "My access token is abcdef123456",
+  "My refresh_token is abcdef123456",
+  "My password is hunter2",
+  "My OTP is 654321",
+  "4111 1111 1111 1111",
+  "My bank login is private",
+  "My credit card CVV is 123",
+  "My token is abcdef123456",
+  "My CVV is 123",
+  "My passwd is hunter2",
+  "My recovery phrase is alpha beta gamma",
+])(
+  "credential downgrade cannot reach a durable receipt: %s",
+  async (content) => {
+    const input = await source();
+    const receipt = await recoveryReceipt(
+      [
+        extractionCandidate(input.sourceMessageId, { content }),
+        extractionCandidate(input.sourceMessageId),
+      ],
+      input,
+    );
+    expect(receipt).toMatchObject([{ content: "Likes green tea." }]);
+    expect(receipt).toHaveLength(1);
+    await processMemoryExtractionRun(
+      database,
+      extractionGateway(async () => {
+        throw new Error("Receipt replay must not call provider.");
+      }),
+      extractionCounter,
+      input.runId,
+      signal,
+    );
+    expect(await database.select().from(memoryItem)).toMatchObject([
+      { content: "Likes green tea." },
+    ]);
+    expect(await database.select().from(usageLedger)).toHaveLength(1);
+  },
+);
+
+test.each([
+  ["Has type 1 diabetes.", "ordinary"],
+  ["Has a medical diagnosis.", "ordinary"],
+  ["Has HIV.", "ordinary"],
+  ["Takes insulin for diabetes.", "ordinary"],
+  ["Is Christian.", "ordinary"],
+  ["Practices Islam.", "ordinary"],
+  ["Is transgender.", "ordinary"],
+  ["Is bisexual.", "ordinary"],
+  ["Lives at 10 Main Street.", "ordinary"],
+  ["Has type 1 diabetes.", "personal_explicit"],
+  ["Has multiple sclerosis.", "ordinary"],
+  ["Has a peanut allergy.", "ordinary"],
+  ["Is Mormon.", "ordinary"],
+  ["Identifies as Asian.", "ordinary"],
+] as const)(
+  "sensitive downgrade or unrelated consent cannot reach receipts: %s (%s)",
+  async (content, sensitivity) => {
+    const input = await source();
+    const { conversationMessage } = await import("@/server/db/schema");
+    await database
+      .update(conversationMessage)
+      .set({
+        content:
+          "Please remember that I prefer green tea. I have type 1 diabetes.",
+      })
+      .where(eq(conversationMessage.id, input.sourceMessageId));
+    expect(
+      await recoveryReceipt(
+        [
+          extractionCandidate(input.sourceMessageId, {
+            type: "personal_fact",
+            content,
+            sensitivity,
+            userExplicitlyAskedToRemember: true,
+          }),
+        ],
+        input,
+      ),
+    ).toEqual([]);
+  },
+);
+
+test("candidate-specific consent upgrades provider downgrades and ignores its false intent hint", async () => {
+  const input = await source();
+  const { conversationMessage } = await import("@/server/db/schema");
+  await database
+    .update(conversationMessage)
+    .set({
+      content: "Please remember that I have type 1 diabetes.",
+    })
+    .where(eq(conversationMessage.id, input.sourceMessageId));
+  expect(
+    await recoveryReceipt(
+      [
+        extractionCandidate(input.sourceMessageId, {
+          type: "personal_fact",
+          content: "Has type 1 diabetes.",
+          sensitivity: "ordinary",
+          userExplicitlyAskedToRemember: false,
+        }),
+      ],
+      input,
+    ),
+  ).toMatchObject([
+    {
+      content: "Has type 1 diabetes.",
+      sensitivity: "personal_explicit",
+      userExplicitlyAskedToRemember: true,
+    },
+  ]);
+});
+
+test.each([
+  "Please remember that I do not have type 1 diabetes.",
+  "Please remember my tea preference; I have type 1 diabetes.",
+  "Please remember my tea preference, but I have type 1 diabetes.",
+])(
+  "a negated or nonrequested diagnosis is not candidate-specific consent: %s",
+  async (content) => {
+    const input = await source();
+    const { conversationMessage } = await import("@/server/db/schema");
+    await database
+      .update(conversationMessage)
+      .set({ content })
+      .where(eq(conversationMessage.id, input.sourceMessageId));
+    expect(
+      await recoveryReceipt(
+        [
+          extractionCandidate(input.sourceMessageId, {
+            content: "Has type 1 diabetes.",
+            sensitivity: "personal_explicit",
+            userExplicitlyAskedToRemember: true,
+          }),
+        ],
+        input,
+      ),
+    ).toEqual([]);
+  },
+);
+
+test("receipts persist only canonical NFKC and collapsed whitespace content", async () => {
+  const input = await source();
+  expect(
+    await recoveryReceipt(
+      [
+        extractionCandidate(input.sourceMessageId, {
+          content: "  Ｌｉｋｅｓ\tgreen\n  tea.  ",
+        }),
+      ],
+      input,
+    ),
+  ).toMatchObject([{ content: "Likes green tea." }]);
+});
+
 test("duplicate concurrent deliveries make one call item evidence and instance-only settlement", async () => {
   const input = await source();
   let release!: () => void;

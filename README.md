@@ -294,7 +294,11 @@ image generation, RAG, plugins, billing, and relationship levels.
 
 Successful current replies now create durable extraction runs in the same
 transaction as chat settlement. Only attempts created after memory settings
-were initialized are eligible; there is no historical backfill. Recording and
+were initialized and admitted with recording enabled are eligible; the captured
+admission epoch is never rebased at completion. Forget or disabling recording
+(including global/account controls) permanently invalidates that eligibility,
+even if controls are restored before the reply finishes. Retrying the old turn
+does not grant its pre-invalidation evidence a new epoch. There is no historical backfill. Recording and
 prompt usage are independent controls: disabling usage does not stop recording.
 Automatic direct facts are visible immediately. Inferred ordinary preferences
 remain hidden until two distinct user messages support them. User edits are
@@ -302,13 +306,23 @@ authoritative; automatic confirmation cannot overwrite them.
 
 The existing email worker additionally processes `memory-extraction` and
 reconciles pending work at startup and every 30 seconds. PostgreSQL is the
-source of truth; pg-boss jobs contain only a run ID. Both counters allow five
+source of truth; pg-boss jobs contain only a run ID. Database state allows five
 total executions (initial plus four retries), with exponential backoff starting
-at 60 seconds and a `memory-extraction-dead-letter` queue. Background calls
+at 60 seconds. Lost/replacement jobs do not reset that budget. The database
+reconciler publishes `memory-extraction-dead-letter` atomically with a publication
+receipt, independent of pg-boss retry counters; native extraction forwarding is
+disabled to prevent duplicate publication. Email forwarding is unchanged. Background calls
 consume instance tokens only, never user request or token allowances.
 
-Internal execution receipts retain only locally policy-approved candidates
+Internal execution receipts retain only canonical NFKC/whitespace-normalized,
+locally policy-approved candidates
 until apply, together with accounting data and hashed provider identities.
+Provider sensitivity and intent flags are hints, not consent: known health,
+religion, identity and exact-address facts are classified locally and require an
+explicit remember request matching that candidate's fact in the request clause.
+Unrelated consent elsewhere in the message is insufficient. Unsupported phrasing
+is conservatively rejected. Credentials, keys/tokens, recovery/private-key and
+payment authentication data are discarded before any recovery receipt.
 They are not operational/admin metadata. Apply and settlement commit atomically;
 replaying a durable receipt does not call or charge the provider again. If a
 worker dies before recording the response, lease recovery charges one
