@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { ChatDomainError } from "@/server/chat/chat-errors";
 import type {
   MemoryCandidate,
   MemoryType,
   NormalizedMemoryCandidate,
 } from "./memory-contracts";
+import { maxMemoryItemCharacters as maxItemCharacters } from "./memory-contracts";
 
 export function normalizeMemoryText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
@@ -22,6 +24,12 @@ export function normalizeMemoryCandidate(
   candidate: MemoryCandidate,
 ): NormalizedMemoryCandidate {
   const normalizedContent = normalizeMemoryText(candidate.content);
+  if (normalizedContent.length > maxItemCharacters) {
+    throw new ChatDomainError(
+      "CHAT_VALIDATION",
+      `Normalized memory content exceeds the ${maxItemCharacters}-character item limit.`,
+    );
+  }
 
   return {
     ...candidate,

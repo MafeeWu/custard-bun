@@ -52,4 +52,21 @@ describe("normalizeMemoryCandidate", () => {
       }),
     ).toBe(normalized.normalizedDigest);
   });
+
+  test("rejects normalized content that expands beyond the 500-character item limit", () => {
+    const candidate = createCandidate({
+      content: "ﬀ".repeat(500),
+    });
+
+    expect(() => normalizeMemoryCandidate(candidate)).toThrow(
+      /500|max item|normalized/i,
+    );
+
+    try {
+      normalizeMemoryCandidate(candidate);
+      throw new Error("Expected normalizeMemoryCandidate to throw.");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "CHAT_VALIDATION" });
+    }
+  });
 });

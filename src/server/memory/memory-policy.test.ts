@@ -32,10 +32,24 @@ describe("assertMemoryCandidateAllowed", () => {
     ["otp codes", "remember my otp is 654321"],
     ["one-time codes", "remember my one-time code is 654321"],
     ["recovery codes", "remember my recovery code is AX91-BQ22"],
-    ["api keys", "remember my API key is sk-live-secret"],
-    ["access tokens", "remember my bearer token is ghp_1234567890"],
+    ["api keys", "remember my API key is live_abcdef123456"],
+    ["api tokens", "remember my API token is live_abcdef123456"],
+    ["hyphenated api tokens", "remember my api-token is live_abcdef123456"],
+    ["underscored api tokens", "remember my api_token is live_abcdef123456"],
+    ["auth tokens", "remember my auth token is live_abcdef123456"],
+    [
+      "authentication tokens",
+      "remember my authentication token is live_abcdef123456",
+    ],
+    ["bearer tokens", "remember my bearer token is live_abcdef123456"],
     ["private keys", "remember my private key begins with -----BEGIN PRIVATE KEY-----"],
     ["card numbers", "remember my card number is 4111111111111111"],
+    ["debit card PINs", "remember my debit card PIN is 1234"],
+    ["credit card PINs", "remember my credit card pin is 1234"],
+    [
+      "credit card security answers",
+      "remember my credit card security answer is blue",
+    ],
   ])("rejects %s", (_title, content) => {
     const candidate = normalizeMemoryCandidate(createCandidate({ content }));
 

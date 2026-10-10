@@ -15,6 +15,7 @@ export const memoryTypeValues = [
 export type MemoryType = (typeof memoryTypeValues)[number];
 export type MemoryExplicitness = "direct" | "repeated_inference";
 export type MemorySensitivity = "ordinary" | "personal_explicit";
+export const maxMemoryItemCharacters = 500;
 
 export interface MemoryCandidate {
   type: MemoryType;
@@ -40,7 +41,7 @@ const memoryCandidateSchema = z
     content: z
       .string()
       .min(1)
-      .max(500)
+      .max(maxMemoryItemCharacters)
       .refine((value) => value.trim().length > 0, "must not be blank"),
     sourceMessageId: z.uuid(),
     explicitness: z.enum(["direct", "repeated_inference"]),

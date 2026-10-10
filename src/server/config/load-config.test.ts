@@ -189,18 +189,42 @@ describe("loadRuntimeConfig", () => {
     }
   });
 
+  test("rejects unknown memory keys when required fields are otherwise valid", async () => {
+    const configPath = await writeConfig(
+      validYaml.replace(validMemoryBlock, `${validMemoryBlock}  unknown: true\n`),
+    );
+
+    await expect(
+      loadRuntimeConfig({ configPath, env: validSecretEnv }),
+    ).rejects.toThrow("unknown configuration key");
+  });
+
+  test("rejects memory item and summary budgets that exceed an otherwise valid memory prompt budget", async () => {
+    const configPath = await writeConfig(
+      validYaml
+        .replace("  promptTokenBudget: 2048", "  promptTokenBudget: 1000")
+        .replace(
+          "  memoryItemsTokenBudget: 1536",
+          "  memoryItemsTokenBudget: 600",
+        ),
+    );
+
+    await expect(
+      loadRuntimeConfig({ configPath, env: validSecretEnv }),
+    ).rejects.toThrow("relationshipSummaryTokenBudget");
+  });
+
+  test("rejects a valid memory prompt budget when it is not below the chat prompt budget", async () => {
+    const configPath = await writeConfig(
+      validYaml.replace("  promptTokenBudget: 8192", "  promptTokenBudget: 2047"),
+    );
+
+    await expect(
+      loadRuntimeConfig({ configPath, env: validSecretEnv }),
+    ).rejects.toThrow("memory.promptTokenBudget");
+  });
+
   test.each([
-    ["unknown memory key", "memory:\n  unknown: true", "memory"],
-    [
-      "memory item and summary budgets exceed the memory prompt budget",
-      "relationshipSummaryTokenBudget: 1025",
-      "relationshipSummaryTokenBudget",
-    ],
-    [
-      "memory prompt budget matches the overall chat prompt budget",
-      "promptTokenBudget: 8192",
-      "promptTokenBudget",
-    ],
     ["retention other than 24 hours", "exportRetentionHours: 12", "24"],
     ["zero active-item limit", "maxActiveItemsPerCharacter: 0", "maxActiveItemsPerCharacter"],
     ["zero max item characters", "maxItemCharacters: 0", "maxItemCharacters"],
