@@ -19,10 +19,12 @@ import {
 } from "@/test/memory-extraction-fixture";
 import { summaryFixture, summaryResult } from "@/test/memory-summary-fixture";
 import {
-  editRelationshipSummary,
+  DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  editRelationshipSummary as editRelationshipSummaryWithRuntimeConfig,
   getRelationshipSummary,
   requestSummaryRegeneration,
   ensureAutomaticSummaryRefresh,
+  relationshipSummaryPolicyFromConfig,
 } from "./relationship-summary-service";
 import { processRelationshipSummaryRefresh } from "./relationship-summary-job";
 import {
@@ -34,6 +36,36 @@ import {
 
 const database = createDatabase(testDatabaseUrl());
 const signal = new AbortController().signal;
+const configuredSecrets = {
+  modelApiKey: "mQ7vN2pR8sT4wX6z",
+  authSecret: "aB3dE5fG7hJ9kL2mN4pQ6rS8tV1xZ3cD",
+  smtpPassword: "sM9nP2qR5tV8xZ1b",
+  databasePassword: "dB4fH7jK2mN5pQ8s",
+};
+const configuredSummaryPolicy = (maxSummaryCharacters: number) =>
+  relationshipSummaryPolicyFromConfig({
+    public: { memory: { maxSummaryCharacters } },
+    secret: {
+      databaseUrl: `postgresql://app:${configuredSecrets.databasePassword}@127.0.0.1:5432/app`,
+      betterAuthSecret: configuredSecrets.authSecret,
+      smtp: { password: configuredSecrets.smtpPassword },
+      model: { apiKey: configuredSecrets.modelApiKey },
+    },
+  });
+const editRelationshipSummary = (
+  database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
+  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+) =>
+  editRelationshipSummaryWithRuntimeConfig(
+    database,
+    input,
+    DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  );
+const editWithPolicy = editRelationshipSummaryWithRuntimeConfig as unknown as (
+  database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
+  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+  policy: ReturnType<typeof configuredSummaryPolicy>,
+) => ReturnType<typeof editRelationshipSummaryWithRuntimeConfig>;
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
 
@@ -336,6 +368,63 @@ test("the 4000-character boundary counts Unicode code points, not UTF-16 halves"
     }),
   ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
 });
+
+test("configured 100-character manual edit limit allows 100 code points and rejects 101", async () => {
+  const input = await summaryFixture(database);
+  const policy = configuredSummaryPolicy(100);
+  await editWithPolicy(
+    database,
+    {
+      ...input,
+      expectedRevision: 0,
+      content: "😀".repeat(100),
+    },
+    policy,
+  );
+  expect((await getRelationshipSummary(database, input))?.content).toBe(
+    "😀".repeat(100),
+  );
+  await expect(
+    editWithPolicy(
+      database,
+      {
+        ...input,
+        expectedRevision: 1,
+        content: "😀".repeat(101),
+      },
+      policy,
+    ),
+  ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+  expect(await database.select().from(relationshipSummaryVersion)).toHaveLength(
+    1,
+  );
+});
+
+test.each([
+  { kind: "model API key", value: configuredSecrets.modelApiKey },
+  { kind: "auth secret", value: configuredSecrets.authSecret },
+  { kind: "SMTP password", value: configuredSecrets.smtpPassword },
+  { kind: "database password", value: configuredSecrets.databasePassword },
+])(
+  "manual edits reject configured runtime $kind",
+  async ({ value: secretValue }) => {
+    const input = await summaryFixture(database);
+    await expect(
+      editWithPolicy(
+        database,
+        {
+          ...input,
+          expectedRevision: 0,
+          content: `Reflected value: ${secretValue}`,
+        },
+        configuredSummaryPolicy(4000),
+      ),
+    ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+    expect(
+      await database.select().from(relationshipSummaryVersion),
+    ).toHaveLength(0);
+  },
+);
 
 test.each(["edit", "delete"] as const)(
   "named PostgreSQL memory %s locks summary versions before memory rows",

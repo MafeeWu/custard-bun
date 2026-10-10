@@ -344,9 +344,12 @@ Eligibility uses the relationship's `memoryRevision`, not the optimistic
 controls revision. Summary calls receive only active memories from the same
 owner, character and current epoch, plus the prior automatic summary as
 untrusted data; no transcript is sent. Strict structured output is normalized
-and validated against the 4000-character (Unicode code point) and 16000-byte
-limits, without truncation. Every successful refresh appends an immutable
-version and atomically advances the current pointer and summary revision.
+and validated against the deployment's `maxSummaryCharacters` Unicode code
+point limit (up to PostgreSQL's absolute 4000-character and 16000-byte bounds),
+without truncation. Configured runtime credential values are rejected before
+any receipt or version can retain summary text. Every successful refresh
+appends an immutable version and atomically advances the current pointer and
+summary revision.
 Edits and clears append user-edited versions, including empty content, and
 remain authoritative until explicit regeneration confirms the current summary
 revision. Failed regeneration keeps the existing summary; a newly confirmed

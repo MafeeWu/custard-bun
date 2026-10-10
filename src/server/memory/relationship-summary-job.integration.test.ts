@@ -26,9 +26,11 @@ import {
 } from "@/test/memory-extraction-fixture";
 import { summaryFixture, summaryResult } from "@/test/memory-summary-fixture";
 import {
-  editRelationshipSummary,
+  DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  editRelationshipSummary as editRelationshipSummaryWithRuntimeConfig,
   getRelationshipSummary,
   ensureAutomaticSummaryRefresh,
+  relationshipSummaryPolicyFromConfig,
   requestSummaryRegeneration,
 } from "./relationship-summary-service";
 import {
@@ -51,6 +53,46 @@ import {
 
 const database = createDatabase(testDatabaseUrl());
 const signal = new AbortController().signal;
+const configuredSummaryPolicy = (
+  maxSummaryCharacters: number,
+  modelApiKey = "mQ7vN2pR8sT4wX6z",
+) =>
+  relationshipSummaryPolicyFromConfig({
+    public: { memory: { maxSummaryCharacters } },
+    secret: {
+      databaseUrl: "postgresql://app:dB4fH7jK2mN5pQ8s@127.0.0.1:5432/app",
+      betterAuthSecret: "aB3dE5fG7hJ9kL2mN4pQ6rS8tV1xZ3cD",
+      smtp: { password: "sM9nP2qR5tV8xZ1b" },
+      model: { apiKey: modelApiKey },
+    },
+  });
+const editRelationshipSummary = (
+  database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
+  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+) =>
+  editRelationshipSummaryWithRuntimeConfig(
+    database,
+    input,
+    DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  );
+const processWithPolicy =
+  processRelationshipSummaryRefresh as unknown as (
+    database: Parameters<typeof processRelationshipSummaryRefresh>[0],
+    gateway: Parameters<typeof processRelationshipSummaryRefresh>[1],
+    tokenCounter: Parameters<typeof processRelationshipSummaryRefresh>[2],
+    operationId: Parameters<typeof processRelationshipSummaryRefresh>[3],
+    signal: Parameters<typeof processRelationshipSummaryRefresh>[4],
+    policy: ReturnType<typeof configuredSummaryPolicy>,
+  ) => ReturnType<typeof processRelationshipSummaryRefresh>;
+const registerWithPolicy =
+  registerRelationshipSummaryWorker as unknown as (
+    database: Parameters<typeof registerRelationshipSummaryWorker>[0],
+    boss: Parameters<typeof registerRelationshipSummaryWorker>[1],
+    gateway: Parameters<typeof registerRelationshipSummaryWorker>[2],
+    tokenCounter: Parameters<typeof registerRelationshipSummaryWorker>[3],
+    logger: Parameters<typeof registerRelationshipSummaryWorker>[4],
+    policy: ReturnType<typeof configuredSummaryPolicy>,
+  ) => ReturnType<typeof registerRelationshipSummaryWorker>;
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
 const process = (
@@ -271,6 +313,100 @@ test("exact 4000-character limit accepts normalized output without truncation", 
   );
   expect((await getRelationshipSummary(database, input))?.content).toHaveLength(
     4000,
+  );
+});
+
+test("configured 100-character provider limit shapes schema and prompt, allows 100, and rejects 101", async () => {
+  const policy = configuredSummaryPolicy(100);
+  const accepted = await summaryFixture(database);
+  await processWithPolicy(
+    database,
+    extractionGateway(async (request) => {
+      expect(request.jsonSchema).toMatchObject({
+        properties: { summary: { type: "string", maxLength: 100 } },
+      });
+      expect(request.messages[0].content).toContain(
+        "at most 100 characters",
+      );
+      return summaryResult("x".repeat(100));
+    }),
+    extractionCounter,
+    accepted.operationId!,
+    signal,
+    policy,
+  );
+  expect((await getRelationshipSummary(database, accepted))?.content).toBe(
+    "x".repeat(100),
+  );
+
+  await resetExtractionDatabase(database);
+  const rejected = await summaryFixture(database);
+  await expect(
+    processWithPolicy(
+      database,
+      extractionGateway(async () => summaryResult("x".repeat(101))),
+      extractionCounter,
+      rejected.operationId!,
+      signal,
+      policy,
+    ),
+  ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+  expect(await database.select().from(relationshipSummaryVersion)).toHaveLength(
+    0,
+  );
+  expect(
+    (await database.select().from(relationshipSummaryExecution))[0].summary,
+  ).toBeNull();
+});
+
+test("reflected configured API key reaches no receipt, version, current summary, error, or log", async () => {
+  const reflectedSecret = "mQ7vN2pR8sT4wX6z";
+  const input = await summaryFixture(database);
+  const logger = { error: vi.fn() };
+  let worker:
+    | ((jobs: Array<{ data: { operationId: string } }>) => Promise<void>)
+    | undefined;
+  const boss = {
+    send: vi.fn(async () => randomUUID()),
+    work: vi.fn(async (_queue, handler) => {
+      worker = handler;
+      return randomUUID();
+    }),
+  };
+  const stop = await registerWithPolicy(
+    database,
+    boss as never,
+    extractionGateway(async () => summaryResult(reflectedSecret)),
+    extractionCounter,
+    logger,
+    configuredSummaryPolicy(4000, reflectedSecret),
+  );
+  let thrown: unknown;
+  try {
+    await worker!([{ data: { operationId: input.operationId! } }]).catch(
+      (error: unknown) => {
+        thrown = error;
+      },
+    );
+  } finally {
+    await stop();
+  }
+  const durable = {
+    executions: await database.select().from(relationshipSummaryExecution),
+    versions: await database.select().from(relationshipSummaryVersion),
+    current: await getRelationshipSummary(database, input),
+  };
+  expect(durable.executions[0]?.summary).toBeNull();
+  expect(durable.versions).toHaveLength(0);
+  expect(durable.current).toBeNull();
+  expect(JSON.stringify(durable)).not.toContain(reflectedSecret);
+  expect(
+    thrown instanceof Error
+      ? `${thrown.name}\n${thrown.message}\n${thrown.stack ?? ""}`
+      : String(thrown),
+  ).not.toContain(reflectedSecret);
+  expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+    reflectedSecret,
   );
 });
 

@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { validSecretEnv } from "@/test/unit/runtime-config-fixture";
 import { createDatabase } from "@/server/db/client";
@@ -10,6 +10,7 @@ import {
   memoryExtractionRun,
   memoryItem,
   relationshipSummaryRun,
+  relationshipSummaryVersion,
   usageLedger,
 } from "@/server/db/schema";
 import {
@@ -462,13 +463,15 @@ test("periodic production reconciler discovers completion after worker startup w
   }
 });
 
-test("real worker CLI starts, processes structured extraction, summary and auth jobs, and shuts down cleanly", async () => {
+test("real worker CLI applies configured summary limits while processing extraction, summary and auth jobs", async () => {
   const database = createDatabase(testDatabaseUrl());
+  const configPath = `.task6-worker-config-${process.pid}.yml`;
   let child: ReturnType<typeof spawn> | undefined;
   let exit: Promise<unknown> | undefined;
   let output = "";
   let calls = 0;
   let schemaType: unknown;
+  let summaryMaxLength: unknown;
   await resetExtractionDatabase(database);
   const owner = await extractionFixture(database);
   const attempt = await extractionAttempt(database, owner);
@@ -477,6 +480,9 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     schemaType = body.response_format.json_schema.schema.type;
+    if (body.response_format.json_schema.schema.required.includes("summary"))
+      summaryMaxLength =
+        body.response_format.json_schema.schema.properties.summary.maxLength;
     calls++;
     response.writeHead(200, {
       "content-type": "application/json",
@@ -491,7 +497,7 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
                 body.response_format.json_schema.schema.required.includes(
                   "summary",
                 )
-                  ? JSON.stringify({ summary: "Enjoys green tea." })
+                  ? JSON.stringify({ summary: "x".repeat(100) })
                   : extractionResult([
                       extractionCandidate(attempt.sourceMessageId),
                     ]).content,
@@ -503,6 +509,13 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
     );
   });
   try {
+    await writeFile(
+      configPath,
+      (await readFile("app.config.yml", "utf8")).replace(
+        "maxSummaryCharacters: 4000",
+        "maxSummaryCharacters: 100",
+      ),
+    );
     await boss.offWork(AUTH_EMAIL_QUEUE);
     await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
     await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
@@ -527,6 +540,7 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
         env: {
           ...process.env,
           ...validSecretEnv,
+          APP_CONFIG_PATH: `${process.cwd()}/${configPath}`,
           DATABASE_URL: testDatabaseUrl(),
           MODEL_API_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
           MODEL_ID: "test-model",
@@ -566,7 +580,11 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
       .toBe("completed");
     expect(calls).toBe(2);
     expect(schemaType).toBe("object");
+    expect(summaryMaxLength).toBe(100);
     expect(await database.select().from(memoryItem)).toHaveLength(1);
+    expect(
+      (await database.select().from(relationshipSummaryVersion))[0]?.content,
+    ).toBe("x".repeat(100));
     expect(await database.select().from(usageLedger)).toMatchObject([
       { inputTokens: 13, outputTokens: 7 },
       { inputTokens: 13, outputTokens: 7 },
@@ -597,5 +615,6 @@ test("real worker CLI starts, processes structured extraction, summary and auth 
     await boss.deleteAllJobs(RELATIONSHIP_SUMMARY_QUEUE);
     await boss.deleteAllJobs(RELATIONSHIP_SUMMARY_DEAD_LETTER_QUEUE);
     await database.$client.end();
+    await unlink(configPath).catch(() => undefined);
   }
 }, 25_000);

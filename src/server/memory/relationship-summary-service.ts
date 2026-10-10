@@ -6,6 +6,8 @@ import {
   lockUserCharacterChatMutation,
   type ChatTransaction,
 } from "@/server/chat/chat-locks";
+import { getRuntimeConfig } from "@/server/config/load-config";
+import type { RuntimeConfig } from "@/server/config/schema";
 import type { Database } from "@/server/db/client";
 import {
   character,
@@ -26,6 +28,14 @@ import { lockUserMemoryMutation } from "./memory-locks";
 
 type Scope = { userId: string; characterId: string };
 export const MAX_SUMMARY_CHARACTERS = 4000;
+export interface RelationshipSummaryPolicy {
+  maxSummaryCharacters: number;
+  secretValues: readonly string[];
+}
+export const DEFAULT_RELATIONSHIP_SUMMARY_POLICY: RelationshipSummaryPolicy = {
+  maxSummaryCharacters: MAX_SUMMARY_CHARACTERS,
+  secretValues: [],
+};
 export const summaryRunnableStatuses = [
   "pending",
   "queued",
@@ -48,17 +58,82 @@ const scopeWhere = (input: Scope) =>
     eq(relationshipSummary.characterId, input.characterId),
   );
 
-export function normalizeSummaryText(content: unknown): string {
+type SummaryRuntimeConfig = {
+  public: { memory: Pick<RuntimeConfig["public"]["memory"], "maxSummaryCharacters"> };
+  secret: {
+    databaseUrl: string;
+    betterAuthSecret: string;
+    smtp: Pick<RuntimeConfig["secret"]["smtp"], "password">;
+    model: Pick<RuntimeConfig["secret"]["model"], "apiKey">;
+  };
+};
+
+function normalizedSecretValues(values: readonly string[]): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value.normalize("NFKC"))
+        .filter((value) => [...value].length >= 8),
+    ),
+  ];
+}
+
+export function relationshipSummaryPolicyFromConfig(
+  config: SummaryRuntimeConfig,
+): RelationshipSummaryPolicy {
+  let databasePassword = "";
+  try {
+    databasePassword = decodeURIComponent(
+      new URL(config.secret.databaseUrl).password,
+    );
+  } catch {
+    // Configuration validation owns malformed URLs.
+  }
+  return {
+    maxSummaryCharacters: config.public.memory.maxSummaryCharacters,
+    secretValues: normalizedSecretValues([
+      config.secret.model.apiKey,
+      config.secret.betterAuthSecret,
+      config.secret.smtp.password,
+      config.secret.databaseUrl,
+      databasePassword,
+    ]),
+  };
+}
+
+export function validateRelationshipSummaryPolicy(
+  policy: RelationshipSummaryPolicy,
+): RelationshipSummaryPolicy {
+  if (
+    !Number.isSafeInteger(policy.maxSummaryCharacters) ||
+    policy.maxSummaryCharacters < 1 ||
+    policy.maxSummaryCharacters > MAX_SUMMARY_CHARACTERS
+  )
+    throw new MemoryDomainError(
+      "MEMORY_VALIDATION",
+      "Invalid summary content.",
+    );
+  return policy;
+}
+
+export function normalizeSummaryText(
+  content: unknown,
+  policy: RelationshipSummaryPolicy = DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+): string {
   if (typeof content !== "string" || content.length > 16000)
     throw new MemoryDomainError(
       "MEMORY_VALIDATION",
       "Invalid summary content.",
     );
+  const effectivePolicy = validateRelationshipSummaryPolicy(policy);
   const normalized = normalizeMemoryText(content);
   if (
-    [...normalized].length > MAX_SUMMARY_CHARACTERS ||
+    [...normalized].length > effectivePolicy.maxSummaryCharacters ||
     Buffer.byteLength(normalized, "utf8") > 16000 ||
-    containsCredential(normalized.toLocaleLowerCase("en-US"))
+    containsCredential(normalized.toLocaleLowerCase("en-US")) ||
+    normalizedSecretValues(effectivePolicy.secretValues).some((secret) =>
+      normalized.includes(secret),
+    )
   )
     throw new MemoryDomainError(
       "MEMORY_VALIDATION",
@@ -263,11 +338,12 @@ export async function cancelSummaryRuns(
 export async function editRelationshipSummaryInTransaction(
   transaction: ChatTransaction,
   input: Scope & { expectedRevision: number; content: string },
+  policy: RelationshipSummaryPolicy = DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
 ) {
   const settings = await requireRelationship(transaction, input);
   const { current } = await lockSummaryState(transaction, input);
   confirmRevision(input.expectedRevision, current?.revision ?? 0);
-  const content = normalizeSummaryText(input.content);
+  const content = normalizeSummaryText(input.content, policy);
   const now = new Date();
   await cancelSummaryRuns(transaction, input, now);
   const versionId = randomUUID();
@@ -307,9 +383,13 @@ export async function editRelationshipSummaryInTransaction(
 export async function editRelationshipSummary(
   database: Database,
   input: Scope & { expectedRevision: number; content: string },
+  policy?: RelationshipSummaryPolicy,
 ): Promise<{ revision: number; versionId: string }> {
+  const effectivePolicy =
+    policy ??
+    relationshipSummaryPolicyFromConfig(await getRuntimeConfig());
   return database.transaction((tx) =>
-    editRelationshipSummaryInTransaction(tx, input),
+    editRelationshipSummaryInTransaction(tx, input, effectivePolicy),
   );
 }
 

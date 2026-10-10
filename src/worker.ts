@@ -12,6 +12,7 @@ import { OpenAiCompatibleGateway } from "@/server/model-gateway/openai-compatibl
 import { createTokenCounter } from "@/server/chat/token-counter";
 import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
 import { registerRelationshipSummaryWorker } from "@/server/memory/relationship-summary-job";
+import { relationshipSummaryPolicyFromConfig } from "@/server/memory/relationship-summary-service";
 
 async function main(): Promise<void> {
   const config = await loadRuntimeConfig();
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
     statement_timeout: 10_000,
   });
   const tokenCounter = createTokenCounter(config.secret.model.modelId);
+  const summaryPolicy = relationshipSummaryPolicyFromConfig(config);
   let stopMemoryWorker: (() => Promise<void>) | undefined;
   let stopSummaryWorker: (() => Promise<void>) | undefined;
 
@@ -60,6 +62,7 @@ async function main(): Promise<void> {
         new OpenAiCompatibleGateway(config.secret.model),
         tokenCounter,
         console,
+        summaryPolicy,
       );
     },
     onSignal: (signal, listener) => process.once(signal, listener),
