@@ -1,0 +1,2 @@
+ALTER TABLE "background_model_reservations" ADD COLUMN "settlement_fingerprint" text;--> statement-breakpoint
+ALTER TABLE "background_model_reservations" ADD CONSTRAINT "background_model_reservations_settlement_fingerprint_check" CHECK ("background_model_reservations"."settlement_fingerprint" IS NULL OR "background_model_reservations"."settlement_fingerprint" ~ '^[0-9a-f]{64}$');

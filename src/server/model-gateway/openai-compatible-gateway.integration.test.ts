@@ -205,6 +205,33 @@ describe("OpenAiCompatibleGateway", () => {
       },
     );
 
+    test("redacts a credential reflected through provider request-ID metadata", async () => {
+      provider.enqueue("structured-authentication-reflected-credential");
+
+      let thrown: unknown;
+      try {
+        await completeStructured();
+      } catch (error) {
+        thrown = error;
+      }
+
+      const gatewayError = expectGatewayError(thrown, "authentication");
+      const serialized = `${String(gatewayError)} ${JSON.stringify(gatewayError)}`;
+      expect(serialized).not.toContain(apiKey);
+      expect(gatewayError.providerRequestId).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(provider.requests).toHaveLength(1);
+    });
+
+    test("treats a disconnect after provider acceptance as non-retryable", async () => {
+      provider.enqueue("structured-disconnect-after-acceptance");
+
+      await expect(completeStructured()).rejects.toMatchObject({
+        category: "connection",
+        retryable: false,
+      });
+      expect(provider.requests).toHaveLength(1);
+    });
+
     test.each([
       "structured-malformed-envelope",
       "structured-empty-content",

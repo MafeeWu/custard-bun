@@ -13,6 +13,8 @@ export type FakeModelScenario =
   | "structured-missing-usage"
   | "structured-malformed-envelope"
   | "structured-empty-content"
+  | "structured-authentication-reflected-credential"
+  | "structured-disconnect-after-acceptance"
   | "structured-stall"
   | "structured-wait-for-abort"
   | "done-open"
@@ -50,6 +52,9 @@ const requestIds: Record<FakeModelScenario, string> = {
   "structured-missing-usage": "req-structured-missing-usage",
   "structured-malformed-envelope": "req-structured-malformed",
   "structured-empty-content": "req-structured-empty",
+  "structured-authentication-reflected-credential": "fake-provider-api-key",
+  "structured-disconnect-after-acceptance":
+    "req-structured-disconnect-after-acceptance",
   "structured-stall": "req-structured-stall",
   "structured-wait-for-abort": "req-structured-wait-for-abort",
   "done-open": "req-done-open",
@@ -138,6 +143,16 @@ async function runScenario(
       response.end(
         JSON.stringify({ choices: [{ message: { content: "" } }] }),
       );
+      return;
+    case "structured-authentication-reflected-credential":
+      response.writeHead(401, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.end('{"error":"authentication failed"}');
+      return;
+    case "structured-disconnect-after-acceptance":
+      response.socket?.destroy();
       return;
     case "structured-stall":
     case "structured-wait-for-abort":

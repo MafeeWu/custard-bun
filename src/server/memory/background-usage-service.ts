@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
@@ -43,6 +43,53 @@ function settlementConflict(): MemoryDomainError {
     "MEMORY_INTERNAL",
     "Background model work has already been settled differently.",
     { retryable: false },
+  );
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function settlementFingerprint(input: {
+  outcome: BackgroundOutcome;
+  modelId: string;
+  providerRequestIds: string[];
+  consumedInputTokens: number;
+  consumedOutputTokens: number;
+  usageIsEstimated: boolean;
+  latencyMs: number;
+  errorCategory?: string;
+}): string {
+  if (!Array.isArray(input.providerRequestIds)) {
+    throw new MemoryDomainError(
+      "MEMORY_VALIDATION",
+      "providerRequestIds must be an array.",
+      { metadata: { field: "providerRequestIds" } },
+    );
+  }
+  const providerIdentity = input.providerRequestIds.map((requestId, index) => {
+    if (typeof requestId !== "string" || requestId.length > 1_024) {
+      throw new MemoryDomainError(
+        "MEMORY_VALIDATION",
+        "providerRequestIds must contain bounded strings.",
+        { metadata: { field: "providerRequestIds", index } },
+      );
+    }
+    return digest(requestId);
+  });
+
+  return digest(
+    JSON.stringify({
+      version: 1,
+      outcome: input.outcome,
+      modelId: input.modelId,
+      providerIdentity,
+      consumedInputTokens: input.consumedInputTokens,
+      consumedOutputTokens: input.consumedOutputTokens,
+      usageIsEstimated: input.usageIsEstimated,
+      latencyMs: input.latencyMs,
+      errorCategory: input.errorCategory ?? null,
+    }),
   );
 }
 
@@ -180,6 +227,16 @@ export async function settleBackgroundModelWork(
       input.inputTokens ?? input.estimatedInputTokens;
     const consumedOutputTokens =
       input.outputTokens ?? input.estimatedOutputTokens;
+    const fingerprint = settlementFingerprint({
+      outcome: input.outcome,
+      modelId: input.modelId,
+      providerRequestIds: input.providerRequestIds,
+      consumedInputTokens,
+      consumedOutputTokens,
+      usageIsEstimated,
+      latencyMs: input.latencyMs,
+      errorCategory: input.errorCategory,
+    });
     const [existingLedger] = await transaction
       .select()
       .from(usageLedger)
@@ -189,6 +246,7 @@ export async function settleBackgroundModelWork(
     if (reservation.settledAt) {
       if (
         existingLedger &&
+        reservation.settlementFingerprint === fingerprint &&
         reservation.consumedInputTokens === consumedInputTokens &&
         reservation.consumedOutputTokens === consumedOutputTokens &&
         existingLedger.workloadType === reservation.workloadType &&
@@ -245,10 +303,9 @@ export async function settleBackgroundModelWork(
       .set({
         consumedInputTokens,
         consumedOutputTokens,
+        settlementFingerprint: fingerprint,
         settledAt: input.now,
       })
       .where(eq(backgroundModelReservation.id, reservation.id));
-
-    void input.providerRequestIds;
   });
 }

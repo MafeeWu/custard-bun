@@ -602,6 +602,7 @@ export const backgroundModelReservation = pgTable(
     consumedOutputTokens: bigint("consumed_output_tokens", { mode: "number" })
       .notNull()
       .default(0),
+    settlementFingerprint: text("settlement_fingerprint"),
     settledAt: timestamp("settled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -638,6 +639,10 @@ export const backgroundModelReservation = pgTable(
         OR
         (${table.consumedInputTokens} = 0 AND ${table.consumedOutputTokens} = 0)
       )`,
+    ),
+    check(
+      "background_model_reservations_settlement_fingerprint_check",
+      sql`${table.settlementFingerprint} IS NULL OR ${table.settlementFingerprint} ~ '^[0-9a-f]{64}$'`,
     ),
   ],
 );

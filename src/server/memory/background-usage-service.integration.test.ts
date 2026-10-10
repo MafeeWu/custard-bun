@@ -465,6 +465,59 @@ describe("background model settlement", () => {
     expect(await database.select().from(usageLedger)).toHaveLength(1);
   });
 
+  test("rejects changed provider identity replay without changing settled state", async () => {
+    const userId = await insertUser();
+    const { operationId } = await admit(database, {
+      userId,
+      estimatedTokens: 100,
+    });
+    const settlement = {
+      operationId,
+      outcome: "complete" as const,
+      modelId: "background-model",
+      providerRequestIds: ["provider-original"],
+      inputTokens: 20,
+      outputTokens: 5,
+      estimatedInputTokens: 24,
+      estimatedOutputTokens: 6,
+      latencyMs: 100,
+      now,
+    };
+    await settleBackgroundModelWork(database, settlement);
+    const bucketBefore = await instanceBucket();
+    const reservationBefore = await database
+      .select()
+      .from(backgroundModelReservation);
+    const ledgerBefore = await database.select().from(usageLedger);
+    expect(reservationBefore[0]?.settlementFingerprint).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    expect(JSON.stringify(reservationBefore)).not.toContain(
+      "provider-original",
+    );
+    const replayDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: `background-provider-replay-${randomUUID()}`,
+      max: 1,
+    });
+
+    try {
+      await expect(
+        settleBackgroundModelWork(replayDatabase, {
+          ...settlement,
+          providerRequestIds: ["provider-changed"],
+        }),
+      ).rejects.toMatchObject({ code: "MEMORY_INTERNAL" });
+    } finally {
+      await replayDatabase.$client.end();
+    }
+
+    expect(await instanceBucket()).toEqual(bucketBefore);
+    expect(
+      await database.select().from(backgroundModelReservation),
+    ).toEqual(reservationBefore);
+    expect(await database.select().from(usageLedger)).toEqual(ledgerBefore);
+  });
+
   test("provider success followed by concurrent database retry charges one ledger row once", async () => {
     const userId = await insertUser();
     const { operationId } = await admit(database, {

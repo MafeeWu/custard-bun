@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import type { ModelSecretConfig } from "@/server/config/schema";
 import {
   type GatewayStreamEvent,
@@ -46,13 +47,26 @@ function parseRetryAfter(value: string | null): number | undefined {
   return Math.max(0, date - Date.now());
 }
 
-function providerRequestId(response: Response): string | undefined {
+function providerRequestId(
+  response: Response,
+  apiKey: string,
+): string | undefined {
   const requestId =
     response.headers.get("x-request-id") ??
     response.headers.get("request-id") ??
     undefined;
-  const normalized = requestId?.trim().slice(0, 256);
-  return normalized || undefined;
+  const normalized = requestId?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (
+    normalized.length <= 256 &&
+    /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(normalized) &&
+    !(apiKey.length > 0 && normalized.includes(apiKey))
+  ) {
+    return normalized;
+  }
+  return `sha256:${createHash("sha256").update(normalized).digest("hex")}`;
 }
 
 function providerHeaders(
@@ -70,10 +84,13 @@ async function discardBody(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => undefined);
 }
 
-function errorForResponse(response: Response): ModelGatewayError {
+function errorForResponse(
+  response: Response,
+  apiKey: string,
+): ModelGatewayError {
   const options = {
     status: response.status,
-    providerRequestId: providerRequestId(response),
+    providerRequestId: providerRequestId(response, apiKey),
   };
 
   if (response.status === 401 || response.status === 403) {
@@ -170,7 +187,6 @@ function normalizeStructuredError(input: {
   }
   return new ModelGatewayError("connection", {
     providerRequestId: input.requestId,
-    retryable: true,
   });
 }
 
@@ -346,9 +362,9 @@ export class OpenAiCompatibleGateway implements ModelGateway {
         }),
         signal: requestSignal,
       });
-      requestId = providerRequestId(response);
+      requestId = providerRequestId(response, this.config.apiKey);
       if (!response.ok) {
-        const responseError = errorForResponse(response);
+        const responseError = errorForResponse(response, this.config.apiKey);
         await discardBody(response);
         throw responseError;
       }
@@ -448,9 +464,12 @@ export class OpenAiCompatibleGateway implements ModelGateway {
             }),
             signal: requestSignal,
           });
-          requestId = providerRequestId(response);
+          requestId = providerRequestId(response, this.config.apiKey);
           if (!response.ok) {
-            const responseError = errorForResponse(response);
+            const responseError = errorForResponse(
+              response,
+              this.config.apiKey,
+            );
             await discardBody(response);
             throw responseError;
           }
