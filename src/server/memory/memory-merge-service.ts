@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, countDistinct, eq, or, sql } from "drizzle-orm";
+import { and, count, countDistinct, eq, or, sql } from "drizzle-orm";
 import type { ChatTransaction } from "@/server/chat/chat-locks";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
@@ -20,6 +20,7 @@ import {
 } from "./memory-normalization";
 import {
   assertMemoryCandidateAllowed,
+  containsCredential,
   isPersonalSensitiveMemory,
 } from "./memory-policy";
 import {
@@ -30,6 +31,10 @@ import {
   ensureAutomaticSummaryRefresh,
   lockSummaryState,
 } from "./relationship-summary-service";
+import {
+  memoryStoragePolicy,
+  type MemoryStoragePolicy,
+} from "./memory-storage-policy";
 
 const ambiguousConsentContext =
   /\b(?:not|never|no|don't|dont|without|if|unless|whether|when|provided|depending|maybe|perhaps|might|may|could|would|should|imagine|suppos(?:e|ing)|assum(?:e|ing)|hypothetical(?:ly)?|roleplay(?:ing)?|pretend|fiction(?:al)?|movie|film|book|story|novel|title|quote[ds]?|about|game|song|example|jok(?:e|ing)|friend|mother|father|he|she|they|his|her|their)\b|["“”„«»‹›]|\p{L}'s\b|不|没有|沒有/iu;
@@ -143,13 +148,19 @@ function canonicalSelfFact(
 export function allowedExtractionCandidates(
   candidates: unknown,
   source: { sourceMessageId: string; userContent: string },
+  maxItemCharacters = 500,
 ): MemoryCandidate[] {
+  // A provider can strip every credential label, so the source is authoritative.
+  const credentialSource = containsCredential(
+    normalizeMemoryText(source.userContent).toLocaleLowerCase("en-US"),
+  );
   return parseMemoryCandidates(candidates).flatMap((raw) => {
+    if (credentialSource) return [];
     if (raw.sourceMessageId !== source.sourceMessageId) return [];
     if (raw.explicitness === "repeated_inference" && raw.type !== "preference")
       return [];
     try {
-      const normalized = normalizeMemoryCandidate(raw);
+      const normalized = normalizeMemoryCandidate(raw, maxItemCharacters);
       const sensitive =
         raw.sensitivity === "personal_explicit" ||
         isPersonalSensitiveMemory(normalized.content);
@@ -162,7 +173,9 @@ export function allowedExtractionCandidates(
           normalized.content,
         ),
       };
-      assertMemoryCandidateAllowed(normalizeMemoryCandidate(approved));
+      assertMemoryCandidateAllowed(
+        normalizeMemoryCandidate(approved, maxItemCharacters),
+      );
       return [approved];
     } catch (error) {
       if (error instanceof ChatDomainError && error.code === "CHAT_VALIDATION")
@@ -175,6 +188,7 @@ export function allowedExtractionCandidates(
 export async function mergeMemoryCandidates(
   transaction: ChatTransaction,
   input: { runId: string; candidates: unknown; now: Date },
+  policy?: MemoryStoragePolicy,
 ): Promise<{ applied: boolean; changedItems: number }> {
   const [preview] = await transaction
     .select()
@@ -198,8 +212,25 @@ export async function mergeMemoryCandidates(
   ) {
     return { applied: false, changedItems: 0 };
   }
-  const candidates = allowedExtractionCandidates(input.candidates, source);
+  const storage = policy ?? (await memoryStoragePolicy());
+  const candidates = allowedExtractionCandidates(
+    input.candidates,
+    source,
+    storage.maxItemCharacters,
+  );
   await lockSummaryState(transaction, preview);
+  const [active] = await transaction
+    .select({ total: count() })
+    .from(memoryItem)
+    .where(
+      and(
+        eq(memoryItem.userId, run.userId),
+        eq(memoryItem.characterId, run.characterId),
+        eq(memoryItem.memoryEpoch, run.memoryEpoch),
+        eq(memoryItem.isActive, true),
+      ),
+    );
+  let activeCount = active.total;
   let changedItems = 0;
   for (const raw of candidates) {
     const candidate = normalizeMemoryCandidate(raw);
@@ -224,6 +255,11 @@ export async function mergeMemoryCandidates(
       .limit(1);
     if (item?.origin === "user_edited") continue;
     if (!item) {
+      if (
+        candidate.explicitness === "direct" &&
+        activeCount >= storage.maxActiveItemsPerCharacter
+      )
+        continue;
       [item] = await transaction
         .insert(memoryItem)
         .values({
@@ -248,6 +284,7 @@ export async function mergeMemoryCandidates(
           updatedAt: input.now,
         })
         .returning();
+      if (item.isActive) activeCount++;
     }
     const inserted = await transaction
       .insert(memoryEvidence)
@@ -267,6 +304,11 @@ export async function mergeMemoryCandidates(
       .select({ sources: countDistinct(memoryEvidence.sourceMessageId) })
       .from(memoryEvidence)
       .where(eq(memoryEvidence.memoryId, item.id));
+    const activate =
+      !item.isActive &&
+      (candidate.explicitness === "direct" || evidence.sources >= 2) &&
+      activeCount < storage.maxActiveItemsPerCharacter;
+    if (activate) activeCount++;
     await transaction
       .update(memoryItem)
       .set({
@@ -275,10 +317,7 @@ export async function mergeMemoryCandidates(
         lastConfirmedAt: new Date(
           Math.max(item.lastConfirmedAt.getTime(), input.now.getTime()),
         ),
-        isActive:
-          item.isActive ||
-          candidate.explicitness === "direct" ||
-          evidence.sources >= 2,
+        isActive: item.isActive || activate,
         ...(candidate.explicitness === "direct"
           ? { explicitness: "direct" as const }
           : {}),

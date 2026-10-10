@@ -23,7 +23,7 @@ import {
 import { lockExtractionRelationship } from "./memory-extraction-service";
 import { MemoryDomainError } from "./memory-errors";
 import { normalizeMemoryText } from "./memory-normalization";
-import { containsCredential } from "./memory-policy";
+import { containsCredential, isPersonalSensitiveMemory } from "./memory-policy";
 import { lockUserMemoryMutation } from "./memory-locks";
 import { retireExhaustedExecutionAccounting } from "./background-usage-service";
 
@@ -60,7 +60,9 @@ const scopeWhere = (input: Scope) =>
   );
 
 type SummaryRuntimeConfig = {
-  public: { memory: Pick<RuntimeConfig["public"]["memory"], "maxSummaryCharacters"> };
+  public: {
+    memory: Pick<RuntimeConfig["public"]["memory"], "maxSummaryCharacters">;
+  };
   secret: {
     databaseUrl: string;
     betterAuthSecret: string;
@@ -141,6 +143,50 @@ export function normalizeSummaryText(
       "Invalid summary content.",
     );
   return normalized;
+}
+
+function summaryFact(content: string): string {
+  return normalizeMemoryText(content)
+    .toLocaleLowerCase("en-US")
+    .replace(/[.!?。]+$/, "")
+    .replace(/^(?:the user|user|i)\s+/, "")
+    .replace(/^have\s+/, "has ")
+    .replace(/^am\s+/, "is ")
+    .replace(/^(is|has) (?:a|an) /, "$1 ");
+}
+
+export function assertAutomaticSummaryAuthorized(
+  content: string,
+  items: Array<{
+    content: string;
+    sensitivity: "ordinary" | "personal_explicit";
+    explicitness: "direct" | "repeated_inference";
+  }>,
+): void {
+  const authorized = new Set(
+    items
+      .filter(
+        (item) =>
+          item.sensitivity === "personal_explicit" &&
+          item.explicitness === "direct",
+      )
+      .map((item) => summaryFact(item.content)),
+  );
+  // Sensitive prose is accepted only as a complete, locally matched fact.
+  // A matching topic or another authorized fact never authorizes additions.
+  for (const clause of content
+    .split(/[.!?;。\n]/)
+    .map((part) => part.trim())
+    .filter(Boolean)) {
+    if (
+      isPersonalSensitiveMemory(clause) &&
+      !authorized.has(summaryFact(clause))
+    )
+      throw new MemoryDomainError(
+        "MEMORY_VALIDATION",
+        "Unauthorized summary content.",
+      );
+  }
 }
 
 export async function getRelationshipSummary(
@@ -418,8 +464,7 @@ export async function editRelationshipSummary(
   policy?: RelationshipSummaryPolicy,
 ): Promise<{ revision: number; versionId: string }> {
   const effectivePolicy =
-    policy ??
-    relationshipSummaryPolicyFromConfig(await getRuntimeConfig());
+    policy ?? relationshipSummaryPolicyFromConfig(await getRuntimeConfig());
   return database.transaction((tx) =>
     editRelationshipSummaryInTransaction(tx, input, effectivePolicy),
   );
@@ -703,7 +748,12 @@ export async function readSummarySource(
   )
     return null;
   const items = await transaction
-    .select({ type: memoryItem.type, content: memoryItem.content })
+    .select({
+      type: memoryItem.type,
+      content: memoryItem.content,
+      sensitivity: memoryItem.sensitivity,
+      explicitness: memoryItem.explicitness,
+    })
     .from(memoryItem)
     .where(
       and(

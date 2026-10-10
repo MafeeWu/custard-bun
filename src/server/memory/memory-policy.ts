@@ -6,6 +6,8 @@ const credentialPatterns = [
   /\b(?:passwd|pwd|token|credentials?|cvv|cvc)\b/i,
   /\bpasscode\b/i,
   /\botp\b/i,
+  /\b(?:mfa|2fa|(?:two|multi|2)[\s_-]?factor(?: authentication)?|authentication|verification|security)[\s_-]?code\b/i,
+  /\b(?:my|your|authentication|security|login|card|bank(?:ing)?)\s+pin\b/i,
   /\bone[\s_-]?time[\s_-]?code\b/i,
   /\b(?:recovery|backup)[\s_-]?(?:code|key|phrase)\b/i,
   /\b(?:seed|mnemonic)[\s_-]?phrase\b/i,

@@ -60,6 +60,7 @@ import {
 
 vi.mock("@/server/config/load-config", () => ({
   getRuntimeConfig: async () => ({
+    public: { memory: { maxActiveItemsPerCharacter: 200, maxItemCharacters: 500 } },
     secret: { betterAuthSecret: "deletion-test-signing-secret-at-least-32" },
   }),
 }));

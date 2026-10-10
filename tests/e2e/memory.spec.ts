@@ -38,7 +38,16 @@ test("recalls and deletes a preference without crossing users or characters", as
     const url = await memoryUrl(page);
     await completeChat(page, "[memory-direct] I prefer jasmine tea");
     await waitForExtraction(database, conversationId);
+    await expect.poll(async () => (await database.$client.query(
+      `SELECT v.content FROM relationship_summaries s
+       JOIN relationship_summary_versions v ON v.id=s.current_version_id
+       JOIN conversations c ON c.user_id=s.user_id AND c.character_id=s.character_id
+       WHERE c.id=$1`, [conversationId],
+    )).rows[0]?.content, { timeout: 45_000 }).toBe("The user prefers jasmine tea.");
     await page.goto(url);
+    await expect(
+      page.getByLabel("Relationship summary", { exact: true }),
+    ).toHaveValue("The user prefers jasmine tea.");
     await expect(
       page.getByRole("region", { name: "Saved memories" }),
     ).toContainText("The user prefers jasmine tea.");
@@ -80,6 +89,40 @@ test("recalls and deletes a preference without crossing users or characters", as
     );
   } finally {
     await second.close();
+    await database.$client.end();
+  }
+});
+
+test("item deletion fences held extraction and summary recall while retaining unrelated memories", async ({ page }) => {
+  test.setTimeout(180_000);
+  const database = createAdminTestDatabase(e2eEnvironment.DATABASE_URL!);
+  try {
+    await database.$client.query("DELETE FROM rate_limit");
+    await resetFakeModel();
+    await registerAndSignIn(page, { email: `item-fence-${randomUUID()}@example.com` });
+    const id = await startCharacterConversation(page, "calm-listener");
+    const url = await memoryUrl(page);
+    await completeChat(page, "[memory-direct] I prefer jasmine tea");
+    await waitForExtraction(database, id);
+    await completeChat(page, "[memory-direct] I prefer mint tea");
+    await waitForExtraction(database, id);
+    await completeChat(page, "[memory-stall] I prefer jasmine tea");
+    const held = await heldExtraction(database, id);
+    await page.goto(url);
+    const card = page.getByRole("article", { name: "Memory", exact: true }).filter({ hasText: "jasmine tea" });
+    await card.getByLabel("Permanently delete this memory.").check();
+    await card.getByRole("button", { name: "Delete memory", exact: true }).click();
+    await expect(card).toHaveCount(0);
+    await expect(page.getByLabel("Relationship summary", { exact: true })).not.toHaveValue(/jasmine tea/);
+    await releaseExtraction(database, id, held, "jasmine tea");
+    await page.goto(`/app/conversations/${id}`);
+    await completeChat(page, "Item-deletion fence prompt check");
+    const prompt = await chatPrompt("Item-deletion fence prompt check");
+    const memorySection = JSON.stringify(JSON.parse(prompt).filter((message: { content: string }) =>
+      message.content.includes("Untrusted relationship context follows.")));
+    expect(memorySection).not.toContain("jasmine tea");
+    expect(memorySection).toContain("mint tea");
+  } finally {
     await database.$client.end();
   }
 });

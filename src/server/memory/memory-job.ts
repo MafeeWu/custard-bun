@@ -39,6 +39,7 @@ import {
   allowedExtractionCandidates,
   mergeMemoryCandidates,
 } from "./memory-merge-service";
+import { memoryStoragePolicy } from "./memory-storage-policy";
 
 const MAX_OUTPUT_TOKENS = 4096;
 const candidateArraySchema = {
@@ -454,6 +455,7 @@ export async function processMemoryExtractionRun(
       candidates = allowedExtractionCandidates(
         raw.candidates,
         claimed.call.source,
+        (await memoryStoragePolicy()).maxItemCharacters,
       );
     } catch (error) {
       providerError = error;

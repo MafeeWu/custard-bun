@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, ne, sql } from "drizzle-orm";
 import { recordUserAudit } from "@/server/admin/audit";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
@@ -8,6 +8,9 @@ import {
 import type { Database } from "@/server/db/client";
 import {
   character,
+  conversation,
+  conversationMessage,
+  generationAttempt,
   memoryEvidence,
   memoryExtractionRun,
   memoryItem,
@@ -17,7 +20,10 @@ import {
   user,
   userCharacterMemorySetting,
 } from "@/server/db/schema";
-import { assertMemoryCandidateAllowed } from "./memory-policy";
+import {
+  assertMemoryCandidateAllowed,
+  isPersonalSensitiveMemory,
+} from "./memory-policy";
 import type { MemorySensitivity, MemoryType } from "./memory-contracts";
 import {
   normalizeMemoryCandidate,
@@ -27,6 +33,10 @@ import { MemoryDomainError } from "./memory-errors";
 import { lockUserMemoryMutation } from "./memory-locks";
 import { cancelRelationshipExtractions } from "./memory-extraction-service";
 import { lockSummaryState } from "./relationship-summary-service";
+import {
+  memoryStoragePolicy,
+  type MemoryStoragePolicy,
+} from "./memory-storage-policy";
 
 const nonterminalOperationStatuses = [
   "pending",
@@ -155,14 +165,17 @@ async function beginRelationshipMutation(
   return selectRelationshipSettingsForUpdate(transaction, input);
 }
 
-function validateManualEdit(input: {
-  type: MemoryType;
-  sensitivity: MemorySensitivity;
-  confidence: number;
-  importance: number;
-  content: string;
-  userExplicitlyAskedToRemember?: boolean;
-}) {
+function validateManualEdit(
+  input: {
+    type: MemoryType;
+    sensitivity: MemorySensitivity;
+    confidence: number;
+    importance: number;
+    content: string;
+    userExplicitlyAskedToRemember?: boolean;
+  },
+  maxItemCharacters: number,
+) {
   const normalizedText = normalizeMemoryText(input.content);
   if (normalizedText.length === 0) {
     throw new MemoryDomainError(
@@ -172,17 +185,20 @@ function validateManualEdit(input: {
   }
 
   try {
-    const candidate = normalizeMemoryCandidate({
-      type: input.type,
-      content: input.content,
-      sourceMessageId: "00000000-0000-0000-0000-000000000000",
-      explicitness: "direct",
-      sensitivity: input.sensitivity,
-      userExplicitlyAskedToRemember:
-        input.userExplicitlyAskedToRemember ?? false,
-      confidence: input.confidence,
-      importance: input.importance,
-    });
+    const candidate = normalizeMemoryCandidate(
+      {
+        type: input.type,
+        content: input.content,
+        sourceMessageId: "00000000-0000-0000-0000-000000000000",
+        explicitness: "direct",
+        sensitivity: input.sensitivity,
+        userExplicitlyAskedToRemember:
+          input.userExplicitlyAskedToRemember ?? false,
+        confidence: input.confidence,
+        importance: input.importance,
+      },
+      maxItemCharacters,
+    );
     assertMemoryCandidateAllowed(candidate);
     return candidate;
   } catch (error) {
@@ -290,6 +306,7 @@ export async function editMemoryItem(
     content: string;
     userExplicitlyAskedToRemember?: boolean;
   },
+  policy?: MemoryStoragePolicy,
 ): Promise<{ revision: number }> {
   return database.transaction(async (transaction) => {
     const selectedSettings = await beginRelationshipMutation(
@@ -324,14 +341,36 @@ export async function editMemoryItem(
       });
     }
 
-    const candidate = validateManualEdit({
-      type: item.type,
-      sensitivity: item.sensitivity,
-      confidence: item.confidence,
-      importance: item.importance,
-      content: input.content,
-      userExplicitlyAskedToRemember: input.userExplicitlyAskedToRemember,
-    });
+    const storage = policy ?? (await memoryStoragePolicy());
+    const candidate = validateManualEdit(
+      {
+        type: item.type,
+        sensitivity: item.sensitivity,
+        confidence: item.confidence,
+        importance: item.importance,
+        content: input.content,
+        userExplicitlyAskedToRemember: input.userExplicitlyAskedToRemember,
+      },
+      storage.maxItemCharacters,
+    );
+    if (!item.isActive) {
+      const [active] = await transaction
+        .select({ total: count() })
+        .from(memoryItem)
+        .where(
+          and(
+            eq(memoryItem.userId, input.userId),
+            eq(memoryItem.characterId, input.characterId),
+            eq(memoryItem.memoryEpoch, settings.memoryEpoch),
+            eq(memoryItem.isActive, true),
+          ),
+        );
+      if (active.total >= storage.maxActiveItemsPerCharacter)
+        throw new MemoryDomainError(
+          "MEMORY_VALIDATION",
+          "Memory capacity is full.",
+        );
+    }
     const [duplicate] = await transaction
       .select({ id: memoryItem.id })
       .from(memoryItem)
@@ -367,6 +406,9 @@ export async function editMemoryItem(
         origin: "user_edited",
         isActive: true,
         explicitness: "direct",
+        sensitivity: isPersonalSensitiveMemory(candidate.content)
+          ? "personal_explicit"
+          : candidate.sensitivity,
         userEditedAt: now,
         updatedAt: now,
         revision,
@@ -406,7 +448,35 @@ export async function deleteMemoryItem(
     const settings =
       selectedSettings ??
       (await ensureRelationshipSettings(transaction, input));
-    await lockSummaryState(transaction, input);
+    const now = new Date();
+    // Revoke the existing admission fence, including unfinished chat attempts:
+    // completion/retry must never rebase pre-deletion work into a new admission.
+    await transaction
+      .update(generationAttempt)
+      .set({ extractionMemoryEpoch: null })
+      .where(
+        and(
+          eq(generationAttempt.userId, input.userId),
+          inArray(
+            generationAttempt.assistantMessageId,
+            transaction
+              .select({ id: conversationMessage.id })
+              .from(conversationMessage)
+              .innerJoin(
+                conversation,
+                eq(conversation.id, conversationMessage.conversationId),
+              )
+              .where(
+                and(
+                  eq(conversation.userId, input.userId),
+                  eq(conversation.characterId, input.characterId),
+                ),
+              ),
+          ),
+        ),
+      );
+    await cancelRelationshipExtractions(transaction, input, now);
+    const { current } = await lockSummaryState(transaction, input);
     const [item] = await transaction
       .select({ id: memoryItem.id, revision: memoryItem.revision })
       .from(memoryItem)
@@ -444,11 +514,27 @@ export async function deleteMemoryItem(
       .delete(memoryEvidence)
       .where(eq(memoryEvidence.memoryId, item.id));
     await transaction.delete(memoryItem).where(eq(memoryItem.id, item.id));
+    // Summary prose has no per-fact deletion map. Detach it, never rewrite a
+    // user-authored version; history remains editable/exportable, not recallable.
+    if (current?.currentVersionId)
+      await transaction
+        .update(relationshipSummary)
+        .set({
+          currentVersionId: null,
+          revision: current.revision + 1,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(relationshipSummary.userId, input.userId),
+            eq(relationshipSummary.characterId, input.characterId),
+          ),
+        );
     await transaction
       .update(userCharacterMemorySetting)
       .set({
         memoryRevision: settings.memoryRevision + 1,
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(
         and(

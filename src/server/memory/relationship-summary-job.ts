@@ -37,6 +37,7 @@ import { MemoryDomainError } from "./memory-errors";
 import { lockExtractionRelationship } from "./memory-extraction-service";
 import {
   DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  assertAutomaticSummaryAuthorized,
   ensureAutomaticSummaryRefresh,
   lockSummaryState,
   normalizeSummaryText,
@@ -258,6 +259,7 @@ async function finishExecution(
   database: Database,
   operationId: string,
   executionId: string,
+  policy: RelationshipSummaryPolicy,
 ) {
   return database.transaction(async (tx) => {
     const [preview] = await tx
@@ -282,7 +284,24 @@ async function finishExecution(
       return { category: null, retryable: false };
     const source = await readSummarySource(tx, run);
     const cancelled = !source || run.status === "cancelled";
-    const category = execution.errorCategory;
+    let category = execution.errorCategory;
+    if (!cancelled && !category) {
+      try {
+        const content = normalizeSummaryText(execution.summary ?? "", policy);
+        assertAutomaticSummaryAuthorized(content, source.items);
+      } catch (error) {
+        if (
+          !(error instanceof MemoryDomainError) ||
+          error.code !== "MEMORY_VALIDATION"
+        )
+          throw error;
+        category = "validation";
+        await tx
+          .update(relationshipSummaryExecution)
+          .set({ summary: null })
+          .where(eq(relationshipSummaryExecution.id, executionId));
+      }
+    }
     const now = new Date();
     await settleBackgroundModelWorkInTransaction(tx, {
       operationId: execution.id,
@@ -337,7 +356,7 @@ async function finishExecution(
       ? "cancelled"
       : !category
         ? "complete"
-        : execution.retryable
+        : category !== "validation" && execution.retryable
           ? run.attemptCount >= SUMMARY_MAX_EXECUTIONS
             ? "dead_letter"
             : "retrying"
@@ -380,7 +399,7 @@ async function finishExecution(
       .where(eq(relationshipSummaryExecution.id, executionId));
     return {
       category: cancelled ? null : category,
-      retryable: execution.retryable,
+      retryable: category !== "validation" && execution.retryable,
     };
   });
 }
@@ -484,9 +503,30 @@ export async function processRelationshipSummaryRefresh(
         .limit(1);
       if (run?.claimToken !== claimed.call!.claimToken) return false;
       const eligible = await readSummarySource(tx, run);
+      let authorizedReceipt = receipt;
+      if (eligible && receipt.summary !== null) {
+        try {
+          assertAutomaticSummaryAuthorized(receipt.summary, eligible.items);
+        } catch (error) {
+          if (
+            !(error instanceof MemoryDomainError) ||
+            error.code !== "MEMORY_VALIDATION"
+          )
+            throw error;
+          authorizedReceipt = {
+            ...receipt,
+            summary: null,
+            errorCategory: "validation",
+            retryable: false,
+          };
+        }
+      }
       await tx
         .update(relationshipSummaryExecution)
-        .set({ ...receipt, summary: eligible ? receipt.summary : null })
+        .set({
+          ...authorizedReceipt,
+          summary: eligible ? authorizedReceipt.summary : null,
+        })
         .where(
           and(
             eq(relationshipSummaryExecution.id, executionId),
@@ -527,7 +567,12 @@ export async function processRelationshipSummaryRefresh(
       return;
     }
   }
-  const finished = await finishExecution(database, operationId, executionId);
+  const finished = await finishExecution(
+    database,
+    operationId,
+    executionId,
+    effectivePolicy,
+  );
   if (finished.category) {
     if (providerError instanceof ModelGatewayError) throw providerError;
     throw new MemoryDomainError(

@@ -310,6 +310,19 @@ have been deleted.
 - Memories can be edited or deleted. Summary text can be edited, cleared, or
   explicitly regenerated from current memory. Credential-class content is
   rejected; sensitive manual content requires explicit intent.
+- Deleting an item revokes all pre-deletion extraction admissions for that
+  relationship, including unfinished replies and their retries, without
+  removing retained items. It detaches the current summary from recall (even
+  a user-edited summary, and even when recording is stopped); immutable
+  history is preserved, never reused as prior-summary input. A new summary
+  is generated only from remaining current memories.
+- Deployment `maxActiveItemsPerCharacter` is enforced under relationship
+  locks without silent eviction. At capacity, new direct candidates are
+  discarded; inferred items retain evidence but cannot activate until a
+  subsequent eligible observation finds room. Manual activation at capacity
+  fails explicitly. `maxItemCharacters` applies after Unicode normalization
+  to both automatic candidates and manual edits; existing active items are
+  not evicted or truncated when operators lower either limit.
 - Stale revisions show a conflict, preserve the draft, and refresh the
   authoritative version before the user saves again. Background refreshes do
   not silently advance the base revision of unsaved edits.
@@ -467,6 +480,10 @@ conservative estimated usage record for that ambiguous call before retrying.
 Forget, recording disable, account lockout, and conversation deletion prevent
 stale results from applying. Credentials are never stored as memory or receipt
 candidates.
+Credential-bearing source messages are also rejected before recovery receipts:
+provider-stripped labels cannot turn a password, passcode, MFA code, PIN, or
+token into an ordinary memory. Ordinary numbers in noncredential sources are
+not rejected.
 
 ### Versioned relationship summaries (Phase 4)
 
@@ -478,7 +495,13 @@ untrusted data; no transcript is sent. Strict structured output is normalized
 and validated against the deployment's `maxSummaryCharacters` Unicode code
 point limit (up to PostgreSQL's absolute 4000-character and 16000-byte bounds),
 without truncation. Configured runtime credential values are rejected before
-any receipt or version can retain summary text. Every successful refresh
+any receipt or version can retain summary text. Automatic validation
+locally matches each sensitive assertion against current active, directly
+authorized sensitive memories, before receipt persistence and again on replay.
+Provider labels and topic overlap cannot authorize facts; unsupported sensitive
+paraphrases or compound additions fail closed. User-authored summary edits
+retain their separate explicit-intent authority.
+Every successful refresh
 appends an immutable version and atomically advances the current pointer and
 summary revision.
 Edits and clears append user-edited versions, including empty content, and

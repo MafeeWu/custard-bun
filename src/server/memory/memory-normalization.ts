@@ -5,7 +5,7 @@ import type {
   MemoryType,
   NormalizedMemoryCandidate,
 } from "./memory-contracts";
-import { maxMemoryItemCharacters as maxItemCharacters } from "./memory-contracts";
+import { maxMemoryItemCharacters } from "./memory-contracts";
 
 export function normalizeMemoryText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
@@ -16,12 +16,15 @@ export function memoryDigest(input: {
   normalizedContent: string;
 }): string {
   return createHash("sha256")
-    .update(`${input.type}\0${input.normalizedContent.toLocaleLowerCase("en-US")}`)
+    .update(
+      `${input.type}\0${input.normalizedContent.toLocaleLowerCase("en-US")}`,
+    )
     .digest("hex");
 }
 
 export function normalizeMemoryCandidate(
   candidate: MemoryCandidate,
+  maxItemCharacters = maxMemoryItemCharacters,
 ): NormalizedMemoryCandidate {
   const normalizedContent = normalizeMemoryText(candidate.content);
   if (normalizedContent.length > maxItemCharacters) {
