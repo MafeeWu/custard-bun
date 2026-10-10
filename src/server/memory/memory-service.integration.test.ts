@@ -153,7 +153,10 @@ async function insertMemory(input: {
     userId: input.userId,
     characterId: input.characterId,
     memoryEpoch: 0,
-    type: input.sensitivity === "personal_explicit" ? "personal_fact" : "preference",
+    type:
+      input.sensitivity === "personal_explicit"
+        ? "personal_fact"
+        : "preference",
     content: input.content ?? "Likes green tea.",
     normalizedContent: input.content ?? "Likes green tea.",
     normalizedDigest: randomUUID().replaceAll("-", "").padEnd(64, "0"),
@@ -172,6 +175,10 @@ async function insertMemory(input: {
 describe("memory controls", () => {
   test("creates a missing settings row once and rejects the racing stale revision", async () => {
     const fixture = await insertFixture();
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "memory-settings-race-blocker",
+      max: 1,
+    });
     const firstDatabase = createDatabase(testDatabaseUrl(), {
       application_name: "memory-settings-race-first",
       max: 1,
@@ -182,26 +189,106 @@ describe("memory controls", () => {
     });
 
     try {
+      await blockerDatabase.$client.query("BEGIN");
+      await blockerDatabase.$client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`chat-user-character:${fixture.userId}:${fixture.characterId}`],
+      );
+
+      const firstOperation = updateMemoryControls(firstDatabase, {
+        userId: fixture.userId,
+        characterId: fixture.characterId,
+        expectedRevision: 1,
+        recordingEnabled: false,
+        usageEnabled: true,
+      });
+      void firstOperation.catch(() => undefined);
+      await expect
+        .poll(async () => {
+          const result = await database.$client.query<{
+            blocker_name: string;
+            query: string;
+            waiter_granted: boolean;
+          }>(
+            `
+              SELECT
+                blocker.application_name AS blocker_name,
+                waiter.query,
+                waiter_lock.granted AS waiter_granted
+              FROM pg_stat_activity waiter
+              JOIN LATERAL unnest(pg_blocking_pids(waiter.pid)) blocker_pid
+                ON true
+              JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid
+              JOIN pg_locks waiter_lock
+                ON waiter_lock.pid = waiter.pid
+               AND waiter_lock.locktype = 'advisory'
+               AND NOT waiter_lock.granted
+              WHERE waiter.application_name = 'memory-settings-race-first'
+            `,
+          );
+          return result.rows[0] ?? null;
+        })
+        .toMatchObject({
+          blocker_name: "memory-settings-race-blocker",
+          query: expect.stringContaining("pg_advisory_xact_lock"),
+          waiter_granted: false,
+        });
+
+      const secondOperation = updateMemoryControls(secondDatabase, {
+        userId: fixture.userId,
+        characterId: fixture.characterId,
+        expectedRevision: 1,
+        recordingEnabled: true,
+        usageEnabled: false,
+      });
+      void secondOperation.catch(() => undefined);
+      await expect
+        .poll(async () => {
+          const result = await database.$client.query<{
+            blocker_name: string;
+            query: string;
+          }>(
+            `
+              SELECT blocker.application_name AS blocker_name, waiter.query
+              FROM pg_stat_activity waiter
+              JOIN LATERAL unnest(pg_blocking_pids(waiter.pid)) blocker_pid
+                ON true
+              JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid
+              WHERE waiter.application_name = 'memory-settings-race-second'
+            `,
+          );
+          return result.rows[0] ?? null;
+        })
+        .toMatchObject({
+          blocker_name: "memory-settings-race-first",
+          query: expect.stringContaining('"chat_settings"'),
+        });
+
+      expect(
+        await database
+          .select()
+          .from(userCharacterMemorySetting)
+          .where(
+            and(
+              eq(userCharacterMemorySetting.userId, fixture.userId),
+              eq(userCharacterMemorySetting.characterId, fixture.characterId),
+            ),
+          ),
+      ).toHaveLength(0);
+
+      await blockerDatabase.$client.query("COMMIT");
       const results = await Promise.allSettled([
-        updateMemoryControls(firstDatabase, {
-          userId: fixture.userId,
-          characterId: fixture.characterId,
-          expectedRevision: 1,
-          recordingEnabled: false,
-          usageEnabled: true,
-        }),
-        updateMemoryControls(secondDatabase, {
-          userId: fixture.userId,
-          characterId: fixture.characterId,
-          expectedRevision: 1,
-          recordingEnabled: true,
-          usageEnabled: false,
-        }),
+        firstOperation,
+        secondOperation,
       ]);
 
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
       const rejected = results.find((result) => result.status === "rejected");
-      expect(rejected?.status === "rejected" ? rejected.reason : null).toMatchObject({
+      expect(
+        rejected?.status === "rejected" ? rejected.reason : null,
+      ).toMatchObject({
         code: "MEMORY_REVISION_CONFLICT",
       });
       const rows = await database
@@ -217,6 +304,8 @@ describe("memory controls", () => {
       expect(rows[0]?.revision).toBe(2);
       expect(rows[0]?.memoryRevision).toBe(0);
     } finally {
+      await blockerDatabase.$client.query("ROLLBACK").catch(() => undefined);
+      await blockerDatabase.$client.end();
       await firstDatabase.$client.end();
       await secondDatabase.$client.end();
     }
@@ -257,9 +346,7 @@ describe("memory item mutations", () => {
       revision: 2,
     });
     expect(edited?.userEditedAt).toBeInstanceOf(Date);
-    const [settings] = await database
-      .select()
-      .from(userCharacterMemorySetting);
+    const [settings] = await database.select().from(userCharacterMemorySetting);
     expect(settings).toMatchObject({ memoryRevision: 5, revision: 7 });
   });
 
@@ -278,9 +365,9 @@ describe("memory item mutations", () => {
 
     expect(error).toBeInstanceOf(MemoryDomainError);
     expect(error).toMatchObject({ code: "MEMORY_VALIDATION" });
-    expect(JSON.stringify((error as MemoryDomainError).toPublicError())).not.toContain(
-      credentialText,
-    );
+    expect(
+      JSON.stringify((error as MemoryDomainError).toPublicError()),
+    ).not.toContain(credentialText);
     const [unchanged] = await database
       .select({ content: memoryItem.content, revision: memoryItem.revision })
       .from(memoryItem)
@@ -373,7 +460,10 @@ describe("memory item mutations", () => {
     });
 
     expect(
-      await database.select().from(memoryItem).where(eq(memoryItem.id, memoryId)),
+      await database
+        .select()
+        .from(memoryItem)
+        .where(eq(memoryItem.id, memoryId)),
     ).toHaveLength(0);
     expect(
       await database
@@ -416,6 +506,113 @@ describe("memory item mutations", () => {
 });
 
 describe("forgetCharacter", () => {
+  test("locks owned summary versions before memory items and evidence", async () => {
+    const fixture = await insertFixture();
+    await database.insert(userCharacterMemorySetting).values({
+      userId: fixture.userId,
+      characterId: fixture.characterId,
+    });
+    const memoryId = await insertMemory(fixture);
+    await database.insert(memoryEvidence).values({
+      id: randomUUID(),
+      memoryId,
+      sourceDeletedAt: new Date(),
+      observedAt: new Date(),
+      evidenceKind: "direct",
+    });
+    const summaryVersionId = randomUUID();
+    await database.insert(relationshipSummaryVersion).values({
+      id: summaryVersionId,
+      userId: fixture.userId,
+      characterId: fixture.characterId,
+      memoryEpoch: 0,
+      content: "Summary awaiting deletion.",
+      origin: "automatic",
+      basedOnMemoryRevision: 0,
+    });
+    await database.insert(relationshipSummary).values({
+      userId: fixture.userId,
+      characterId: fixture.characterId,
+      memoryEpoch: 0,
+      currentVersionId: summaryVersionId,
+    });
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "forget-summary-version-blocker",
+      max: 1,
+    });
+    const forgetDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "forget-summary-version-waiter",
+      max: 1,
+    });
+    let forgetOperation:
+      Promise<{ memoryEpoch: number; revision: number }> | undefined;
+
+    try {
+      await blockerDatabase.$client.query("BEGIN");
+      await blockerDatabase.$client.query(
+        "SELECT id FROM relationship_summary_versions WHERE id = $1 FOR UPDATE",
+        [summaryVersionId],
+      );
+
+      forgetOperation = forgetCharacter(forgetDatabase, {
+        userId: fixture.userId,
+        characterId: fixture.characterId,
+        expectedRevision: 1,
+      });
+      void forgetOperation.catch(() => undefined);
+
+      await expect
+        .poll(async () => {
+          const result = await database.$client.query<{
+            blocker_name: string;
+            query: string;
+          }>(
+            `
+              SELECT blocker.application_name AS blocker_name, waiter.query
+              FROM pg_stat_activity waiter
+              JOIN LATERAL unnest(pg_blocking_pids(waiter.pid)) blocker_pid
+                ON true
+              JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid
+              WHERE waiter.application_name = 'forget-summary-version-waiter'
+                AND waiter.wait_event_type = 'Lock'
+            `,
+          );
+          return result.rows[0] ?? null;
+        })
+        .toMatchObject({
+          blocker_name: "forget-summary-version-blocker",
+          query: expect.stringMatching(
+            /^\s*select[\s\S]*"relationship_summary_versions"/i,
+          ),
+        });
+
+      const itemProbe = await database.$client.connect();
+      try {
+        await itemProbe.query("BEGIN");
+        await expect(
+          itemProbe.query(
+            "SELECT id FROM memory_items WHERE id = $1 FOR UPDATE NOWAIT",
+            [memoryId],
+          ),
+        ).resolves.toMatchObject({ rowCount: 1 });
+      } finally {
+        await itemProbe.query("ROLLBACK").catch(() => undefined);
+        itemProbe.release();
+      }
+
+      await blockerDatabase.$client.query("COMMIT");
+      await expect(forgetOperation).resolves.toEqual({
+        memoryEpoch: 1,
+        revision: 2,
+      });
+    } finally {
+      await blockerDatabase.$client.query("ROLLBACK").catch(() => undefined);
+      await Promise.allSettled(forgetOperation ? [forgetOperation] : []);
+      await blockerDatabase.$client.end();
+      await forgetDatabase.$client.end();
+    }
+  });
+
   test("advances epoch, deletes memory and summaries, cancels old work, preserves transcripts, and audits IDs only", async () => {
     const fixture = await insertFixture();
     const now = new Date("2026-10-10T00:00:00.000Z");
@@ -585,9 +782,7 @@ describe("forgetCharacter", () => {
     });
 
     expect(result).toEqual({ memoryEpoch: 3, revision: 4 });
-    const [settings] = await database
-      .select()
-      .from(userCharacterMemorySetting);
+    const [settings] = await database.select().from(userCharacterMemorySetting);
     expect(settings).toMatchObject({
       memoryEpoch: 3,
       memoryRevision: 5,
@@ -596,7 +791,9 @@ describe("forgetCharacter", () => {
     expect(await database.select().from(memoryItem)).toHaveLength(0);
     expect(await database.select().from(memoryEvidence)).toHaveLength(0);
     expect(await database.select().from(relationshipSummary)).toHaveLength(0);
-    expect(await database.select().from(relationshipSummaryVersion)).toHaveLength(0);
+    expect(
+      await database.select().from(relationshipSummaryVersion),
+    ).toHaveLength(0);
     const runs = await database
       .select({
         id: memoryExtractionRun.id,
@@ -618,9 +815,7 @@ describe("forgetCharacter", () => {
         }),
       ]),
     );
-    const [summaryRun] = await database
-      .select()
-      .from(relationshipSummaryRun);
+    const [summaryRun] = await database.select().from(relationshipSummaryRun);
     expect(summaryRun).toMatchObject({
       id: summaryRunId,
       status: "cancelled",
@@ -714,7 +909,10 @@ describe("user-edit authority under concurrency", () => {
       characterId: fixture.characterId,
     });
     const memoryId = await insertMemory(fixture);
-    const blocker = await database.$client.connect();
+    const blockerDatabase = createDatabase(testDatabaseUrl(), {
+      application_name: "memory-user-lock-blocker",
+      max: 1,
+    });
     const editDatabase = createDatabase(testDatabaseUrl(), {
       application_name: "memory-user-edit-race",
       max: 1,
@@ -727,8 +925,8 @@ describe("user-edit authority under concurrency", () => {
     let mergeOperation: Promise<number> | undefined;
 
     try {
-      await blocker.query("BEGIN");
-      await blocker.query(
+      await blockerDatabase.$client.query("BEGIN");
+      await blockerDatabase.$client.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [`chat-user:${fixture.userId}`],
       );
@@ -743,16 +941,34 @@ describe("user-edit authority under concurrency", () => {
       void editOperation.catch(() => undefined);
       await expect
         .poll(async () => {
-          const result = await database.$client.query<{ waiting: boolean }>(
+          const result = await database.$client.query<{
+            blocker_name: string;
+            query: string;
+            waiter_granted: boolean;
+          }>(
             `
-              SELECT COALESCE(bool_or(wait_event_type = 'Lock'), false) AS waiting
-              FROM pg_stat_activity
-              WHERE application_name = 'memory-user-edit-race'
+              SELECT
+                blocker.application_name AS blocker_name,
+                waiter.query,
+                waiter_lock.granted AS waiter_granted
+              FROM pg_stat_activity waiter
+              JOIN LATERAL unnest(pg_blocking_pids(waiter.pid)) blocker_pid
+                ON true
+              JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid
+              JOIN pg_locks waiter_lock
+                ON waiter_lock.pid = waiter.pid
+               AND waiter_lock.locktype = 'advisory'
+               AND NOT waiter_lock.granted
+              WHERE waiter.application_name = 'memory-user-edit-race'
             `,
           );
-          return result.rows[0]?.waiting;
+          return result.rows[0] ?? null;
         })
-        .toBe(true);
+        .toMatchObject({
+          blocker_name: "memory-user-lock-blocker",
+          query: expect.stringContaining("pg_advisory_xact_lock"),
+          waiter_granted: false,
+        });
 
       mergeOperation = mergeDatabase.transaction(async (transaction) => {
         await lockUserMemoryMutation(transaction, fixture.userId);
@@ -782,18 +998,36 @@ describe("user-edit authority under concurrency", () => {
       void mergeOperation.catch(() => undefined);
       await expect
         .poll(async () => {
-          const result = await database.$client.query<{ waiting: boolean }>(
+          const result = await database.$client.query<{
+            advisory_count: string;
+            blocker_name: string;
+            query: string;
+          }>(
             `
-              SELECT COALESCE(bool_or(wait_event_type = 'Lock'), false) AS waiting
-              FROM pg_stat_activity
-              WHERE application_name = 'memory-automatic-merge-race'
+              SELECT
+                COUNT(advisory_locks.*)::text AS advisory_count,
+                blocker.application_name AS blocker_name,
+                waiter.query
+              FROM pg_stat_activity waiter
+              JOIN LATERAL unnest(pg_blocking_pids(waiter.pid)) blocker_pid
+                ON true
+              JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid
+              LEFT JOIN pg_locks advisory_locks
+                ON advisory_locks.pid = waiter.pid
+               AND advisory_locks.locktype = 'advisory'
+              WHERE waiter.application_name = 'memory-automatic-merge-race'
+              GROUP BY blocker.application_name, waiter.query
             `,
           );
-          return result.rows[0]?.waiting;
+          return result.rows[0] ?? null;
         })
-        .toBe(true);
+        .toMatchObject({
+          advisory_count: "0",
+          blocker_name: "memory-user-edit-race",
+          query: expect.stringContaining('"chat_settings"'),
+        });
 
-      await blocker.query("COMMIT");
+      await blockerDatabase.$client.query("COMMIT");
       await expect(editOperation).resolves.toEqual({ revision: 2 });
       await expect(mergeOperation).resolves.toBe(0);
 
@@ -806,12 +1040,12 @@ describe("user-edit authority under concurrency", () => {
         origin: "user_edited",
       });
     } finally {
-      await blocker.query("ROLLBACK").catch(() => undefined);
-      blocker.release();
+      await blockerDatabase.$client.query("ROLLBACK").catch(() => undefined);
       await Promise.allSettled([
         editOperation ?? Promise.resolve({ revision: 0 }),
         mergeOperation ?? Promise.resolve(0),
       ]);
+      await blockerDatabase.$client.end();
       await editDatabase.$client.end();
       await mergeDatabase.$client.end();
     }

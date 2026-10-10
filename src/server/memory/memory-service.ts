@@ -1,11 +1,4 @@
-import {
-  and,
-  asc,
-  eq,
-  inArray,
-  ne,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { recordUserAudit } from "@/server/admin/audit";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
@@ -26,7 +19,10 @@ import {
 } from "@/server/db/schema";
 import { assertMemoryCandidateAllowed } from "./memory-policy";
 import type { MemorySensitivity, MemoryType } from "./memory-contracts";
-import { normalizeMemoryCandidate, normalizeMemoryText } from "./memory-normalization";
+import {
+  normalizeMemoryCandidate,
+  normalizeMemoryText,
+} from "./memory-normalization";
 import { MemoryDomainError } from "./memory-errors";
 import { lockUserMemoryMutation } from "./memory-locks";
 
@@ -71,7 +67,9 @@ async function requireUserAndCharacter(
   const [selectedUser] = await transaction
     .select({ id: user.id })
     .from(user)
-    .where(and(eq(user.id, input.userId), sql`${user.deletionPendingAt} IS NULL`))
+    .where(
+      and(eq(user.id, input.userId), sql`${user.deletionPendingAt} IS NULL`),
+    )
     .for("update")
     .limit(1);
   if (!selectedUser) {
@@ -110,7 +108,10 @@ async function ensureRelationshipSettings(
   transaction: ChatTransaction,
   input: { userId: string; characterId: string },
 ): Promise<RelationshipSettings> {
-  const existing = await selectRelationshipSettingsForUpdate(transaction, input);
+  const existing = await selectRelationshipSettingsForUpdate(
+    transaction,
+    input,
+  );
   if (existing) {
     return existing;
   }
@@ -125,7 +126,10 @@ async function ensureRelationshipSettings(
       ],
     });
 
-  const inserted = await selectRelationshipSettingsForUpdate(transaction, input);
+  const inserted = await selectRelationshipSettingsForUpdate(
+    transaction,
+    input,
+  );
   if (!inserted) {
     throw new MemoryDomainError(
       "MEMORY_INTERNAL",
@@ -280,9 +284,13 @@ export async function editMemoryItem(
   },
 ): Promise<{ revision: number }> {
   return database.transaction(async (transaction) => {
-    const selectedSettings = await beginRelationshipMutation(transaction, input);
+    const selectedSettings = await beginRelationshipMutation(
+      transaction,
+      input,
+    );
     const settings =
-      selectedSettings ?? (await ensureRelationshipSettings(transaction, input));
+      selectedSettings ??
+      (await ensureRelationshipSettings(transaction, input));
     const [item] = await transaction
       .select()
       .from(memoryItem)
@@ -376,9 +384,13 @@ export async function deleteMemoryItem(
   },
 ): Promise<void> {
   await database.transaction(async (transaction) => {
-    const selectedSettings = await beginRelationshipMutation(transaction, input);
+    const selectedSettings = await beginRelationshipMutation(
+      transaction,
+      input,
+    );
     const settings =
-      selectedSettings ?? (await ensureRelationshipSettings(transaction, input));
+      selectedSettings ??
+      (await ensureRelationshipSettings(transaction, input));
     const [item] = await transaction
       .select({ id: memoryItem.id })
       .from(memoryItem)
@@ -430,9 +442,13 @@ export async function forgetCharacter(
   },
 ): Promise<{ memoryEpoch: number; revision: number }> {
   return database.transaction(async (transaction) => {
-    const selectedSettings = await beginRelationshipMutation(transaction, input);
+    const selectedSettings = await beginRelationshipMutation(
+      transaction,
+      input,
+    );
     const settings =
-      selectedSettings ?? (await ensureRelationshipSettings(transaction, input));
+      selectedSettings ??
+      (await ensureRelationshipSettings(transaction, input));
     if (settings.revision !== input.expectedRevision) {
       throw revisionConflict({
         expectedRevision: input.expectedRevision,
@@ -524,6 +540,17 @@ export async function forgetCharacter(
         ),
       )
       .for("update");
+    await transaction
+      .select({ id: relationshipSummaryVersion.id })
+      .from(relationshipSummaryVersion)
+      .where(
+        and(
+          eq(relationshipSummaryVersion.userId, input.userId),
+          eq(relationshipSummaryVersion.characterId, input.characterId),
+        ),
+      )
+      .orderBy(asc(relationshipSummaryVersion.id))
+      .for("update");
     const itemRows = await transaction
       .select({ id: memoryItem.id })
       .from(memoryItem)
@@ -546,7 +573,9 @@ export async function forgetCharacter(
       await transaction
         .delete(memoryEvidence)
         .where(inArray(memoryEvidence.memoryId, itemIds));
-      await transaction.delete(memoryItem).where(inArray(memoryItem.id, itemIds));
+      await transaction
+        .delete(memoryItem)
+        .where(inArray(memoryItem.id, itemIds));
     }
     await transaction
       .delete(relationshipSummary)
