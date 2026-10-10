@@ -108,14 +108,20 @@ CREATE TABLE "data_export_jobs" (
 	"downloaded_at" timestamp with time zone,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "data_export_jobs_archive_size_nonnegative" CHECK ("data_export_jobs"."archive_size" IS NULL OR ("data_export_jobs"."archive_size" >= 0 AND "data_export_jobs"."archive_size" <= 262144000)),
-	CONSTRAINT "data_export_jobs_archive_digest_check" CHECK ("data_export_jobs"."archive_sha256" IS NULL OR "data_export_jobs"."archive_sha256" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "data_export_jobs_archive_digest_check" CHECK ("data_export_jobs"."archive_sha256" IS NULL OR (
+        "data_export_jobs"."archive_sha256" ~ '^[0-9a-f]{64}$'
+        AND "data_export_jobs"."archive_bytes" IS NOT NULL
+        AND "data_export_jobs"."archive_sha256" = ENCODE(SHA256("data_export_jobs"."archive_bytes"), 'hex')
+      )),
 	CONSTRAINT "data_export_jobs_archive_shape_check" CHECK ((
         (
           "data_export_jobs"."status" = 'complete'
           AND "data_export_jobs"."archive_bytes" IS NOT NULL
+          AND "data_export_jobs"."archive_size" IS NOT NULL
           AND "data_export_jobs"."archive_size" = OCTET_LENGTH("data_export_jobs"."archive_bytes")
           AND "data_export_jobs"."archive_sha256" IS NOT NULL
           AND "data_export_jobs"."completed_at" IS NOT NULL
+          AND "data_export_jobs"."expires_at" IS NOT NULL
           AND "data_export_jobs"."expires_at" = "data_export_jobs"."completed_at" + INTERVAL '24 hours'
         )
         OR
@@ -214,6 +220,10 @@ CREATE TABLE "memory_items" (
         ("memory_items"."origin" = 'automatic' AND "memory_items"."user_edited_at" IS NULL)
         OR
         ("memory_items"."origin" = 'user_edited' AND "memory_items"."user_edited_at" IS NOT NULL)
+      )),
+	CONSTRAINT "memory_items_sensitive_inference_check" CHECK (NOT (
+        "memory_items"."sensitivity" = 'personal_explicit'
+        AND "memory_items"."explicitness" = 'repeated_inference'
       )),
 	CONSTRAINT "memory_items_revision_positive" CHECK ("memory_items"."revision" > 0)
 );
@@ -381,6 +391,51 @@ ALTER TABLE "usage_ledger" ADD CONSTRAINT "usage_ledger_workload_shape_check" CH
         )
       ));--> statement-breakpoint
 ALTER TABLE "usage_ledger" ADD CONSTRAINT "usage_ledger_outcome_check" CHECK ("usage_ledger"."outcome" IN ('complete', 'failed', 'interrupted', 'cancelled'));--> statement-breakpoint
+CREATE OR REPLACE FUNCTION preserve_usage_ledger_accounting()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'usage ledger accounting is immutable';
+  END IF;
+
+  IF NEW.id IS NOT DISTINCT FROM OLD.id
+     AND (
+       NEW.user_id IS NOT DISTINCT FROM OLD.user_id
+       OR (OLD.user_id IS NOT NULL AND NEW.user_id IS NULL)
+     )
+     AND (
+       NEW.conversation_id IS NOT DISTINCT FROM OLD.conversation_id
+       OR (OLD.conversation_id IS NOT NULL AND NEW.conversation_id IS NULL)
+     )
+     AND (
+       NEW.attempt_id IS NOT DISTINCT FROM OLD.attempt_id
+       OR (OLD.attempt_id IS NOT NULL AND NEW.attempt_id IS NULL)
+     )
+     AND NEW.background_operation_id IS NOT DISTINCT FROM OLD.background_operation_id
+     AND NEW.memory_extraction_run_id IS NOT DISTINCT FROM OLD.memory_extraction_run_id
+     AND NEW.relationship_summary_version_id IS NOT DISTINCT FROM OLD.relationship_summary_version_id
+     AND NEW.workload_type IS NOT DISTINCT FROM OLD.workload_type
+     AND NEW.period_start IS NOT DISTINCT FROM OLD.period_start
+     AND NEW.period_end IS NOT DISTINCT FROM OLD.period_end
+     AND NEW.user_request_units IS NOT DISTINCT FROM OLD.user_request_units
+     AND NEW.provider_call_number IS NOT DISTINCT FROM OLD.provider_call_number
+     AND NEW.input_tokens IS NOT DISTINCT FROM OLD.input_tokens
+     AND NEW.output_tokens IS NOT DISTINCT FROM OLD.output_tokens
+     AND NEW.usage_is_estimated IS NOT DISTINCT FROM OLD.usage_is_estimated
+     AND NEW.model_id IS NOT DISTINCT FROM OLD.model_id
+     AND NEW.outcome IS NOT DISTINCT FROM OLD.outcome
+     AND NEW.error_category IS NOT DISTINCT FROM OLD.error_category
+     AND NEW.automatic_retry_count IS NOT DISTINCT FROM OLD.automatic_retry_count
+     AND NEW.latency_ms IS NOT DISTINCT FROM OLD.latency_ms
+     AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'usage ledger accounting is immutable';
+END;
+$$;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION enforce_memory_settings_revision()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -567,6 +622,29 @@ BEGIN
        IS DISTINCT FROM ROW(OLD.id, OLD.user_id, OLD.character_id, OLD.memory_epoch) THEN
       RAISE EXCEPTION 'memory extraction run identity is immutable';
     END IF;
+    IF ROW(NEW.conversation_id, NEW.generation_attempt_id)
+       IS DISTINCT FROM ROW(OLD.conversation_id, OLD.generation_attempt_id)
+       AND NOT (
+         pg_trigger_depth() > 1
+         AND OLD.conversation_id IS NOT NULL
+         AND NEW.conversation_id IS NULL
+         AND NEW.generation_attempt_id IS NULL
+         AND (
+           (
+             OLD.status IN ('pending', 'queued', 'running', 'retrying')
+             AND NEW.status = 'cancelled'
+             AND NEW.finished_at IS NOT NULL
+           )
+           OR
+           (
+             OLD.status IN ('complete', 'failed', 'dead_letter', 'cancelled')
+             AND NEW.status = OLD.status
+             AND NEW.finished_at IS NOT DISTINCT FROM OLD.finished_at
+           )
+         )
+       ) THEN
+      RAISE EXCEPTION 'memory extraction source identity is immutable except during conversation deletion';
+    END IF;
     IF OLD.status IN ('complete', 'failed', 'dead_letter', 'cancelled')
        AND ROW(
          NEW.status,
@@ -613,13 +691,21 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   UPDATE memory_extraction_runs
-  SET status = 'cancelled',
+  SET status = CASE
+        WHEN status IN ('pending', 'queued', 'running', 'retrying')
+          THEN 'cancelled'::background_operation_status
+        ELSE status
+      END,
       conversation_id = NULL,
       generation_attempt_id = NULL,
-      finished_at = COALESCE(finished_at, clock_timestamp()),
+      finished_at = CASE
+        WHEN status IN ('pending', 'queued', 'running', 'retrying')
+          THEN COALESCE(finished_at, clock_timestamp())
+        ELSE finished_at
+      END,
       updated_at = clock_timestamp()
   WHERE conversation_id = OLD.id
-    AND status IN ('pending', 'queued', 'running', 'retrying');
+    AND (conversation_id IS NOT NULL OR generation_attempt_id IS NOT NULL);
   RETURN OLD;
 END;
 $$;--> statement-breakpoint
@@ -828,12 +914,80 @@ BEGIN
     RAISE EXCEPTION 'data export identity is immutable';
   END IF;
   IF TG_OP = 'UPDATE'
+     AND OLD.status IN ('failed', 'expired', 'cancelled')
+     AND NEW.status IS DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'terminal data export status is immutable and cannot be re-completed';
+  END IF;
+  IF TG_OP = 'UPDATE'
      AND OLD.status IN ('complete', 'failed', 'expired', 'cancelled')
      AND NEW.status IN ('pending', 'running') THEN
     RAISE EXCEPTION 'terminal data export cannot return to an active state';
   END IF;
+  IF TG_OP = 'UPDATE' AND OLD.status = 'complete' THEN
+    IF NEW.status = 'complete' THEN
+      IF ROW(
+           NEW.id,
+           NEW.user_id,
+           NEW.status,
+           NEW.job_id,
+           NEW.archive_bytes,
+           NEW.archive_size,
+           NEW.archive_sha256,
+           NEW.error_category,
+           NEW.created_at,
+           NEW.started_at,
+           NEW.completed_at,
+           NEW.expires_at
+         ) IS DISTINCT FROM ROW(
+           OLD.id,
+           OLD.user_id,
+           OLD.status,
+           OLD.job_id,
+           OLD.archive_bytes,
+           OLD.archive_size,
+           OLD.archive_sha256,
+           OLD.error_category,
+           OLD.created_at,
+           OLD.started_at,
+           OLD.completed_at,
+           OLD.expires_at
+         ) THEN
+        RAISE EXCEPTION 'completed data export retention and archive identity are immutable';
+      END IF;
+    ELSIF NEW.status = 'expired' THEN
+      IF ROW(
+           NEW.id,
+           NEW.user_id,
+           NEW.job_id,
+           NEW.error_category,
+           NEW.created_at,
+           NEW.started_at,
+           NEW.completed_at
+         ) IS DISTINCT FROM ROW(
+           OLD.id,
+           OLD.user_id,
+           OLD.job_id,
+           OLD.error_category,
+           OLD.created_at,
+           OLD.started_at,
+           OLD.completed_at
+         )
+         OR NEW.archive_bytes IS NOT NULL
+         OR NEW.archive_size IS NOT NULL
+         OR NEW.archive_sha256 IS NOT NULL
+         OR NEW.expires_at IS NOT NULL THEN
+        RAISE EXCEPTION 'completed data export only permits archive removal during expiry';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'completed data export only permits download bookkeeping or expiry';
+    END IF;
+  END IF;
   IF NEW.archive_bytes IS NOT NULL
-     AND (NEW.status <> 'complete' OR NEW.expires_at <= clock_timestamp()) THEN
+     AND (
+       NEW.status <> 'complete'
+       OR NEW.expires_at IS NULL
+       OR NEW.expires_at <= clock_timestamp()
+     ) THEN
     RAISE EXCEPTION 'archive bytes require a completed unexpired export';
   END IF;
   RETURN NEW;

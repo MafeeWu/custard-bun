@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { sql } from "drizzle-orm";
 import { testDatabaseUrl } from "@/test/database-target";
@@ -19,6 +19,10 @@ import {
 } from "./memory-schema";
 
 const database = createDatabase(testDatabaseUrl());
+
+function sha256Hex(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 void [
   accountDeletionRequest,
@@ -521,6 +525,30 @@ describe("memory item invariants", () => {
       /user-edited.*automatic/i,
     );
   });
+
+  test("rejects personal explicit memory derived from repeated inference", async () => {
+    const userId = await insertUser();
+    const { characterId } = await insertCharacter();
+    await insertRelationship(userId, characterId);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO memory_items (
+          id, user_id, character_id, memory_epoch, type, content,
+          normalized_content, normalized_digest, origin, sensitivity,
+          explicitness, confidence, importance, first_observed_at,
+          last_confirmed_at, revision
+        )
+        VALUES (
+          ${randomUUID()}, ${userId}, ${characterId}, 0, 'personal_fact',
+          'Sensitive inference', 'sensitive inference', ${"9".repeat(64)},
+          'automatic', 'personal_explicit', 'repeated_inference',
+          80, 60, NOW(), NOW(), 1
+        )
+      `),
+      /personal explicit.*repeated inference|sensitivity.*explicitness|sensitive[_ ]inference/i,
+    );
+  });
 });
 
 describe("evidence and extraction invariants", () => {
@@ -530,17 +558,23 @@ describe("evidence and extraction invariants", () => {
     const { characterId, versionId } = await insertCharacter();
     const otherCharacter = await insertCharacter();
     await insertRelationship(userId, characterId);
-    await insertRelationship(otherUserId, otherCharacter.characterId);
+    await insertRelationship(userId, otherCharacter.characterId);
+    await insertRelationship(otherUserId, characterId);
     const memoryId = await insertMemory({ userId, characterId });
     const source = await insertConversationFixture(
       userId,
       characterId,
       versionId,
     );
-    const wrongSource = await insertConversationFixture(
-      otherUserId,
+    const sameUserWrongCharacterSource = await insertConversationFixture(
+      userId,
       otherCharacter.characterId,
       otherCharacter.versionId,
+    );
+    const otherUserSameCharacterSource = await insertConversationFixture(
+      otherUserId,
+      characterId,
+      versionId,
     );
 
     await database.execute(sql`
@@ -595,8 +629,29 @@ describe("evidence and extraction invariants", () => {
         VALUES (
           ${randomUUID()},
           ${memoryId},
-          ${wrongSource.userMessageId},
-          ${wrongSource.attemptId},
+          ${sameUserWrongCharacterSource.userMessageId},
+          ${sameUserWrongCharacterSource.attemptId},
+          NOW(),
+          'supporting'
+        )
+      `),
+      /same user and character/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO memory_evidence (
+          id,
+          memory_id,
+          source_message_id,
+          source_attempt_id,
+          observed_at,
+          evidence_kind
+        )
+        VALUES (
+          ${randomUUID()},
+          ${memoryId},
+          ${otherUserSameCharacterSource.userMessageId},
+          ${otherUserSameCharacterSource.attemptId},
           NOW(),
           'supporting'
         )
@@ -702,6 +757,117 @@ describe("evidence and extraction invariants", () => {
       status: "cancelled",
     });
     expect(runs.rows[0]?.finished_at).not.toBeNull();
+  });
+
+  test("rejects extraction source reassignment and still cancels the original source on deletion", async () => {
+    const userId = await insertUser();
+    const otherUserId = await insertUser();
+    const { characterId, versionId } = await insertCharacter();
+    await insertRelationship(userId, characterId);
+    await insertRelationship(otherUserId, characterId);
+    const source = await insertConversationFixture(
+      userId,
+      characterId,
+      versionId,
+    );
+    const otherSource = await insertConversationFixture(
+      otherUserId,
+      characterId,
+      versionId,
+    );
+    const extractionRunId = randomUUID();
+
+    await database.execute(sql`
+      INSERT INTO memory_extraction_runs (
+        id, user_id, character_id, conversation_id, generation_attempt_id,
+        memory_epoch, status, attempt_count, estimated_input_tokens,
+        provider_request_ids
+      )
+      VALUES (
+        ${extractionRunId}, ${userId}, ${characterId}, ${source.conversationId},
+        ${source.attemptId}, 0, 'running', 1, 40, '[]'::jsonb
+      )
+    `);
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE memory_extraction_runs
+        SET conversation_id = NULL,
+            generation_attempt_id = NULL
+        WHERE id = ${extractionRunId}
+      `),
+      /extraction source.*immutable|conversation deletion/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE memory_extraction_runs
+        SET conversation_id = ${otherSource.conversationId},
+            generation_attempt_id = ${otherSource.attemptId}
+        WHERE id = ${extractionRunId}
+      `),
+      /extraction source.*immutable|source reassignment/i,
+    );
+
+    await database.execute(sql`
+      DELETE FROM conversations WHERE id = ${source.conversationId}
+    `);
+    const run = await database.execute<{
+      conversation_id: string | null;
+      generation_attempt_id: string | null;
+      status: string;
+    }>(sql`
+      SELECT conversation_id, generation_attempt_id, status
+      FROM memory_extraction_runs
+      WHERE id = ${extractionRunId}
+    `);
+    expect(run.rows[0]).toEqual({
+      conversation_id: null,
+      generation_attempt_id: null,
+      status: "cancelled",
+    });
+  });
+
+  test("rejects extraction source restoration after deletion-driven nulling", async () => {
+    const userId = await insertUser();
+    const otherUserId = await insertUser();
+    const { characterId, versionId } = await insertCharacter();
+    await insertRelationship(userId, characterId);
+    await insertRelationship(otherUserId, characterId);
+    const source = await insertConversationFixture(
+      userId,
+      characterId,
+      versionId,
+    );
+    const otherSource = await insertConversationFixture(
+      otherUserId,
+      characterId,
+      versionId,
+    );
+    const extractionRunId = randomUUID();
+
+    await database.execute(sql`
+      INSERT INTO memory_extraction_runs (
+        id, user_id, character_id, conversation_id, generation_attempt_id,
+        memory_epoch, status, attempt_count, estimated_input_tokens,
+        provider_request_ids
+      )
+      VALUES (
+        ${extractionRunId}, ${userId}, ${characterId}, ${source.conversationId},
+        ${source.attemptId}, 0, 'running', 1, 40, '[]'::jsonb
+      )
+    `);
+    await database.execute(sql`
+      DELETE FROM conversations WHERE id = ${source.conversationId}
+    `);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE memory_extraction_runs
+        SET conversation_id = ${otherSource.conversationId},
+            generation_attempt_id = ${otherSource.attemptId}
+        WHERE id = ${extractionRunId}
+      `),
+      /extraction source.*immutable|source restoration/i,
+    );
   });
 
   test("allows one extraction per attempt and makes terminal extraction status immutable", async () => {
@@ -1049,11 +1215,59 @@ describe("background usage invariants", () => {
       /workload[_ ]shape|background.*request units/i,
     );
   });
+
+  test("keeps background workload identity and provenance immutable", async () => {
+    const ledgerId = randomUUID();
+    const operationId = randomUUID();
+    const summaryVersionId = randomUUID();
+    await database.execute(sql`
+      INSERT INTO usage_ledger (
+        id, background_operation_id, relationship_summary_version_id,
+        workload_type, period_start, period_end, user_request_units,
+        provider_call_number, input_tokens, output_tokens,
+        usage_is_estimated, model_id, outcome, automatic_retry_count
+      )
+      VALUES (
+        ${ledgerId}, ${operationId}, ${summaryVersionId}, 'summary_refresh',
+        '2026-10-01T00:00:00Z', '2026-11-01T00:00:00Z',
+        0, 1, 10, 5, false, 'test-model', 'complete', 0
+      )
+    `);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE usage_ledger
+        SET background_operation_id = ${randomUUID()}
+        WHERE id = ${ledgerId}
+      `),
+      /usage ledger.*immutable/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE usage_ledger
+        SET relationship_summary_version_id = ${randomUUID()}
+        WHERE id = ${ledgerId}
+      `),
+      /usage ledger.*immutable/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE usage_ledger
+        SET workload_type = 'memory_extraction',
+            relationship_summary_version_id = NULL,
+            memory_extraction_run_id = ${randomUUID()}
+        WHERE id = ${ledgerId}
+      `),
+      /usage ledger.*immutable/i,
+    );
+  });
 });
 
 describe("export and deletion invariants", () => {
   test("allows one active export per user and stores archives only for exact unexpired completion windows", async () => {
     const userId = await insertUser();
+    const archive = Buffer.from("zip");
+    const archiveSha256 = sha256Hex(archive);
     await database.execute(sql`
       INSERT INTO data_export_jobs (id, user_id, status)
       VALUES (${randomUUID()}, ${userId}, 'pending')
@@ -1089,8 +1303,8 @@ describe("export and deletion invariants", () => {
         completed_at, expires_at
       )
       VALUES (
-        ${randomUUID()}, ${userId}, 'complete', ${Buffer.from("zip")}, 3,
-        ${"f".repeat(64)}, ${completedAt}, ${expiresAt}
+        ${randomUUID()}, ${userId}, 'complete', ${archive}, 3,
+        ${archiveSha256}, ${completedAt}, ${expiresAt}
       )
     `);
     await expectDatabaseError(
@@ -1100,12 +1314,147 @@ describe("export and deletion invariants", () => {
           completed_at, expires_at
         )
         VALUES (
-          ${randomUUID()}, ${userId}, 'complete', ${Buffer.from("zip")}, 3,
-          ${"e".repeat(64)}, ${completedAt},
+          ${randomUUID()}, ${userId}, 'complete', ${archive}, 3,
+          ${archiveSha256}, ${completedAt},
           ${new Date(expiresAt.getTime() + 1_000)}
         )
       `),
       /exactly 24 hours|archive[_ ]shape/i,
+    );
+  });
+
+  test("rejects completed exports with null size, null expiry, or mismatched digest", async () => {
+    const userId = await insertUser();
+    const archive = Buffer.from("zip");
+    const completedAt = new Date(Date.now() + 60_000);
+    const expiresAt = new Date(completedAt.getTime() + 24 * 60 * 60 * 1_000);
+
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO data_export_jobs (
+          id, user_id, status, archive_bytes, archive_size, archive_sha256,
+          completed_at, expires_at
+        )
+        VALUES (
+          ${randomUUID()}, ${userId}, 'complete', ${archive}, NULL,
+          ${sha256Hex(archive)}, ${completedAt}, ${expiresAt}
+        )
+      `),
+      /archive size.*required|archive[_ ]shape/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO data_export_jobs (
+          id, user_id, status, archive_bytes, archive_size, archive_sha256,
+          completed_at, expires_at
+        )
+        VALUES (
+          ${randomUUID()}, ${userId}, 'complete', ${archive}, 3,
+          ${sha256Hex(archive)}, ${completedAt}, NULL
+        )
+      `),
+      /expiry.*required|archive[_ ]shape|completed unexpired export/i,
+    );
+    await expectDatabaseError(
+      database.execute(sql`
+        INSERT INTO data_export_jobs (
+          id, user_id, status, archive_bytes, archive_size, archive_sha256,
+          completed_at, expires_at
+        )
+        VALUES (
+          ${randomUUID()}, ${userId}, 'complete', ${archive}, 3,
+          ${"f".repeat(64)}, ${completedAt}, ${expiresAt}
+        )
+      `),
+      /archive.*sha-?256|archive[_ ]digest/i,
+    );
+  });
+
+  test("freezes completed archive retention and content while allowing download and expiry bookkeeping", async () => {
+    const userId = await insertUser();
+    const exportId = randomUUID();
+    const archive = Buffer.from("zip");
+    const completedAt = new Date(Date.now() + 60_000);
+    const expiresAt = new Date(completedAt.getTime() + 24 * 60 * 60 * 1_000);
+    await database.execute(sql`
+      INSERT INTO data_export_jobs (
+        id, user_id, status, archive_bytes, archive_size, archive_sha256,
+        completed_at, expires_at
+      )
+      VALUES (
+        ${exportId}, ${userId}, 'complete', ${archive}, 3,
+        ${sha256Hex(archive)}, ${completedAt}, ${expiresAt}
+      )
+    `);
+
+    const renewedCompletedAt = new Date(completedAt.getTime() + 60_000);
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE data_export_jobs
+        SET completed_at = ${renewedCompletedAt},
+            expires_at = ${new Date(renewedCompletedAt.getTime() + 24 * 60 * 60 * 1_000)}
+        WHERE id = ${exportId}
+      `),
+      /completed export.*immutable|retention.*immutable/i,
+    );
+    const replacement = Buffer.from("new");
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE data_export_jobs
+        SET archive_bytes = ${replacement},
+            archive_size = ${replacement.length},
+            archive_sha256 = ${sha256Hex(replacement)}
+        WHERE id = ${exportId}
+      `),
+      /completed export.*immutable|archive.*immutable/i,
+    );
+
+    await database.execute(sql`
+      UPDATE data_export_jobs
+      SET downloaded_at = NOW(),
+          updated_at = NOW()
+      WHERE id = ${exportId}
+    `);
+    await database.execute(sql`
+      UPDATE data_export_jobs
+      SET status = 'expired',
+          archive_bytes = NULL,
+          archive_size = NULL,
+          archive_sha256 = NULL,
+          expires_at = NULL,
+          updated_at = NOW()
+      WHERE id = ${exportId}
+    `);
+
+    const expired = await database.execute<{
+      archive_bytes: Buffer | null;
+      completed_at: Date;
+      status: string;
+    }>(sql`
+      SELECT status, archive_bytes, completed_at
+      FROM data_export_jobs
+      WHERE id = ${exportId}
+    `);
+    expect(expired.rows[0]).toMatchObject({
+      status: "expired",
+      archive_bytes: null,
+    });
+    expect(new Date(expired.rows[0]!.completed_at)).toEqual(completedAt);
+
+    const renewedArchive = Buffer.from("renewed");
+    const renewedAt = new Date(completedAt.getTime() + 120_000);
+    await expectDatabaseError(
+      database.execute(sql`
+        UPDATE data_export_jobs
+        SET status = 'complete',
+            archive_bytes = ${renewedArchive},
+            archive_size = ${renewedArchive.length},
+            archive_sha256 = ${sha256Hex(renewedArchive)},
+            completed_at = ${renewedAt},
+            expires_at = ${new Date(renewedAt.getTime() + 24 * 60 * 60 * 1_000)}
+        WHERE id = ${exportId}
+      `),
+      /terminal data export.*immutable|cannot be re-completed/i,
     );
   });
 

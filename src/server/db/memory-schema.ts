@@ -259,6 +259,13 @@ export const memoryItem = pgTable(
         (${table.origin} = 'user_edited' AND ${table.userEditedAt} IS NOT NULL)
       )`,
     ),
+    check(
+      "memory_items_sensitive_inference_check",
+      sql`NOT (
+        ${table.sensitivity} = 'personal_explicit'
+        AND ${table.explicitness} = 'repeated_inference'
+      )`,
+    ),
     check("memory_items_revision_positive", positive(table.revision)),
   ],
 );
@@ -673,7 +680,11 @@ export const dataExportJob = pgTable(
     ),
     check(
       "data_export_jobs_archive_digest_check",
-      sql`${table.archiveSha256} IS NULL OR ${table.archiveSha256} ~ '^[0-9a-f]{64}$'`,
+      sql`${table.archiveSha256} IS NULL OR (
+        ${table.archiveSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.archiveBytes} IS NOT NULL
+        AND ${table.archiveSha256} = ENCODE(SHA256(${table.archiveBytes}), 'hex')
+      )`,
     ),
     check(
       "data_export_jobs_archive_shape_check",
@@ -681,9 +692,11 @@ export const dataExportJob = pgTable(
         (
           ${table.status} = 'complete'
           AND ${table.archiveBytes} IS NOT NULL
+          AND ${table.archiveSize} IS NOT NULL
           AND ${table.archiveSize} = OCTET_LENGTH(${table.archiveBytes})
           AND ${table.archiveSha256} IS NOT NULL
           AND ${table.completedAt} IS NOT NULL
+          AND ${table.expiresAt} IS NOT NULL
           AND ${table.expiresAt} = ${table.completedAt} + INTERVAL '24 hours'
         )
         OR

@@ -1,5 +1,5 @@
 {
-  "id": "b0418c0e-691e-40fd-8d91-2d3c2e5b4579",
+  "id": "4ce98763-e78f-4e5d-8799-485380bce2df",
   "prevId": "077f4026-2e12-49e4-b8e4-93db7502ba1a",
   "version": "7",
   "dialect": "postgresql",
@@ -3095,11 +3095,11 @@
         },
         "data_export_jobs_archive_digest_check": {
           "name": "data_export_jobs_archive_digest_check",
-          "value": "\"data_export_jobs\".\"archive_sha256\" IS NULL OR \"data_export_jobs\".\"archive_sha256\" ~ '^[0-9a-f]{64}$'"
+          "value": "\"data_export_jobs\".\"archive_sha256\" IS NULL OR (\n        \"data_export_jobs\".\"archive_sha256\" ~ '^[0-9a-f]{64}$'\n        AND \"data_export_jobs\".\"archive_bytes\" IS NOT NULL\n        AND \"data_export_jobs\".\"archive_sha256\" = ENCODE(SHA256(\"data_export_jobs\".\"archive_bytes\"), 'hex')\n      )"
         },
         "data_export_jobs_archive_shape_check": {
           "name": "data_export_jobs_archive_shape_check",
-          "value": "(\n        (\n          \"data_export_jobs\".\"status\" = 'complete'\n          AND \"data_export_jobs\".\"archive_bytes\" IS NOT NULL\n          AND \"data_export_jobs\".\"archive_size\" = OCTET_LENGTH(\"data_export_jobs\".\"archive_bytes\")\n          AND \"data_export_jobs\".\"archive_sha256\" IS NOT NULL\n          AND \"data_export_jobs\".\"completed_at\" IS NOT NULL\n          AND \"data_export_jobs\".\"expires_at\" = \"data_export_jobs\".\"completed_at\" + INTERVAL '24 hours'\n        )\n        OR\n        (\n          \"data_export_jobs\".\"status\" <> 'complete'\n          AND \"data_export_jobs\".\"archive_bytes\" IS NULL\n          AND \"data_export_jobs\".\"archive_size\" IS NULL\n          AND \"data_export_jobs\".\"archive_sha256\" IS NULL\n          AND \"data_export_jobs\".\"expires_at\" IS NULL\n        )\n      )"
+          "value": "(\n        (\n          \"data_export_jobs\".\"status\" = 'complete'\n          AND \"data_export_jobs\".\"archive_bytes\" IS NOT NULL\n          AND \"data_export_jobs\".\"archive_size\" IS NOT NULL\n          AND \"data_export_jobs\".\"archive_size\" = OCTET_LENGTH(\"data_export_jobs\".\"archive_bytes\")\n          AND \"data_export_jobs\".\"archive_sha256\" IS NOT NULL\n          AND \"data_export_jobs\".\"completed_at\" IS NOT NULL\n          AND \"data_export_jobs\".\"expires_at\" IS NOT NULL\n          AND \"data_export_jobs\".\"expires_at\" = \"data_export_jobs\".\"completed_at\" + INTERVAL '24 hours'\n        )\n        OR\n        (\n          \"data_export_jobs\".\"status\" <> 'complete'\n          AND \"data_export_jobs\".\"archive_bytes\" IS NULL\n          AND \"data_export_jobs\".\"archive_size\" IS NULL\n          AND \"data_export_jobs\".\"archive_sha256\" IS NULL\n          AND \"data_export_jobs\".\"expires_at\" IS NULL\n        )\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3806,6 +3806,10 @@
         "memory_items_user_edit_shape_check": {
           "name": "memory_items_user_edit_shape_check",
           "value": "(\n        (\"memory_items\".\"origin\" = 'automatic' AND \"memory_items\".\"user_edited_at\" IS NULL)\n        OR\n        (\"memory_items\".\"origin\" = 'user_edited' AND \"memory_items\".\"user_edited_at\" IS NOT NULL)\n      )"
+        },
+        "memory_items_sensitive_inference_check": {
+          "name": "memory_items_sensitive_inference_check",
+          "value": "NOT (\n        \"memory_items\".\"sensitivity\" = 'personal_explicit'\n        AND \"memory_items\".\"explicitness\" = 'repeated_inference'\n      )"
         },
         "memory_items_revision_positive": {
           "name": "memory_items_revision_positive",
