@@ -6,6 +6,7 @@ import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
   lockGlobalChatMutation,
   lockUserChatMutation,
+  requireActiveChatUser,
   type ChatTransaction,
 } from "@/server/chat/chat-locks";
 import {
@@ -109,6 +110,7 @@ export async function admitBackgroundModelWork(
 ): Promise<{ reservationId: string }> {
   requireNonnegativeInteger(input.estimatedTokens, "estimatedTokens");
   await lockUserChatMutation(transaction, input.userId);
+  await requireActiveChatUser(transaction, input.userId);
 
   const [settings] = await transaction
     .select({

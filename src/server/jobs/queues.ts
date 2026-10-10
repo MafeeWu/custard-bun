@@ -11,6 +11,8 @@ export const RELATIONSHIP_SUMMARY_DEAD_LETTER_QUEUE =
 export const DATA_EXPORT_QUEUE = "data-export";
 export const DATA_EXPORT_DEAD_LETTER_QUEUE = "data-export-dead-letter";
 export const DATA_EXPORT_EXPIRY_QUEUE = "data-export-expiry";
+export const ACCOUNT_PURGE_QUEUE = "account-purge";
+export const ACCOUNT_PURGE_DEAD_LETTER_QUEUE = "account-purge-dead-letter";
 
 interface EnsureQueuesOptions {
   authEmailRetryDelay?: number;
@@ -60,7 +62,22 @@ export async function ensureQueues(
     deadLetter: null,
   });
   await boss.createQueue(DATA_EXPORT_DEAD_LETTER_QUEUE);
-  await boss.createQueue(DATA_EXPORT_QUEUE, { ...extractionOptions, policy: "exclusive" });
-  await boss.updateQueue(DATA_EXPORT_QUEUE, { ...extractionOptions, deadLetter: null });
+  await boss.createQueue(DATA_EXPORT_QUEUE, {
+    ...extractionOptions,
+    policy: "exclusive",
+  });
+  await boss.updateQueue(DATA_EXPORT_QUEUE, {
+    ...extractionOptions,
+    deadLetter: null,
+  });
   await boss.createQueue(DATA_EXPORT_EXPIRY_QUEUE);
+  await boss.createQueue(ACCOUNT_PURGE_DEAD_LETTER_QUEUE);
+  await boss.createQueue(ACCOUNT_PURGE_QUEUE, { policy: "exclusive" });
+  // Staged DB failure counts own exhaustion; a crashed worker is redelivered.
+  await boss.updateQueue(ACCOUNT_PURGE_QUEUE, {
+    retryLimit: 4,
+    retryDelay: 30,
+    retryBackoff: true,
+    deadLetter: null,
+  });
 }

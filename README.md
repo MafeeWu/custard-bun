@@ -7,7 +7,7 @@ model gateway, explicit interruption/retry states, transactional quotas, and
 aggregate-only usage administration. Phase 4 now includes durable automatic
 memory extraction, versioned relationship summaries, prompt recall, and
 owner-scoped memory management and private asynchronous data exports.
-Confirmed account-purge operations are still being implemented.
+Confirmed account deletion immediately locks access and queues a restartable purge.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -172,10 +172,45 @@ through a separate repeatable-read snapshot and archive publication; its databas
 pool therefore needs at least two connections. Snapshot capacity is reserved
 before canonical lock waiting, with paired export checkouts serialized to avoid
 pool starvation even at that minimum. The repeatable-read transaction starts
-only after the owning global/user locks are held. Account-deletion integration
-must invoke `cancelDataExportsForUser` in the transaction that marks the user pending
+only after the owning global/user locks are held. Account confirmation invokes
+`cancelDataExportsForUser` in the same transaction that marks the user pending
 deletion: it cancels nonterminal jobs and physically removes completed archives.
-The existing hard-delete owning service already calls this seam.
+
+### Account deletion and purge
+
+`/account` requests an application-owned verification email without deleting or
+hiding existing privacy controls. The one-hour, single-use token is stored only
+as a SHA-256 hash; its signed, content-free request identity permits terminal
+replays after the hash is erased. The email URL carries the token in a fragment,
+not an access-log query string. GET displays a confirmation form; POST consumes
+the token, immediately revokes sessions, settles/cancels chat and background work,
+advances relationship epochs, removes export bytes, and durably records the purge
+outbox. The signed-out response does not claim removal has completed.
+Verification requests are limited to three per authenticated owner per hour;
+rejection leaves the last valid token intact and returns only safe retry guidance.
+Verification email publication holds the canonical lock through queue acceptance;
+confirmation cannot race a delayed sender into recreating private token payloads.
+
+Better Auth direct deletion, including administrator hard removal, is disabled.
+Session lookups, auth mutation fences, product services, and SMTP eligibility
+reject deletion-pending owners. SMTP delivery and signup publication serialize
+with confirmation; successful email jobs are stripped of recipient/token data.
+
+The worker dispatches the ID-only `account-purge` queue at high priority. Each
+stage commits independently: settlement, exports, memory/operations,
+conversations, audit de-identification, and final auth removal. The final
+transaction removes auth dependents, completes a content-free tombstone with
+`user_id = null`, then deletes the auth user before committing. Numeric usage
+totals and de-identified audit event counts survive; private content, credentials,
+verification data, owned rate-limit keys, and background identities do not.
+Previously published public character snapshots remain immutable.
+
+Five failures at one stage produce an ID-only `account-purge-dead-letter`;
+periodic database reconciliation survives lost dispatches or worker restarts.
+`getAccountPurgeState` exposes only safe state and the oldest stuck purge;
+`retryAccountPurge` resumes that same request/stage, including harmless completed
+tombstone retries. Administrative retry/dashboard UI is a later phase.
+Purge dead letters do not degrade worker readiness by themselves.
 
 Signed-in users can start one active conversation per character. The opening
 message is persisted locally and does not call the provider. Each conversation

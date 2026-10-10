@@ -12,13 +12,21 @@ export async function requireAdminWrite(
   actor: AdminActor,
 ): Promise<void> {
   const [current] = await transaction
-    .select({ role: user.role, banned: user.banned })
+    .select({
+      role: user.role,
+      banned: user.banned,
+      deletionPendingAt: user.deletionPendingAt,
+    })
     .from(user)
     .where(eq(user.id, actor.userId))
     .for("share")
     .limit(1);
 
-  if (current?.role !== "admin" || current.banned === true) {
+  if (
+    current?.role !== "admin" ||
+    current.banned === true ||
+    current.deletionPendingAt
+  ) {
     throw new Error("Administrator access required");
   }
 }

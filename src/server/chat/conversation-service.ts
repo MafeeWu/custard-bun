@@ -12,6 +12,7 @@ import { ChatDomainError } from "./chat-errors";
 import {
   lockUserCharacterChatMutation,
   lockUserChatMutation,
+  requireActiveChatUser,
   type ChatTransaction,
 } from "./chat-locks";
 import { reconcileExpiredConversationInTransaction } from "./quota-service";
@@ -240,6 +241,7 @@ export function createConversationService(
     async openOrCreate(input) {
       return database.transaction(async (transaction) => {
         await lockUserChatMutation(transaction, input.userId);
+        await requireActiveChatUser(transaction, input.userId);
         await lockUserCharacterChatMutation(
           transaction,
           input.userId,
@@ -288,6 +290,7 @@ export function createConversationService(
     async restart(input) {
       return database.transaction(async (transaction) => {
         await lockUserChatMutation(transaction, input.userId);
+        await requireActiveChatUser(transaction, input.userId);
 
         const [candidate] = await transaction
           .select({
@@ -360,6 +363,7 @@ export function createConversationService(
     async delete(input) {
       await database.transaction(async (transaction) => {
         await lockUserChatMutation(transaction, input.userId);
+        await requireActiveChatUser(transaction, input.userId);
         const [selectedConversation] = await transaction
           .select({
             id: conversation.id,

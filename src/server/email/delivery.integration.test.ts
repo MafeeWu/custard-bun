@@ -12,6 +12,8 @@ import { testDatabaseUrl } from "@/test/database-target";
 import { processEmail } from "./process-email";
 import { deliverAuthEmail } from "./smtp-delivery";
 import type { EmailQueueJob } from "./email-job";
+import { user } from "../db/schema";
+import { resetExtractionDatabase } from "@/test/memory-extraction-fixture";
 
 const database = createDatabase(testDatabaseUrl());
 const boss = createBoss(testDatabaseUrl());
@@ -31,6 +33,15 @@ const ready = () =>
   });
 
 beforeAll(async () => {
+  await resetExtractionDatabase(database);
+  await database.insert(user).values([
+    {
+      id: "delivery-owner",
+      name: "Delivery",
+      email: "delivery-health@example.com",
+    },
+    { id: "failure-owner", name: "Failure", email: "test@example.com" },
+  ]);
   await boss.start();
   await ensureQueues(boss, { authEmailRetryDelay: 60 });
   await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);

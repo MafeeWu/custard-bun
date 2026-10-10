@@ -10,7 +10,11 @@ export async function requireSession(requestHeaders: Headers) {
     query: { disableCookieCache: true },
   });
 
-  if (!session || session.user.banned === true) {
+  if (
+    !session ||
+    session.user.banned === true ||
+    session.user.deletionPendingAt
+  ) {
     redirect("/auth/sign-in");
   }
 

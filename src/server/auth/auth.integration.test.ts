@@ -12,7 +12,7 @@ import type { PgBoss } from "pg-boss";
 import { eq, sql } from "drizzle-orm";
 import type { RuntimeConfig } from "@/server/config/schema";
 import { createDatabase, type Database } from "@/server/db/client";
-import { account, session, user } from "@/server/db/auth-schema";
+import { account, session, user, verification } from "@/server/db/auth-schema";
 import { characterVersion } from "@/server/db/character-schema";
 import { disableOrdinaryUser } from "@/server/admin/user-service";
 import { createCharacterService } from "@/server/characters/character-service";
@@ -26,8 +26,19 @@ import { testDatabaseUrl } from "@/test/database-target";
 import { inspect } from "node:util";
 import { getAuth } from "./auth";
 import { requireSession } from "./require-session";
+import {
+  requestAccountDeletion,
+  confirmAccountDeletion,
+} from "@/server/privacy/account-deletion-service";
+import { processAccountPurgeStage } from "@/server/privacy/account-purge-job";
+import { seedMemorySettings } from "@/server/memory/memory-settings-seed";
 
 vi.mock("./auth", () => ({ getAuth: vi.fn() }));
+vi.mock("@/server/config/load-config", () => ({
+  getRuntimeConfig: async () => ({
+    secret: { betterAuthSecret: "test-secret-that-is-at-least-32-characters" },
+  }),
+}));
 vi.mock("next/navigation", () => ({
   redirect: (path: string) => {
     throw new Error(`redirect:${path}`);
@@ -152,6 +163,7 @@ async function countPersistedAuthRecords() {
 
 async function ensureChatSettings() {
   await seedChatSettings(database, baseConfig.public.chat);
+  await seedMemorySettings(database, baseConfig.public.memory);
 }
 
 function normalizeSignUpResponse(body: Record<string, unknown>) {
@@ -535,40 +547,54 @@ describe("createAuth", () => {
     }
   });
 
-  test("rejects a retained banned session at the protected-page boundary", async () => {
+  test.each(["banned", "deleting"])(
+    "rejects a retained %s session at the protected-page boundary",
+    async (state) => {
+      const { auth } = await createTestAuth({ registrationOpen: true });
+      const cookie = await signInVerified(auth);
+      await database
+        .update(user)
+        .set(
+          state === "banned"
+            ? { banned: true }
+            : { deletionPendingAt: new Date() },
+        )
+        .where(eq(user.email, signUpBody.email));
+      expect(await database.select().from(session)).toHaveLength(1);
+      vi.mocked(getAuth).mockResolvedValue(auth);
+
+      await expect(requireSession(new Headers({ cookie }))).rejects.toThrow(
+        "redirect:/auth/sign-in",
+      );
+    },
+  );
+
+  test.each(["banned", "deleting"])(
+    "Better Auth rejects retained %s sessions for API reads and sensitive endpoints",
+    async (state) => {
+      const { auth, jobs } = await createTestAuth({ registrationOpen: true });
+      const cookie = await signInVerified(auth);
+      const headers = new Headers({ cookie });
+      expect(await auth.api.getSession({ headers })).not.toBeNull();
+      await database
+        .update(user)
+        .set(
+          state === "banned"
+            ? { banned: true }
+            : { deletionPendingAt: new Date() },
+        )
+        .where(eq(user.email, signUpBody.email));
+
+      expect((await auth.api.getSession({ headers })) === null).toBe(true);
+      const deletion = post("/delete-user", { callbackURL: "/goodbye" });
+      deletion.headers.set("cookie", cookie);
+      expect((await auth.handler(deletion)).status).toBe(401);
+      expect(jobs.some((job) => job.kind === "delete-account")).toBe(false);
+    },
+  );
+
+  test("a publishing administrator is locked immediately then purged without changing the public snapshot", async () => {
     const { auth } = await createTestAuth({ registrationOpen: true });
-    const cookie = await signInVerified(auth);
-    await database
-      .update(user)
-      .set({ banned: true })
-      .where(eq(user.email, signUpBody.email));
-    expect(await database.select().from(session)).toHaveLength(1);
-    vi.mocked(getAuth).mockResolvedValue(auth);
-
-    await expect(requireSession(new Headers({ cookie }))).rejects.toThrow(
-      "redirect:/auth/sign-in",
-    );
-  });
-
-  test("Better Auth rejects retained banned sessions for API reads and sensitive endpoints", async () => {
-    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
-    const cookie = await signInVerified(auth);
-    const headers = new Headers({ cookie });
-    expect(await auth.api.getSession({ headers })).not.toBeNull();
-    await database
-      .update(user)
-      .set({ banned: true })
-      .where(eq(user.email, signUpBody.email));
-
-    expect((await auth.api.getSession({ headers })) === null).toBe(true);
-    const deletion = post("/delete-user", { callbackURL: "/goodbye" });
-    deletion.headers.set("cookie", cookie);
-    expect((await auth.handler(deletion)).status).toBe(401);
-    expect(jobs.some((job) => job.kind === "delete-account")).toBe(false);
-  });
-
-  test("a publishing administrator can complete verified account deletion without changing the snapshot", async () => {
-    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
     const cookie = await signInVerified(auth);
     const [administrator] = await database
       .update(user)
@@ -595,18 +621,28 @@ describe("createAuth", () => {
       .select()
       .from(characterVersion)
       .where(eq(characterVersion.id, published.versionId));
-    const request = post("/delete-user", { callbackURL: "/goodbye" });
-    request.headers.set("cookie", cookie);
-    expect((await auth.handler(request)).status).toBe(200);
-    const deletion = jobs.find((job) => job.kind === "delete-account");
-    expect(deletion).toBeDefined();
-
-    const response = await auth.handler(
-      new Request(deletion!.actionUrl, { headers: { cookie } }),
+    const now = new Date();
+    const deletion = await requestAccountDeletion(database, {
+      userId: administrator.id,
+      email: administrator.email,
+      now,
+    });
+    await confirmAccountDeletion(database, {
+      token: deletion.verificationToken,
+      now,
+    });
+    expect((await countPersistedAuthRecords()).userCount).toBe(1);
+    expect(
+      await auth.api.getSession({ headers: new Headers({ cookie }) }),
+    ).toBeNull();
+    vi.mocked(getAuth).mockResolvedValue(auth as never);
+    await expect(requireSession(new Headers({ cookie }))).rejects.toThrow(
+      "redirect:/auth/sign-in",
     );
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toContain("/goodbye");
+    while (
+      (await processAccountPurgeStage(database, deletion.requestId, now)) ===
+      "continue"
+    ) {}
     expect(await countPersistedAuthRecords()).toEqual({
       userCount: 0,
       credentialAccountCount: 0,
@@ -621,7 +657,7 @@ describe("createAuth", () => {
     expect(snapshot.publishedBy).toBe(administrator.id);
   });
 
-  test("authenticated deletion does not claim dispatch when enqueue fails", async () => {
+  test("direct Better Auth deletion completion is disabled and cannot bypass staged purge", async () => {
     const existing = await createTestAuth({ registrationOpen: true });
     const cookie = await signInVerified(existing.auth);
     const { auth } = await createTestAuth({
@@ -632,13 +668,38 @@ describe("createAuth", () => {
         },
       },
     });
+
     const request = post("/delete-user", { callbackURL: "/goodbye" });
     request.headers.set("cookie", cookie);
     const response = await auth.handler(request);
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(404);
     const body = await response.text();
     expect(body).not.toMatch(/sent|private-session/);
     expect((await countPersistedAuthRecords()).userCount).toBe(1);
+  });
+
+  test("deletion-pending recovery/verification endpoints are indistinguishable from an unknown account and create no verification content", async () => {
+    const { auth, jobs } = await createTestAuth({ registrationOpen: true });
+    await signInVerified(auth);
+    await database
+      .update(user)
+      .set({ deletionPendingAt: new Date() })
+      .where(eq(user.email, signUpBody.email));
+    for (const path of [
+      "/request-password-reset",
+      "/send-verification-email",
+    ]) {
+      const pending = await auth.handler(
+        post(path, { email: signUpBody.email }),
+      );
+      const missing = await auth.handler(
+        post(path, { email: "missing@example.com" }, "192.0.2.11"),
+      );
+      expect(pending.status).toBe(missing.status);
+      expect(await pending.json()).toEqual(await missing.json());
+    }
+    expect(await database.select().from(verification)).toHaveLength(0);
+    expect(jobs.filter((job) => job.kind === "reset-password")).toHaveLength(0);
   });
 
   test("password recovery invalidates a retained authenticated session", async () => {
@@ -660,6 +721,28 @@ describe("createAuth", () => {
     );
     expect(response.status).toBe(200);
     expect(await session()).toBeNull();
+  });
+
+  test("Better Auth administrator removal cannot bypass the application purge owner", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    const cookie = await signInVerified(auth);
+    await database
+      .update(user)
+      .set({ role: "admin" })
+      .where(eq(user.email, signUpBody.email))
+      .returning();
+    await database
+      .insert(user)
+      .values({
+        id: "removal-target",
+        name: "Target",
+        email: "target@example.com",
+      });
+    const request = post("/admin/remove-user", { userId: "removal-target" });
+    request.headers.set("cookie", cookie);
+    const response = await auth.handler(request);
+    expect(response.status).toBe(403);
+    expect(await database.select().from(user)).toHaveLength(2);
   });
 
   test("direct and background Better Auth errors never log token-bearing exceptions", async () => {

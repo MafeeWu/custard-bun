@@ -6,7 +6,7 @@ import {
   lockExtractionRelationship,
 } from "@/server/memory/memory-extraction-service";
 import { settleUserExtractionWorkBeforeDeletion } from "@/server/memory/background-usage-service";
-import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import {
   chatSettings,
@@ -679,7 +679,11 @@ export async function admitGeneration(
   await lockUserChatMutation(transaction, input.userId);
 
   const [userRow] = await transaction
-    .select({ id: user.id, banned: user.banned })
+    .select({
+      id: user.id,
+      banned: user.banned,
+      deletionPendingAt: user.deletionPendingAt,
+    })
     .from(user)
     .where(eq(user.id, input.userId))
     .for("update")
@@ -687,7 +691,7 @@ export async function admitGeneration(
   if (!userRow) {
     throw new ChatDomainError("CHAT_NOT_FOUND", "User not found.");
   }
-  if (userRow.banned) {
+  if (userRow.banned || userRow.deletionPendingAt) {
     throw new ChatDomainError("CHAT_READ_ONLY", "This account is disabled.");
   }
 
@@ -963,6 +967,52 @@ export async function reconcileExpiredLeases(
   }
 
   return reconciled;
+}
+
+export async function settleUserGenerationsBeforeDeletion(
+  transaction: ChatTransaction,
+  userId: string,
+  now: Date,
+): Promise<void> {
+  await lockUserChatMutation(transaction, userId);
+  await transaction
+    .update(generationAttempt)
+    .set({ cancelRequestedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(generationAttempt.userId, userId),
+        inArray(generationAttempt.status, ["pending", "streaming"]),
+      ),
+    );
+  const reservations = await transaction
+    .select()
+    .from(quotaReservation)
+    .where(
+      and(
+        eq(quotaReservation.userId, userId),
+        eq(quotaReservation.status, "active"),
+      ),
+    )
+    .orderBy(asc(quotaReservation.attemptId));
+  for (const reservation of reservations) {
+    const [attempt] = await transaction
+      .select({ leaseOwner: generationAttempt.leaseOwner })
+      .from(generationAttempt)
+      .where(eq(generationAttempt.id, reservation.attemptId));
+    await settleLockedGeneration(
+      transaction,
+      {
+        attemptId: reservation.attemptId,
+        leaseOwner: attempt?.leaseOwner ?? "",
+        outcome: "interrupted",
+        now,
+        providerCalls: [],
+        errorCategory: "CHAT_STREAM_INTERRUPTED",
+        retryable: false,
+      },
+      reservation,
+    );
+  }
 }
 
 export async function deleteUserWithGenerationSettlement(

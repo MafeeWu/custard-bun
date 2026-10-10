@@ -1,13 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { authClient } from "@/server/auth/auth-client";
+import { requestAccountDeletionAction } from "@/app/account/delete/actions";
 import { DeleteAccountForm } from "./delete-account-form";
 
-vi.mock("@/server/auth/auth-client", () => ({
-  authClient: {
-    deleteUser: vi.fn(),
-  },
+vi.mock("@/app/account/delete/actions", () => ({
+  requestAccountDeletionAction: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -32,21 +30,25 @@ test("requires the exact account email before enabling deletion", async () => {
 });
 
 test("requests a verification email rather than deleting immediately", async () => {
-  vi.mocked(authClient.deleteUser).mockResolvedValue({
-    data: { success: true, message: "Verification email sent" },
-    error: null,
-  } as never);
+  vi.mocked(requestAccountDeletionAction).mockResolvedValue({
+    status: "success",
+    message: "A confirmation link has been sent to your email.",
+  });
 
   const user = userEvent.setup();
 
   render(<DeleteAccountForm email="person@example.com" />);
 
-  await user.type(screen.getByLabelText("Confirm account email"), "person@example.com");
+  await user.type(
+    screen.getByLabelText("Confirm account email"),
+    "person@example.com",
+  );
   await user.click(screen.getByRole("button", { name: "Delete account" }));
 
-  expect(authClient.deleteUser).toHaveBeenCalledWith({
-    callbackURL: "/goodbye",
-  });
+  expect(requestAccountDeletionAction).toHaveBeenCalledWith(
+    { status: "idle" },
+    expect.any(FormData),
+  );
   expect(screen.getByRole("status")).toHaveTextContent(
     "A confirmation link has been sent to your email.",
   );
@@ -54,16 +56,19 @@ test("requests a verification email rather than deleting immediately", async () 
 });
 
 test("shows an alert when the deletion request returns an API error", async () => {
-  vi.mocked(authClient.deleteUser).mockResolvedValue({
-    data: null,
-    error: { message: "Delete failed" },
-  } as never);
+  vi.mocked(requestAccountDeletionAction).mockResolvedValue({
+    status: "error",
+    message: "Unable to request account deletion. Try again.",
+  });
 
   const user = userEvent.setup();
 
   render(<DeleteAccountForm email="person@example.com" />);
 
-  await user.type(screen.getByLabelText("Confirm account email"), "person@example.com");
+  await user.type(
+    screen.getByLabelText("Confirm account email"),
+    "person@example.com",
+  );
   await user.click(screen.getByRole("button", { name: "Delete account" }));
 
   expect(screen.getByRole("alert")).toHaveTextContent(
@@ -73,17 +78,24 @@ test("shows an alert when the deletion request returns an API error", async () =
 });
 
 test("restores the button and shows an alert when the deletion request throws", async () => {
-  vi.mocked(authClient.deleteUser).mockRejectedValue(new Error("offline"));
+  vi.mocked(requestAccountDeletionAction).mockRejectedValue(
+    new Error("offline"),
+  );
 
   const user = userEvent.setup();
 
   render(<DeleteAccountForm email="person@example.com" />);
 
-  await user.type(screen.getByLabelText("Confirm account email"), "person@example.com");
+  await user.type(
+    screen.getByLabelText("Confirm account email"),
+    "person@example.com",
+  );
   await user.click(screen.getByRole("button", { name: "Delete account" }));
 
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Delete account" })).toBeEnabled(),
+    expect(
+      screen.getByRole("button", { name: "Delete account" }),
+    ).toBeEnabled(),
   );
   expect(screen.getByRole("alert")).toHaveTextContent(
     /unable to request account deletion/i,

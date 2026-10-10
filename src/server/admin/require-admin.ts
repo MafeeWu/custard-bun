@@ -13,7 +13,11 @@ export async function requireAdmin(headers: Headers): Promise<AdminActor> {
     query: { disableCookieCache: true },
   });
 
-  if (!session || session.user.banned === true) {
+  if (
+    !session ||
+    session.user.banned === true ||
+    session.user.deletionPendingAt
+  ) {
     redirect("/auth/sign-in");
   }
 

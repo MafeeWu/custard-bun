@@ -14,6 +14,7 @@ import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
 import { registerRelationshipSummaryWorker } from "@/server/memory/relationship-summary-job";
 import { relationshipSummaryPolicyFromConfig } from "@/server/memory/relationship-summary-service";
 import { registerDataExportWorker } from "@/server/privacy/data-export-job";
+import { registerAccountPurgeWorker } from "@/server/privacy/account-purge-job";
 
 async function main(): Promise<void> {
   const config = await loadRuntimeConfig();
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   let stopMemoryWorker: (() => Promise<void>) | undefined;
   let stopSummaryWorker: (() => Promise<void>) | undefined;
   let stopExportWorker: (() => Promise<void>) | undefined;
+  let stopPurgeWorker: (() => Promise<void>) | undefined;
 
   await runWorkerProcess({
     createDatabase: () => database,
@@ -39,17 +41,22 @@ async function main(): Promise<void> {
           await stopMemoryWorker?.();
           await stopSummaryWorker?.();
           await stopExportWorker?.();
+          await stopPurgeWorker?.();
           await heartbeat.stop();
         },
       };
     },
     registerWorker: async (boss) => {
       await boss.work<EmailQueueJob>(AUTH_EMAIL_QUEUE, async ([job]) => {
-        await processEmail(database, job.data, (email) =>
-          deliverAuthEmail(email, {
-            smtp: config.secret.smtp,
-            brandName: config.public.branding.name,
-          }),
+        await processEmail(
+          database,
+          job.data,
+          (email) =>
+            deliverAuthEmail(email, {
+              smtp: config.secret.smtp,
+              brandName: config.public.branding.name,
+            }),
+          job.id,
         );
       });
       stopMemoryWorker = await registerMemoryExtractionWorker(
@@ -67,9 +74,19 @@ async function main(): Promise<void> {
         console,
         summaryPolicy,
       );
-      stopExportWorker = await registerDataExportWorker(database, boss, console, {
-        maxArchiveBytes: config.public.memory.maxExportArchiveBytes,
-      });
+      stopExportWorker = await registerDataExportWorker(
+        database,
+        boss,
+        console,
+        {
+          maxArchiveBytes: config.public.memory.maxExportArchiveBytes,
+        },
+      );
+      stopPurgeWorker = await registerAccountPurgeWorker(
+        database,
+        boss,
+        console,
+      );
     },
     onSignal: (signal, listener) => process.once(signal, listener),
     logger: console,

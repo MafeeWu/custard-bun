@@ -528,7 +528,7 @@ export async function processMemoryExtractionRun(
           .from(backgroundModelReservation)
           .where(eq(backgroundModelReservation.operationId, executionId))
           .limit(1);
-        if (reservation?.settledAt) return;
+        if (!reservation || reservation.settledAt) return;
         await settleBackgroundModelWork(database, {
           operationId: executionId,
           memoryExtractionRunId: runId,

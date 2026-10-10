@@ -18,10 +18,12 @@ vi.mock("@/server/auth/auth-client", () => {
       signUp: { email: limited },
       requestPasswordReset: limited,
       resetPassword: limited,
-      deleteUser: limited,
     },
   };
 });
+vi.mock("@/app/account/delete/actions", () => ({
+  requestAccountDeletionAction: async () => ({ status: "error", code: "rate_limited", message: "private details" }),
+}));
 
 test.each([
   [

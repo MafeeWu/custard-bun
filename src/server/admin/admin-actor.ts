@@ -13,6 +13,7 @@ export interface AdminSession {
     name?: string | null;
     role?: string | null;
     banned?: boolean | null;
+    deletionPendingAt?: Date | null;
   };
 }
 
@@ -20,7 +21,11 @@ export function toAdminActor(
   session: AdminSession,
   operationId: string,
 ): AdminActor {
-  if (session.user.role !== "admin" || session.user.banned === true) {
+  if (
+    session.user.role !== "admin" ||
+    session.user.banned === true ||
+    session.user.deletionPendingAt
+  ) {
     throw new Error("Administrator access required");
   }
 

@@ -28,6 +28,6 @@ export function renderAuthEmail(
 
   return {
     subject: selected.subject(brandName),
-    text: `${selected.heading}\n\nOpen this link to continue:\n${job.actionUrl}\n\nIf you did not request this, ignore this email.`,
+    text: `${selected.heading}\n\n${job.kind === "delete-account" ? "Confirmation immediately stops account access and signs you out. Private data is purged asynchronously after confirmation. This cannot be undone.\n\n" : ""}Open this link to continue:\n${job.actionUrl}\n\nIf you did not request this, ignore this email.`,
   };
 }

@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { authClient } from "@/server/auth/auth-client";
-import { authErrorMessage } from "../auth/error-message";
+import { requestAccountDeletionAction } from "@/app/account/delete/actions";
 
 interface DeleteAccountFormProps {
   email: string;
@@ -28,16 +27,16 @@ export function DeleteAccountForm({ email }: DeleteAccountFormProps) {
     setErrorMessage(undefined);
 
     try {
-      const result = await authClient.deleteUser({
-        callbackURL: "/goodbye",
-      });
+      const result = await requestAccountDeletionAction(
+        { status: "idle" },
+        new FormData(),
+      );
 
-      if (result.error) {
+      if (result.status === "error") {
         setErrorMessage(
-          authErrorMessage(
-            result.error,
-            "Unable to request account deletion. Try again.",
-          ),
+          result.code === "rate_limited"
+            ? "Too many attempts. Please try again later."
+            : "Unable to request account deletion. Try again.",
         );
         return;
       }

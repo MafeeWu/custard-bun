@@ -113,6 +113,27 @@
       "when": 1791634415314,
       "tag": "0015_certain_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791636887558,
+      "tag": "0016_rapid_sway",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791636994666,
+      "tag": "0017_usage_deidentification",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791637243881,
+      "tag": "0018_auth_email_publication_fence",
+      "breakpoints": true
     }
   ]
 }

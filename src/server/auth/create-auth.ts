@@ -8,7 +8,6 @@ import {
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { admin } from "better-auth/plugins";
-import { deleteUserWithGenerationSettlement } from "../chat/quota-service";
 import type { RuntimeConfig } from "../config/schema";
 import { createDatabase } from "../db/client";
 import * as schema from "../db/schema";
@@ -16,6 +15,8 @@ import type { EmailQueue } from "../email/email-queue";
 import { assertRegistrationOpen } from "./registration-policy";
 import type { EmailQueueJob } from "../email/email-job";
 import { safeErrorName, type SafeLogger } from "../logging/safe-error";
+import { eq } from "drizzle-orm";
+import { lockUserChatMutation } from "../chat/chat-locks";
 
 export interface AuthDependencies {
   database: ReturnType<typeof createDatabase>;
@@ -35,6 +36,7 @@ export function createAuth({
     schema,
     transaction: true,
   });
+  const uncommittedUsers = new Set<string>();
 
   function rethrowSessionError(error: unknown): never {
     const cause = error instanceof Error ? error.cause : undefined;
@@ -42,7 +44,8 @@ export function createAuth({
       cause instanceof Error &&
       "code" in cause &&
       cause.code === "23514" &&
-      cause.message === "cannot create a session for a disabled user"
+      (cause.message === "cannot create a session for a disabled user" ||
+        cause.message === "account access is disabled")
     ) {
       // Do not let a rejected INSERT expose SQL parameters (including tokens)
       // through Better Auth's unexpected-error logger.
@@ -54,32 +57,91 @@ export function createAuth({
     throw error;
   }
 
-  function guardSessions(instance: DBTransactionAdapter): DBTransactionAdapter {
+  function guardSessions(
+    instance: DBTransactionAdapter,
+    createdUsers?: Set<string>,
+  ): DBTransactionAdapter {
     return {
       ...instance,
-      async create(input) {
+      async create<T extends Record<string, unknown>, R = T>(input: {
+        model: string;
+        data: Omit<T, "id">;
+        select?: string[];
+        forceAllowId?: boolean;
+      }): Promise<R> {
         try {
-          return await instance.create(input);
+          const result = await instance.create<T, R>(input);
+          const record = result as { id?: unknown } | null;
+          if (
+            input.model === "user" &&
+            createdUsers &&
+            record &&
+            typeof record.id === "string"
+          ) {
+            createdUsers.add(record.id);
+            uncommittedUsers.add(record.id);
+          }
+          return result;
         } catch (error) {
           rethrowSessionError(error);
         }
+      },
+      async update(input) {
+        try {
+          return await instance.update(input);
+        } catch (error) {
+          rethrowSessionError(error);
+        }
+      },
+      async delete(input) {
+        if (input.model === "user")
+          throw new APIError("FORBIDDEN", {
+            code: "APPLICATION_PURGE_REQUIRED",
+            message: "Account removal is not available here.",
+          });
+        return instance.delete(input);
+      },
+      async deleteMany(input) {
+        if (input.model === "user")
+          throw new APIError("FORBIDDEN", {
+            code: "APPLICATION_PURGE_REQUIRED",
+            message: "Account removal is not available here.",
+          });
+        return instance.deleteMany(input);
       },
       async findOne<T>(
         input: Parameters<DBTransactionAdapter["findOne"]>[0],
       ): Promise<T | null> {
         const result = await instance.findOne<T>(input);
         // Better Auth's authoritative session lookup joins the current user.
-        const owner = (result as { user?: { banned?: boolean } } | null)?.user;
-        return input.model === "session" && owner?.banned === true
+        const owner = (
+          result as {
+            user?: { banned?: boolean; deletionPendingAt?: Date | null };
+          } | null
+        )?.user;
+        return input.model === "session" &&
+          (owner?.banned === true || owner?.deletionPendingAt)
           ? null
           : result;
       },
     };
   }
 
-  async function acceptEmail(job: EmailQueueJob) {
+  async function acceptEmail(job: EmailQueueJob, ownerId?: string) {
     try {
-      const id = await emailQueue.enqueue(job);
+      let id: string;
+      if (ownerId && !uncommittedUsers.has(ownerId)) {
+        id = await database.transaction(async (tx) => {
+          await lockUserChatMutation(tx, ownerId);
+          const [owner] = await tx
+            .select()
+            .from(schema.user)
+            .where(eq(schema.user.id, ownerId));
+          return emailQueue.enqueue(
+            !owner || owner.deletionPendingAt ? { kind: "noop" } : job,
+          );
+        });
+      } else id = await emailQueue.enqueue(job);
       if (!id) throw new Error("Email not accepted");
     } catch (error) {
       logger.error("auth email acceptance failed", {
@@ -112,10 +174,16 @@ export function createAuth({
       const instance = adapter(options);
       return {
         ...guardSessions(instance),
-        transaction: (callback) =>
-          instance.transaction((transaction) =>
-            callback(guardSessions(transaction)),
-          ),
+        transaction: async (callback) => {
+          const createdUsers = new Set<string>();
+          try {
+            return await instance.transaction((transaction) =>
+              callback(guardSessions(transaction, createdUsers)),
+            );
+          } finally {
+            for (const id of createdUsers) uncommittedUsers.delete(id);
+          }
+        },
       };
     },
     emailAndPassword: {
@@ -135,11 +203,14 @@ export function createAuth({
         id,
       }),
       sendResetPassword: async ({ user, url }) => {
-        await acceptEmail({
-          kind: "reset-password",
-          to: user.email,
-          actionUrl: url,
-        });
+        await acceptEmail(
+          {
+            kind: "reset-password",
+            to: user.email,
+            actionUrl: url,
+          },
+          user.id,
+        );
       },
     },
     emailVerification: {
@@ -147,30 +218,22 @@ export function createAuth({
       sendOnSignIn: true,
       autoSignInAfterVerification: false,
       sendVerificationEmail: async ({ user, url }) => {
-        await acceptEmail({
-          kind: "verify-email",
-          to: user.email,
-          actionUrl: url,
-        });
+        await acceptEmail(
+          {
+            kind: "verify-email",
+            to: user.email,
+            actionUrl: url,
+          },
+          user.id,
+        );
       },
     },
     user: {
+      additionalFields: {
+        deletionPendingAt: { type: "date", required: false, input: false },
+      },
       deleteUser: {
-        enabled: true,
-        beforeDelete: async (user) => {
-          await deleteUserWithGenerationSettlement(
-            database,
-            user.id,
-            new Date(),
-          );
-        },
-        sendDeleteAccountVerification: async ({ user, url }) => {
-          await acceptEmail({
-            kind: "delete-account",
-            to: user.email,
-            actionUrl: url,
-          });
-        },
+        enabled: false,
       },
     },
     rateLimit: {
@@ -208,6 +271,24 @@ export function createAuth({
           const existing = await ctx.context.internalAdapter.findUserByEmail(
             ctx.body.email,
           );
+          if (existing) {
+            const [owner] = await database
+              .select({ deletionPendingAt: schema.user.deletionPendingAt })
+              .from(schema.user)
+              .where(eq(schema.user.id, existing.user.id));
+            if (owner?.deletionPendingAt) {
+              await acceptEmail({ kind: "noop" });
+              return ctx.json(
+                ctx.path === "/request-password-reset"
+                  ? {
+                      status: true,
+                      message:
+                        "If this email exists in our system, check your email for the reset link",
+                    }
+                  : { status: true },
+              );
+            }
+          }
           if (
             !existing ||
             (ctx.path === "/send-verification-email" &&

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import type { ChatErrorCode } from "@/server/chat/chat-errors";
 import type { Database } from "@/server/db/client";
 import {
@@ -9,6 +9,11 @@ import {
 } from "@/server/db/chat-schema";
 import { character, characterVersion } from "@/server/db/character-schema";
 import { reconcileExpiredLeases } from "./quota-service";
+import { user } from "@/server/db/auth-schema";
+
+const unlockedOwner = (userId: string) => sql`EXISTS (
+  SELECT 1 FROM ${user} WHERE ${user.id} = ${userId} AND ${user.deletionPendingAt} IS NULL
+)`;
 
 export interface ConversationCharacterSummary {
   id: string;
@@ -105,6 +110,7 @@ export async function getConversationForUser(
       and(
         eq(conversation.id, input.conversationId),
         eq(conversation.userId, input.userId),
+        unlockedOwner(input.userId),
       ),
     )
     .limit(1);
@@ -133,6 +139,7 @@ export async function getConversationForUser(
       and(
         eq(conversation.id, conversationMessage.conversationId),
         eq(conversation.userId, input.userId),
+        unlockedOwner(input.userId),
       ),
     )
     .leftJoin(
@@ -218,6 +225,7 @@ export async function listActiveConversations(
     .where(
       and(
         eq(conversation.userId, userId),
+        unlockedOwner(userId),
         eq(conversation.lifecycle, "active"),
       ),
     )
@@ -252,6 +260,7 @@ export async function listArchivedCharacterConversations(
     .where(
       and(
         eq(conversation.userId, input.userId),
+        unlockedOwner(input.userId),
         eq(conversation.characterId, input.characterId),
         eq(conversation.lifecycle, "archived"),
         isNotNull(conversation.archivedAt),

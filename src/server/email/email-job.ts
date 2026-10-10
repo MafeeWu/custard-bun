@@ -13,6 +13,7 @@ export type AuthEmailJob =
       kind: "delete-account";
       to: string;
       actionUrl: string;
+      deletionRequestId: string;
     };
 
 // Accepted through the same durable queue, but never delivered to SMTP.

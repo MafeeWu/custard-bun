@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import { chatSettings } from "@/server/db/chat-schema";
 import { memorySettings } from "@/server/db/memory-schema";
+import { user } from "@/server/db/auth-schema";
 import { ChatDomainError } from "./chat-errors";
 
 export type ChatTransaction = Parameters<
@@ -86,4 +87,15 @@ export async function lockUserCharacterChatMutation(
       hashtextextended(${"chat-user-character:" + userId + ":" + characterId}, 0)
     )
   `);
+}
+
+export async function requireActiveChatUser(
+  transaction: ChatTransaction,
+  userId: string,
+) {
+  const [owner] = await transaction
+    .select({ id: user.id })
+    .from(user)
+    .where(sql`${user.id} = ${userId} AND ${user.deletionPendingAt} IS NULL`);
+  if (!owner) throw new ChatDomainError("CHAT_NOT_FOUND", "User not found.");
 }

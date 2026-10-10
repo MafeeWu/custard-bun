@@ -670,6 +670,17 @@ export const usageLedger = pgTable(
         )
         OR
         (
+          ${table.workloadType} IN ('memory_extraction', 'summary_refresh')
+          AND ${table.userId} IS NULL
+          AND ${table.conversationId} IS NULL
+          AND ${table.attemptId} IS NULL
+          AND ${table.backgroundOperationId} IS NULL
+          AND ${table.memoryExtractionRunId} IS NULL
+          AND ${table.relationshipSummaryVersionId} IS NULL
+          AND ${table.userRequestUnits} = 0
+        )
+        OR
+        (
           ${table.workloadType} = 'memory_extraction'
           AND ${table.backgroundOperationId} IS NOT NULL
           AND ${table.userRequestUnits} = 0
