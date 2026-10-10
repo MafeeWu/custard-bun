@@ -89,9 +89,7 @@ test("continues cleanup after a bounded pg-boss stop timeout", async () => {
     },
     { timeoutMs: 1_000 },
   );
-  const rejection = expect(closing).rejects.toThrow(
-    "worker cleanup timed out",
-  );
+  const rejection = expect(closing).rejects.toThrow("worker cleanup timed out");
 
   await vi.advanceTimersByTimeAsync(1_000);
   await rejection;
@@ -160,8 +158,7 @@ test.each([
     expect(dependencies.events).toEqual([
       "boss:start",
       ...(failingStage === "ensureQueues" ? [] : ["queues:ready"]),
-      ...(failingStage === "registerWorker" ? [] : []),
-      ...(failingStage === "registerWorker" ? ["heartbeat:stop"] : []),
+      ...(failingStage === "startHeartbeat" ? ["worker:registered"] : []),
       "boss:stop",
       "database:end",
       "terminate:1",
@@ -170,11 +167,32 @@ test.each([
       "worker startup failed",
       { name: "Error" },
     );
+
     expect(
       JSON.stringify(vi.mocked(dependencies.logger.error).mock.calls),
     ).not.toContain("private");
   },
 );
+
+test("does not advertise readiness until all queue handlers are registered", async () => {
+  let release!: () => void;
+  const registration = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const dependencies = createWorkerDependencies({
+    registerWorker: vi.fn(() => registration),
+  });
+  const startup = runWorkerProcess(dependencies);
+  await vi.waitFor(() =>
+    expect(dependencies.registerWorker).toHaveBeenCalledOnce(),
+  );
+  const advertisedBeforeRegistration = vi.mocked(dependencies.startHeartbeat)
+    .mock.calls.length;
+  release();
+  await startup;
+  expect(advertisedBeforeRegistration).toBe(0);
+  expect(dependencies.startHeartbeat).toHaveBeenCalledOnce();
+});
 
 test("startup termination still occurs when cleanup reports an error", async () => {
   const dependencies = createWorkerDependencies({

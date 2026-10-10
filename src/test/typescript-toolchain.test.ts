@@ -49,5 +49,5 @@ test("keeps package dependency pins exact", () => {
 test("build runs native TypeScript 7 typecheck before next build and Docker uses that entry point", () => {
   expect(packageJson.scripts?.build).toBe("pnpm typecheck && next build");
   expect(packageJson.scripts?.typecheck).toBe("next typegen && tsc --noEmit");
-  expect(dockerfile).toContain("RUN pnpm build && rm -rf .next/cache");
+  expect(dockerfile).toContain("RUN pnpm build --webpack && rm -rf .next/cache");
 });

@@ -33,7 +33,7 @@ function usersPageHref(query: string, page: number): string {
   return `/admin/users?${params.toString()}`;
 }
 
-export default async function AdminUsersPage({ searchParams }: PageProps = {}) {
+export default async function AdminUsersPage({ searchParams }: PageProps) {
   await requireAdmin(await headers());
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim() ?? "";

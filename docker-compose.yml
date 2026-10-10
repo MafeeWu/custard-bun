@@ -1,9 +1,10 @@
 x-application: &application
   build: .
-  image: ai-companion-web:phase-3
+  image: ai-companion-web:phase-4
   entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
   env_file: .env
   environment:
+    APP_CONFIG_PATH: /app/app.config.yml
     POSTGRES_DB: companion
     POSTGRES_HOST: postgres
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}

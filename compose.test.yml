@@ -1,4 +1,7 @@
 # Playwright owns the loopback-only fake model server; Compose never exposes it.
+# Phase 4 memory/export/purge queues share this guarded test PostgreSQL service.
+# Production acceptance uses tests/release/compose.release.yml in its own project;
+# never use db:test:down or reset this shared stack during another task's gate.
 services:
   postgres:
     image: postgres:16-alpine

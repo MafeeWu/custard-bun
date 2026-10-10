@@ -121,8 +121,8 @@ export async function runWorkerProcess<
     boss = dependencies.createBoss();
     await boss.start();
     await dependencies.ensureQueues(boss);
-    heartbeat = await dependencies.startHeartbeat(database);
     await dependencies.registerWorker(boss);
+    heartbeat = await dependencies.startHeartbeat(database);
 
     let shutdownPromise: Promise<void> | undefined;
     const shutdown = () => {

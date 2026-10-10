@@ -18,7 +18,7 @@ export default defineConfig({
       env: e2eEnvironment,
     },
     {
-      command: "pnpm exec tsx tests/e2e/support/worker-harness.ts",
+      command: "mkdir -p test-results && : > test-results/e2e-worker.log && exec pnpm exec tsx tests/e2e/support/worker-harness.ts >> test-results/e2e-worker.log 2>&1",
       url: "http://127.0.0.1:3101/",
       reuseExistingServer: false,
       env: e2eEnvironment,

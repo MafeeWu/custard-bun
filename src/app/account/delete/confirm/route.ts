@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { getDatabase } from "@/server/db/database";
+import { getRuntimeConfig } from "@/server/config/load-config";
 import { confirmAccountDeletion } from "@/server/privacy/account-deletion-service";
 
 export const runtime = "nodejs";
@@ -27,9 +28,13 @@ export async function GET() {
 }
 export async function POST(request: Request) {
   try {
-    const url = new URL(request.url);
     const origin = request.headers.get("origin");
-    if (origin && origin !== url.origin)
+    const publicOrigin = new URL(
+      (await getRuntimeConfig()).secret.betterAuthUrl,
+    ).origin;
+    // No-referrer form navigation sends Origin: null. The signed email token
+    // authorizes confirmation independently of cookies or the internal hostname.
+    if (origin && origin !== "null" && origin !== publicOrigin)
       throw new Error("DELETION_UNAVAILABLE");
     if (Number(request.headers.get("content-length") ?? 0) > 4096)
       throw new Error("DELETION_UNAVAILABLE");
@@ -45,7 +50,7 @@ export async function POST(request: Request) {
   }
   const headers = new Headers({
     ...safeHeaders,
-    location: new URL("/goodbye", request.url).toString(),
+    location: "/goodbye",
   });
   for (const name of [
     "better-auth.session_token",

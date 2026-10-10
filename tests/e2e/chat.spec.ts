@@ -508,6 +508,7 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   ).toBeVisible();
   await expect(page.getByLabel("Message", { exact: true })).toHaveCount(0);
   await page.getByText("Permanently delete this conversation.").click();
+  await expect(page.getByText(/Existing long-term memory is retained/)).toBeVisible();
   await page
     .getByRole("button", { name: "Delete conversation", exact: true })
     .click();

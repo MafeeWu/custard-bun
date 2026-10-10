@@ -24,7 +24,7 @@ function auditPageHref(page: number): string {
   return `/admin/audit?${params.toString()}`;
 }
 
-export default async function AdminAuditPage({ searchParams }: PageProps = {}) {
+export default async function AdminAuditPage({ searchParams }: PageProps) {
   await requireAdmin(await headers());
   const params = (await searchParams) ?? {};
   const page = parsePage(single(params.page));

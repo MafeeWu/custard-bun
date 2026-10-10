@@ -201,7 +201,9 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     await expect(
       userPage.locator('li[data-status="complete"]').last(),
     ).toContainText("Hello there");
-    let promptRequests = await fakeModelRequests();
+    let promptRequests = (await fakeModelRequests()).filter(
+      (request) => request.body.stream !== false,
+    );
     expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
       v1Instruction,
     );
@@ -269,7 +271,9 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     await expect(
       userPage.locator('li[data-status="complete"]').last(),
     ).toContainText("Hello there");
-    promptRequests = await fakeModelRequests();
+    promptRequests = (await fakeModelRequests()).filter(
+      (request) => request.body.stream !== false,
+    );
     expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
       v1Instruction,
     );
@@ -300,7 +304,9 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     await expect(
       userPage.locator('li[data-status="complete"]').last(),
     ).toContainText("Hello there");
-    promptRequests = await fakeModelRequests();
+    promptRequests = (await fakeModelRequests()).filter(
+      (request) => request.body.stream !== false,
+    );
     expect(JSON.stringify(promptRequests.at(-1)?.body)).toContain(
       v2Instruction,
     );

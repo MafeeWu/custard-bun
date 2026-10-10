@@ -12,5 +12,10 @@ export default defineConfig([
       },
     },
   },
-  globalIgnores([".next/**", "drizzle/**", "playwright-report/**"]),
+  globalIgnores([
+    ".next/**",
+    "drizzle/**",
+    "playwright-report/**",
+    "test-results/**",
+  ]),
 ]);

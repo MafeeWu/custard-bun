@@ -1,4 +1,6 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { parse, stringify } from "yaml";
 import { expect, test } from "@playwright/test";
 import { isReachable, withBrandingServer } from "./support/branding-server";
 
@@ -18,33 +20,15 @@ test("loads name, logo, favicon, and visible primary color from runtime YAML", a
     "test-results",
     "runtime-branding.yml",
   );
-  const yaml = [
-    "branding:",
-    "  name: Golden Friend",
-    "  description: Runtime branding acceptance.",
-    "  logoPath: /brand/favicon.svg",
-    "  faviconPath: /brand/logo.svg",
-    '  primaryColor: "#123456"',
-    "registration:",
-    "  open: true",
-    "  maxAttemptsPerHourPerIp: 5",
-    "links:",
-    "  privacyUrl: https://example.com/privacy",
-    "  termsUrl: https://example.com/terms",
-    "  supportUrl: mailto:support@example.com",
-    "chat:",
-    "  firstTokenTimeoutMs: 1000",
-    "  requestTimeoutMs: 5000",
-    "  promptTokenBudget: 8192",
-    "  maxInputCharacters: 12000",
-    "  maxOutputTokens: 1024",
-    "  defaultUserDailyRequestLimit: 100",
-    "  defaultUserDailyTokenLimit: 100000",
-    "  defaultInstanceMonthlyRequestLimit: 10000",
-    "  defaultInstanceMonthlyTokenBudget: 10000000",
-    "  maxConcurrentGenerations: 4",
-    "",
-  ].join("\n");
+  const config = parse(await readFile("tests/e2e/app.config.yml", "utf8"));
+  config.branding = {
+    name: "Golden Friend",
+    description: "Runtime branding acceptance.",
+    logoPath: "/brand/favicon.svg",
+    faviconPath: "/brand/logo.svg",
+    primaryColor: "#123456",
+  };
+  const yaml = stringify(config);
   await withBrandingServer(configPath, yaml, async (url) => {
     await page.goto(url);
     await expect(

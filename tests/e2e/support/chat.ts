@@ -8,6 +8,8 @@ export interface FakeModelRequest {
   receivedAt: string;
   body: {
     model?: unknown;
+    stream?: boolean;
+    response_format?: unknown;
     messages?: Array<{ role?: unknown; content?: unknown }>;
   };
 }
@@ -26,7 +28,8 @@ export async function fakeModelRequests(): Promise<FakeModelRequest[]> {
 }
 
 export async function setFakeModelControl(input: {
-  missingUsage: boolean;
+  missingUsage?: boolean;
+  completeRequestId?: string;
 }): Promise<void> {
   const response = await fetch(`${fakeModelBaseUrl}/__e2e__/control`, {
     method: "POST",

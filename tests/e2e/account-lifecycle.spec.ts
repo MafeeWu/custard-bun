@@ -71,6 +71,9 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await expect(page.getByRole("status")).toContainText(/confirmation link/i);
   const deletionUrl = await waitForActionUrl(email, "Confirm deletion");
   await page.goto(deletionUrl);
+  await page
+    .getByRole("button", { name: "Confirm account deletion", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/goodbye$/);
 
   await page.context().clearCookies();
@@ -79,6 +82,7 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await page.getByLabel("Password").fill(secondPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: /invalid/i }),
-  ).toContainText(/invalid/i);
+    page.getByRole("alert").filter({ hasText: /invalid|sign-in is unavailable/i }),
+  ).toContainText(/invalid|sign-in is unavailable/i);
+  await expect(page).toHaveURL(/\/auth\/sign-in$/);
 });

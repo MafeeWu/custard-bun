@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { privacySentinels } from "../../tests/release/privacy-scan";
 
 async function loadPlaywrightConfig(
   ciValue: string | undefined,
@@ -67,7 +68,7 @@ test.each([
       url: "http://127.0.0.1:3000/",
     });
     expect(config.webServer[1]).toMatchObject({
-      command: "pnpm exec tsx tests/e2e/support/worker-harness.ts",
+      command: "mkdir -p test-results && : > test-results/e2e-worker.log && exec pnpm exec tsx tests/e2e/support/worker-harness.ts >> test-results/e2e-worker.log 2>&1",
       reuseExistingServer: false,
       url: "http://127.0.0.1:3101/",
     });
@@ -84,8 +85,8 @@ test.each([
       "http://127.0.0.1:3000",
     );
     expect(config.webServer[0]?.env).toMatchObject({
-      MODEL_API_BASE_URL: "http://127.0.0.1:3102/v1",
-      MODEL_API_KEY: "e2e-model-key",
+      MODEL_API_BASE_URL: `http://127.0.0.1:3102/${privacySentinels.providerEndpoint}/v1`,
+      MODEL_API_KEY: privacySentinels.providerKey,
       MODEL_ID: "e2e-chat-model",
     });
   },

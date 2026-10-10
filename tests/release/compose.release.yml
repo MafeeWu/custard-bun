@@ -1,0 +1,56 @@
+# Test-only extension of production Compose; never expose the fake provider.
+x-release-environment: &release-environment
+  APP_CONFIG_PATH: /app/app.config.yml
+  NODE_ENV: production
+  POSTGRES_DB: companion_test
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: companion
+  POSTGRES_PASSWORD: release-test-password
+  BETTER_AUTH_SECRET: release-test-secret-at-least-32-characters
+  BETTER_AUTH_URL: http://localhost:3300
+  SMTP_HOST: host.docker.internal
+  SMTP_PORT: "1025"
+  SMTP_SECURE: "false"
+  SMTP_USER: test
+  SMTP_PASSWORD: test
+  SMTP_FROM: "Release Gate <noreply@example.com>"
+  MODEL_API_BASE_URL: http://fake-model:3102/task12-provider-endpoint-299ce953ab6a469a/v1
+  MODEL_API_KEY: task12_provider_key_76e4c681b7e7474e
+  MODEL_ID: e2e-chat-model
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: companion_test
+      POSTGRES_PASSWORD: release-test-password
+    ports:
+      - "127.0.0.1:55542:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion -d companion_test"]
+  migrate:
+    image: ${RELEASE_IMAGE:-ai-companion-web:task12-release}
+    env_file: !reset []
+    environment: *release-environment
+  worker:
+    image: ${RELEASE_IMAGE:-ai-companion-web:task12-release}
+    env_file: !reset []
+    environment: *release-environment
+  app:
+    image: ${RELEASE_IMAGE:-ai-companion-web:task12-release}
+    env_file: !reset []
+    environment: *release-environment
+    ports: !override ["127.0.0.1:3300:3000"]
+  fake-model:
+    image: ${RELEASE_IMAGE:-ai-companion-web:task12-release}
+    command: ["node", "--import", "tsx", "tests/e2e/support/fake-model-server.ts"]
+    environment:
+      E2E_FAKE_BIND: 0.0.0.0
+      MODEL_API_KEY: task12_provider_key_76e4c681b7e7474e
+    volumes:
+      - ./tests/e2e/support/fake-model-server.ts:/app/tests/e2e/support/fake-model-server.ts:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3102/ >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 20

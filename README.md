@@ -6,7 +6,8 @@ character administration, version-pinned conversations, an OpenAI-compatible
 model gateway, explicit interruption/retry states, transactional quotas, and
 aggregate-only usage administration. Phase 4 now includes durable automatic
 memory extraction, versioned relationship summaries, prompt recall, and
-owner-scoped memory management and private asynchronous data exports.
+owner-scoped memory management, aggregate-only operations, browser acceptance,
+and private asynchronous data exports.
 Confirmed account deletion immediately locks access and queues a restartable purge.
 
 The anonymous official character catalog is available at `/characters`, with
@@ -25,7 +26,7 @@ The TypeScript toolchain intentionally uses the TypeScript 7 compiler plus the
 official TypeScript 6 API compatibility package. Keep `pnpm typecheck` on
 `tsc --noEmit`: the workspace `tsc` binary resolves through `@typescript/native`
 to TypeScript 7.0.2, while linting, Next's compiler-API consumers, and other
-tooling import `typescript` through `@typescript/typescript6` and see the
+tooling import the pinned `typescript` package and see the
 TypeScript 6.0.3 API. The production `pnpm build` entry point runs that native
 TypeScript 7 preflight via `pnpm typecheck` before `next build`.
 
@@ -84,7 +85,11 @@ docker compose up --build
 The same production image is used for the migration job, worker, and app.
 It retains the pinned lockfile for runtime CLI commands and omits rebuild-only
 Next caches; startup must not resolve or install a new dependency graph.
-The image build continues to invoke `pnpm build`, so Docker and Compose run the
+The image build invokes `pnpm build --webpack` with a build-only 768 MiB V8 heap
+and one Next build worker, avoiding unbounded native bundler memory on small
+self-hosted Docker VMs. These limits do not constrain the runtime app or worker.
+The ordinary host release gate still runs `pnpm build` with the default bundler.
+Docker and Compose run the
 native TypeScript 7 `pnpm typecheck` preflight before `next build` while Next's
 own build-time compiler-API consumers still resolve the official TypeScript 6
 compatibility package.
@@ -461,7 +466,7 @@ worker dies before recording the response, lease recovery charges one
 conservative estimated usage record for that ambiguous call before retrying.
 Forget, recording disable, account lockout, and conversation deletion prevent
 stale results from applying. Credentials are never stored as memory or receipt
-candidates. Prompt recall is not implemented yet.
+candidates.
 
 ### Versioned relationship summaries (Phase 4)
 
@@ -502,6 +507,60 @@ and never creates a new automatic summary from empty forgotten data.
 Operational logs and queue payloads contain operation IDs and safe categories,
 never summary or memory text, provider bodies or raw provider identities.
 
+### Memory controls, privacy, and operations
+
+Chat's **Manage memory** link and `/app/memories` expose the same owner-scoped
+screen. Recording and prompt usage are independent: **Stop recording** keeps
+formed memory but cancels unapplied extraction; **Stop using in chat** keeps
+items visible and optionally keeps recording, but excludes both memories and
+summary from future prompts. Already-started replies keep their assembled
+prompt. User-edited items and summaries cannot be silently overwritten.
+Deleting a transcript keeps formed memory and cancels its unapplied extraction.
+**Forget character** physically removes memory, evidence, and every summary
+version, advances the relationship epoch, cancels old work, and keeps transcripts.
+These actions cannot retrieve content already sent to a configured provider.
+
+Recall is isolated by user, character, and epoch, and is serialized as quoted,
+untrusted background data after platform/character rules. Mandatory chat input
+and reserved output always win. Defaults allow 2048 memory tokens: at most
+512 for the summary and 1536 for items, with no donation between sub-budgets.
+Selection is deterministic and uses no embeddings. All runtime services and
+`db:deploy` read the same mounted `app.config.yml`, including its strict `memory`
+block; there are no public memory/model build arguments. `db:deploy` seeds
+defaults without replacing administrator-edited settings. No Phase 3 transcript
+is processed retroactively.
+
+The shared worker registers extraction, summary, export, export-expiry, purge,
+and email queues before advertising readiness. PostgreSQL durable operation
+rows and canonical locks govern retries, cancellation, and exactly-once
+background settlement; queue delivery is a wake-up mechanism. Extraction and
+summary each allow five executions with exponential delay starting at 60 seconds.
+Background model calls use the configured chat model and consume the **instance
+monthly token budget**, not daily user chat quotas or chat request counts.
+`Synced`, `Processing`, `Retrying`, and `Needs retry` are shown independently of
+completed chat success. Eligible failed extraction has a user retry action.
+`/admin/memory` shows queue counts, safe failure categories, processing delay,
+de-identified usage, exports, and staged purge alerts/retry. It never provides
+transcript, memory, summary, archive, or provider-body inspection.
+
+`/account` requests a private asynchronous ZIP with versioned manifest and UTF-8
+JSON for account/profile, conversations, memories/evidence, summaries, settings,
+and user-facing usage. Authentication secrets, provider credentials/endpoints,
+and other users' data are excluded. The owning current session is required to
+download; responses are `private, no-store`. Archives expire **24 hours after
+completion** and expiry removes bytes, rather than merely hiding a link.
+Confirmed account deletion immediately revokes sessions and locks every
+authorization boundary. A restartable worker then purges archives, memory,
+transcripts/attempts, user-specific audit/auth data, and the user, leaving only a
+content-free completed tombstone and required de-identified accounting totals.
+Dead-letter purge is an operator alert, not successful deletion.
+
+Keep application and worker logs content-free. Do not add prompts, structured
+candidate JSON, private classifications with content, raw provider errors, or
+archive bytes to troubleshooting output. Backups and the configured provider
+have their own retention policies: application purge does not erase external
+backups or provider-held copies.
+
 ## Service health
 
 Health endpoints:
@@ -513,7 +572,9 @@ Readiness reports `database`, `worker`, and `modelConfiguration` checks. Model
 readiness validates the already-local URL/key/model configuration shape only;
 it never calls the provider. A provider outage can fail chat requests without
 making the non-chat site unready. Readiness also includes a fresh worker
-heartbeat and persisted SMTP delivery health. A failed delivery makes
+heartbeat emitted only after all queue handlers register, and persisted SMTP
+delivery health. Readiness does not perform extraction or contact the model.
+A failed delivery makes
 `worker: "error"` even while the worker is alive. Jobs remain retryable; a
 later successful SMTP delivery restores health. Heartbeats, restarts, and
 synthetic no-op jobs do not clear a recorded delivery failure. The public
@@ -554,8 +615,9 @@ on exit; do not run multiple test commands against the same test database.
 Playwright supplies the same fixed test environment to its app, worker, and
 loopback-only deterministic model server, independently of your shell's
 SMTP/auth/model variables. The fake model listens only on `127.0.0.1:3102`,
-exists only under `tests/e2e`, and has no production service or control
-surface. Scenario markers include `[stream]`, `[slow]`, `[interrupt]`,
+exists only under `tests/e2e`, and has no normal production service or control
+surface. The release-only Compose extension runs it privately without a
+published port. Scenario markers include `[stream]`, `[slow]`, `[interrupt]`,
 `[rate-limit]`, and `[auth-fail]`; `[stall]` supports deterministic stop and
 refresh acceptance. Playwright uses `tests/e2e/app.config.yml` to keep timeout
 tests fast while the fake provider's slow scenario remains deterministic.
@@ -584,6 +646,23 @@ sessions/credentials while retiring the fixture accounts. Immutable versions,
 publisher identities, and audit history are intentionally retained, not deleted
 by disabling integrity triggers. Do not run concurrent suites on this database.
 
+Phase 4 additionally uses `[memory-direct]`, `[memory-repeat]`,
+`[memory-sensitive-explicit]`, `[memory-sensitive-inferred]`,
+`[memory-credential]`, `[memory-invalid-json]`, `[memory-stall]`, and `[summary]`.
+Structured requests are recorded in full by the test-only provider, including
+the response schema and source message, for isolation/prompt assertions.
+Control endpoints require loopback peers. Held structured responses are released
+explicitly, not with sleeps. Put explicit-sensitive scenario markers **after**
+a complete remember sentence, e.g. `Please remember that I have diabetes.
+[memory-sensitive-explicit]`; the real policy requires sentence-scoped consent.
+Browser tests clear authentication rate-limit fixture rows only in their guarded,
+serial test database; production limits are unchanged.
+
+```bash
+pnpm db:deploy
+pnpm playwright test tests/e2e/memory.spec.ts tests/e2e/privacy.spec.ts tests/e2e/chat.spec.ts
+```
+
 Full release gate (with the test database configured as above):
 
 ```bash
@@ -601,7 +680,62 @@ git diff --exit-code -- drizzle
 git diff --check
 pnpm exec tsc --version
 node -e 'import("typescript").then((ts) => console.log(ts.version))'
+pnpm exec tsx tests/release/database-gate.ts
+pnpm exec tsx tests/release/compose-gate.ts
+cp .superpowers/release-compose/app.log test-results/privacy-release/app-logs/production.log
+cp .superpowers/release-compose/worker.log test-results/privacy-release/worker-logs/production.log
+pnpm exec tsx tests/release/privacy-scan-cli.ts
 ```
+
+Use Node **24.x** for the entire gate. On a Node 22 host, a non-destructive
+alternative is `npm exec --cache .superpowers/node24-cache --yes
+--package=node@24 --package=pnpm@12.5.1 -c '<gate command>'`; do not change the
+engines, lockfile, package manager, or compiler versions to fit the host.
+The database gate creates uniquely named `_test` databases on the guarded local
+PostgreSQL service, restores `tests/release/fixtures/phase3.sql`, and compares all
+23 migration hashes and public columns, constraints, indexes, triggers,
+functions, and enums against a fresh deployment. That fixture was dumped from
+real Phase 3 migrations `0000`–`0006`, seeded official characters/settings, a
+synthetic verified account, a completed conversation/attempt, and its usage
+ledger. It contains no real users or production credentials. Existing transcript,
+version pin, accounting, and null extraction admission survive upgrade without
+backfill; repeated seeds preserve an administrator-edited quota.
+
+The production gate extends **the actual** `docker-compose.yml` with
+`tests/release/compose.release.yml`. It builds the Node 24 production image,
+restores that same Phase 3 fixture before migration, checks both app and worker,
+proves readiness makes zero provider calls, signs in at `http://localhost:3300`,
+reads the old transcript, and processes new extraction, summary, ZIP export,
+lockout, and purge with the real worker. Its database port is loopback-only
+`55542`; its private fake provider has no published port and rejects remote
+control requests. This gate alone binds the fake provider inside its isolated
+container network. It removes its project containers/volume/image in `finally`;
+legacy builder intermediates are removed only when their IDs were produced by
+this build and did not exist beforehand. Its processing result and complete
+logs are kept under `.superpowers/release-compose/`. Run heavyweight build,
+browser, and unit gates sequentially on small shared Docker hosts to avoid
+resource contention. It never stops or resets the shared PostgreSQL/Mailpit
+stack. Ports `3300` and
+`55542` must be free. Docker Compose must support `!reset`/`!override`.
+
+Privacy acceptance uses deterministic unique provider-key, provider-endpoint,
+other-user, and private-memory sentinels. It captures all same-origin browser
+responses (including successes and failures), complete app/worker logs,
+rendered admin pages, and every file under `.next/static` and `public`.
+Owner-page responses are captured before browser delivery, preserving redirects,
+so a canceled prefetch or an evicted Chromium response body cannot silently
+become empty scanner evidence.
+`test-results/privacy-release/scan-result.json` records counts; the standalone
+scanner recursively checks every captured path and fails if any required
+surface is absent. Owner-facing responses may legitimately show the owner's
+memory, but never provider secrets/endpoints or the second user's phrase;
+logs/admin/static assets must contain none of the private sentinels.
+The commands above add the complete production Compose app/worker logs to the
+same scan without replacing the browser-run logs.
+The ZIP is separately expanded and checked, and expiry/purge are checked in
+PostgreSQL. Artifacts contain synthetic private test data and are Git-ignored:
+do not publish them. Independent whole-branch review remains a separate
+pre-merge acceptance gate.
 
 Every command must pass; Drizzle must report no schema changes and create no
 migration. Run `db:deploy` immediately before Playwright because integration

@@ -14,13 +14,15 @@ RUN pnpm install --prod --frozen-lockfile
 
 FROM deps AS build
 COPY . .
+ENV NODE_OPTIONS=--max-old-space-size=768
 # Build-only placeholders satisfy strict validation. Runtime containers
 # revalidate their actual mounted config and environment on startup.
 ENV APP_CONFIG_PATH=app.config.yml
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build
 ENV BETTER_AUTH_SECRET=build-only-placeholder-secret-32-chars
-ENV BETTER_AUTH_URL=http://127.0.0.1:3000
+ENV BETTER_AUTH_URL=http://localhost:3000
 ENV SMTP_HOST=127.0.0.1
 ENV SMTP_PORT=1025
 ENV SMTP_SECURE=false
@@ -30,7 +32,7 @@ ENV SMTP_FROM="Build Only <build@example.com>"
 ENV MODEL_API_BASE_URL=http://127.0.0.1:1/v1
 ENV MODEL_API_KEY=build-only-model-key
 ENV MODEL_ID=build-only-model
-RUN pnpm build && rm -rf .next/cache
+RUN pnpm build --webpack && rm -rf .next/cache
 
 FROM base AS runner
 ENV NODE_ENV=production

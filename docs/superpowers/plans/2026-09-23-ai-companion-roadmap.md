@@ -82,7 +82,16 @@ conversation storage and chat exist.
 
 ## Phase 4: Long-Term Memory, Privacy, and Operational Completion
 
-Create a separate implementation plan after Phase 3 is accepted.
+**Status:** Implementation and automated acceptance complete. The Node 24
+release gate, real Phase 3 fixture upgrade, production Compose app/worker
+readiness and processing, and deterministic all-surface privacy scan pass.
+Independent whole-branch review remains pending (reviewers were explicitly
+prohibited for Task 12). Phase 4 is not fully accepted until that final
+specification release gate passes.
+
+The separate implementation plan and approved specification are under
+`docs/superpowers/plans/2026-10-10-long-term-memory-privacy-and-operations.md`
+and `docs/superpowers/specs/2026-10-10-long-term-memory-privacy-and-operations-design.md`.
 
 Deliver:
 

@@ -1,4 +1,5 @@
 import { testDatabaseUrl } from "../../../src/test/database-target";
+import { privacySentinels } from "../../release/privacy-scan";
 
 function definedEnvironmentEntries(
   env: NodeJS.ProcessEnv,
@@ -31,9 +32,10 @@ export function createE2eEnvironment(
     ["SMTP_USER", "test"],
     ["SMTP_PASSWORD", "test"],
     ["SMTP_FROM", "Custard Bun <noreply@example.com>"],
-    ["MODEL_API_BASE_URL", "http://127.0.0.1:3102/v1"],
-    ["MODEL_API_KEY", "e2e-model-key"],
+    ["MODEL_API_BASE_URL", `http://127.0.0.1:3102/${privacySentinels.providerEndpoint}/v1`],
+    ["MODEL_API_KEY", privacySentinels.providerKey],
     ["MODEL_ID", "e2e-chat-model"],
+    ["E2E_WORKER_LOG", "test-results/e2e-worker.log"],
   ]) as E2eEnvironment;
 }
 
