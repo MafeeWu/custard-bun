@@ -328,7 +328,12 @@ Sign in with the CLI-created administrator account, then use:
   card, detail view, and structured character package;
 - `/admin/users`: search ordinary users, manage quota overrides, and disable or
   restore access;
-- `/admin/usage`: manage global chat settings and inspect aggregate usage; and
+- `/admin/usage`: manage global chat settings and inspect aggregate usage;
+- `/admin/memory`: inspect aggregate-only memory jobs, exports, purge stages,
+  safe failure categories, and background tokens; enable/disable new memory
+  processing, restore its stored deployment default, or retry eligible terminal
+  operations by ID. Disabling processing does not hide existing memories:
+  relationship usage controls continue to govern recall; and
 - `/admin/audit`: read-only, paginated administrative history.
 
 Unauthenticated requests redirect to sign-in; ordinary accounts receive no

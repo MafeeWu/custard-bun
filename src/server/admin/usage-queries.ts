@@ -17,6 +17,7 @@ export interface UsageDashboard {
   failures: Array<{ category: string; count: number }>;
   automaticRetries: number;
   estimatedUsageRows: number;
+  backgroundWork: { inputTokens: number; outputTokens: number; estimatedRows: number };
   latencyMs: { p50: number | null; p95: number | null };
   modelIds: string[];
 }
@@ -67,6 +68,9 @@ export async function getUsageDashboard(
           interrupted: sql<number>`coalesce(sum(${usageLedger.userRequestUnits}) filter (where ${usageLedger.outcome} = 'interrupted'), 0)::bigint`,
           automaticRetries: sql<number>`coalesce(sum(${usageLedger.automaticRetryCount}), 0)::bigint`,
           estimatedUsageRows: sql<number>`count(*) filter (where ${usageLedger.usageIsEstimated})::int`,
+          backgroundInput: sql<number>`coalesce(sum(${usageLedger.inputTokens}) filter (where ${usageLedger.workloadType} in ('memory_extraction', 'summary_refresh')), 0)::bigint`,
+          backgroundOutput: sql<number>`coalesce(sum(${usageLedger.outputTokens}) filter (where ${usageLedger.workloadType} in ('memory_extraction', 'summary_refresh')), 0)::bigint`,
+          backgroundEstimated: sql<number>`count(*) filter (where ${usageLedger.workloadType} in ('memory_extraction', 'summary_refresh') and ${usageLedger.usageIsEstimated})::int`,
           p50: sql<
             number | null
           >`percentile_cont(0.5) within group (order by ${usageLedger.latencyMs}) filter (where ${usageLedger.latencyMs} is not null)`,
@@ -122,6 +126,11 @@ export async function getUsageDashboard(
     })),
     automaticRetries: numeric(monthTotals?.automaticRetries),
     estimatedUsageRows: numeric(monthTotals?.estimatedUsageRows),
+    backgroundWork: {
+      inputTokens: numeric(monthTotals?.backgroundInput),
+      outputTokens: numeric(monthTotals?.backgroundOutput),
+      estimatedRows: numeric(monthTotals?.backgroundEstimated),
+    },
     latencyMs: {
       p50: nullableNumeric(monthTotals?.p50),
       p95: nullableNumeric(monthTotals?.p95),

@@ -22,4 +22,8 @@ test("includes the aggregate usage administration link", async () => {
     "href",
     "/admin/usage",
   );
+  expect(screen.getByRole("link", { name: "Memory operations" })).toHaveAttribute(
+    "href",
+    "/admin/memory",
+  );
 });

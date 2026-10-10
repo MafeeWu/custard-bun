@@ -40,6 +40,7 @@ beforeEach(() => {
     estimatedUsageRows: 1,
     latencyMs: { p50: 120, p95: 450 },
     modelIds: ["model-a"],
+    backgroundWork: { inputTokens: 0, outputTokens: 0, estimatedRows: 0 },
   });
   vi.mocked(getGlobalChatSettings).mockResolvedValue({
     revision: 3,

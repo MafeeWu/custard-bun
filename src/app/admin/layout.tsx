@@ -26,6 +26,9 @@ export default async function AdminLayout({
             <Link href="/admin/usage">Usage</Link>
           </li>
           <li>
+            <Link href="/admin/memory">Memory operations</Link>
+          </li>
+          <li>
             <Link href="/admin/audit">Audit</Link>
           </li>
         </ul>

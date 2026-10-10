@@ -56,7 +56,7 @@ export async function captureExtractionAdmission(
     .from(memorySettings)
     .where(eq(memorySettings.id, "global"));
   const [owner] = await transaction
-    .select()
+    .select({ banned: user.banned, deletionPendingAt: user.deletionPendingAt })
     .from(user)
     .where(eq(user.id, input.userId));
   return global?.enabled &&
@@ -79,7 +79,7 @@ export async function lockExtractionRelationship(
     input.characterId,
   );
   const [owner] = await transaction
-    .select()
+    .select({ id: user.id })
     .from(user)
     .where(eq(user.id, input.userId))
     .for("update")
@@ -376,12 +376,21 @@ export async function publishExtractionDeadLetters(
 
 export async function retryMemoryExtraction(
   database: Database,
-  input: { userId: string; characterId: string; runId: string },
+  input: { userId: string; characterId: string; runId: string; administrativeRetry?: boolean },
 ): Promise<void> {
   await database.transaction(async (transaction) => {
     await lockExtractionRelationship(transaction, input);
     const [run] = await transaction
-      .select()
+      .select({
+        id: memoryExtractionRun.id,
+        status: memoryExtractionRun.status,
+        attemptCount: memoryExtractionRun.attemptCount,
+        userId: memoryExtractionRun.userId,
+        characterId: memoryExtractionRun.characterId,
+        conversationId: memoryExtractionRun.conversationId,
+        generationAttemptId: memoryExtractionRun.generationAttemptId,
+        memoryEpoch: memoryExtractionRun.memoryEpoch,
+      })
       .from(memoryExtractionRun)
       .where(
         and(
@@ -398,24 +407,77 @@ export async function retryMemoryExtraction(
         "Extraction run not found.",
       );
     if (
-      !["failed", "retrying", "dead_letter"].includes(run.status) ||
-      run.attemptCount >= EXTRACTION_MAX_EXECUTIONS
+      !(input.administrativeRetry
+        ? ["failed", "dead_letter"].includes(run.status)
+        : ["failed", "retrying", "dead_letter"].includes(run.status)) ||
+      (run.attemptCount >= EXTRACTION_MAX_EXECUTIONS &&
+        !(input.administrativeRetry && run.status === "dead_letter"))
     ) {
       throw new MemoryDomainError(
         "MEMORY_VALIDATION",
         "Extraction cannot be retried.",
       );
     }
-    if (!(await readExtractionSource(transaction, run))) {
+    const [global] = await transaction.select({
+      enabled: memorySettings.enabled, createdAt: memorySettings.createdAt,
+    }).from(memorySettings).where(eq(memorySettings.id, "global"));
+    const [owner] = await transaction.select({
+      banned: user.banned, deletionPendingAt: user.deletionPendingAt,
+    }).from(user).where(eq(user.id, run.userId));
+    const [controls] = await transaction.select({
+      memoryEpoch: userCharacterMemorySetting.memoryEpoch,
+      recordingEnabled: userCharacterMemorySetting.recordingEnabled,
+    }).from(userCharacterMemorySetting).where(and(
+      eq(userCharacterMemorySetting.userId, run.userId),
+      eq(userCharacterMemorySetting.characterId, run.characterId),
+    ));
+    const source = run.conversationId && run.generationAttemptId && global &&
+      controls?.memoryEpoch === run.memoryEpoch &&
+      (await transaction.execute<{ eligible: boolean }>(sql`
+        select exists (
+          select 1 from generation_attempts a
+          join conversation_messages assistant on assistant.id = a.assistant_message_id
+          join conversations c on c.id = assistant.conversation_id
+          join conversation_messages source on source.id = assistant.in_reply_to
+          where a.id = ${run.generationAttemptId}
+            and a.user_id = ${run.userId}
+            and a.is_current and a.status = 'complete'
+            and a.extraction_memory_epoch = ${run.memoryEpoch}
+            and a.created_at >= ${global.createdAt}
+            and a.cancel_requested_at is null
+            and c.id = ${run.conversationId}
+            and c.user_id = ${run.userId}
+            and c.character_id = ${run.characterId}
+            and assistant.role = 'assistant' and assistant.kind = 'generated'
+            and length(btrim(a.content)) > 0
+            and source.conversation_id = ${run.conversationId}
+            and source.role = 'user' and source.kind = 'user'
+            and source.content is not null and length(source.content) > 0
+        ) as eligible
+      `)).rows[0]?.eligible;
+    if (!global?.enabled || !owner || owner.banned || owner.deletionPendingAt ||
+      !controls?.recordingEnabled || !source) {
       throw new MemoryDomainError(
         "MEMORY_VALIDATION",
         "Extraction source is no longer eligible.",
       );
     }
+    const restartExhausted =
+      input.administrativeRetry &&
+      run.status === "dead_letter" &&
+      run.attemptCount >= EXTRACTION_MAX_EXECUTIONS;
+    if (restartExhausted) {
+      // Usage and reservations are already settled independently by execution ID.
+      // Recycle only terminal execution records; a new attempt receives fresh IDs.
+      await transaction.delete(memoryExtractionExecution)
+        .where(eq(memoryExtractionExecution.runId, run.id));
+    }
     await transaction
       .update(memoryExtractionRun)
       .set({
         status: "pending",
+        attemptCount: restartExhausted ? 0 : run.attemptCount,
+        deadLetterPublishedAt: null,
         finishedAt: null,
         nextRetryAt: null,
         jobId: null,

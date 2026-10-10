@@ -243,6 +243,11 @@ test("returns current aggregate numeric usage without exposing transcript data",
   `);
 
   const dashboard = await getUsageDashboard(database, now);
+  expect(dashboard.backgroundWork).toEqual({
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedRows: 0,
+  });
 
   expect(dashboard).toEqual({
     userDay: { requests: 2, inputTokens: 150, outputTokens: 30 },
@@ -255,6 +260,7 @@ test("returns current aggregate numeric usage without exposing transcript data",
     ],
     automaticRetries: 3,
     estimatedUsageRows: 1,
+    backgroundWork: { inputTokens: 0, outputTokens: 0, estimatedRows: 0 },
     latencyMs: { p50: 200, p95: 290 },
     modelIds: ["model-a", "model-b"],
   });

@@ -261,7 +261,7 @@ async function requireRelationship(transaction: ChatTransaction, input: Scope) {
     input.characterId,
   );
   const [owner] = await transaction
-    .select()
+    .select({ id: user.id })
     .from(user)
     .where(
       and(
@@ -429,12 +429,12 @@ export async function summaryControlsEligible(
   input: Scope,
 ) {
   const [global] = await transaction
-    .select()
+    .select({ enabled: memorySettings.enabled })
     .from(memorySettings)
     .where(eq(memorySettings.id, "global"))
     .limit(1);
   const [owner] = await transaction
-    .select()
+    .select({ banned: user.banned, deletionPendingAt: user.deletionPendingAt })
     .from(user)
     .where(eq(user.id, input.userId))
     .limit(1);
@@ -597,6 +597,81 @@ export async function requestSummaryRegeneration(
         "Summary refresh has already finished for this revision.",
       );
     return result;
+  });
+}
+
+export async function retrySummaryRefresh(
+  database: Database,
+  input: Scope & { operationId: string; administrativeRetry?: boolean },
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    const settings = await requireRelationship(tx, input);
+    await tx.select({ id: relationshipSummaryRun.id }).from(relationshipSummaryRun)
+      .where(and(eq(relationshipSummaryRun.userId, input.userId),
+        eq(relationshipSummaryRun.characterId, input.characterId)))
+      .orderBy(asc(relationshipSummaryRun.id)).for("update");
+    await tx.select({ id: relationshipSummaryExecution.id })
+      .from(relationshipSummaryExecution)
+      .where(inArray(relationshipSummaryExecution.runId,
+        tx.select({ id: relationshipSummaryRun.id }).from(relationshipSummaryRun)
+          .where(and(eq(relationshipSummaryRun.userId, input.userId),
+            eq(relationshipSummaryRun.characterId, input.characterId)))))
+      .orderBy(asc(relationshipSummaryExecution.id)).for("update");
+    const [current] = await tx.select({
+      revision: relationshipSummary.revision,
+      memoryEpoch: relationshipSummary.memoryEpoch,
+      currentVersionId: relationshipSummary.currentVersionId,
+    }).from(relationshipSummary).where(scopeWhere(input)).for("update").limit(1);
+    const [version] = current?.currentVersionId
+      ? await tx.select({ origin: relationshipSummaryVersion.origin })
+          .from(relationshipSummaryVersion).where(and(
+            eq(relationshipSummaryVersion.id, current.currentVersionId),
+            eq(relationshipSummaryVersion.userId, input.userId),
+            eq(relationshipSummaryVersion.characterId, input.characterId),
+            eq(relationshipSummaryVersion.memoryEpoch, settings.memoryEpoch),
+          )).for("update").limit(1)
+      : [];
+    const [run] = await tx.select({
+      id: relationshipSummaryRun.id,
+      status: relationshipSummaryRun.status,
+      attemptCount: relationshipSummaryRun.attemptCount,
+      memoryEpoch: relationshipSummaryRun.memoryEpoch,
+      basedOnMemoryRevision: relationshipSummaryRun.basedOnMemoryRevision,
+      expectedSummaryRevision: relationshipSummaryRun.expectedSummaryRevision,
+      explicitRegeneration: relationshipSummaryRun.explicitRegeneration,
+    }).from(relationshipSummaryRun).where(and(
+      eq(relationshipSummaryRun.id, input.operationId),
+      eq(relationshipSummaryRun.userId, input.userId),
+      eq(relationshipSummaryRun.characterId, input.characterId),
+    )).limit(1);
+    if (!run ||
+      !["failed", "dead_letter"].includes(run.status) ||
+      (run.attemptCount >= 5 &&
+        !(input.administrativeRetry && run.status === "dead_letter")) ||
+      !(await summaryControlsEligible(tx, input)) ||
+      settings.memoryEpoch !== run.memoryEpoch ||
+      settings.memoryRevision !== run.basedOnMemoryRevision ||
+      (current?.memoryEpoch ?? settings.memoryEpoch) !== run.memoryEpoch ||
+      (current?.revision ?? 0) !== run.expectedSummaryRevision ||
+      (version?.origin === "user_edited" && !run.explicitRegeneration))
+      throw new MemoryDomainError("MEMORY_VALIDATION", "Summary cannot be retried.");
+    const restartExhausted = input.administrativeRetry &&
+      run.status === "dead_letter" && run.attemptCount >= 5;
+    if (restartExhausted)
+      await tx.delete(relationshipSummaryExecution)
+        .where(eq(relationshipSummaryExecution.runId, run.id));
+    await tx.update(relationshipSummaryRun).set({
+      status: "pending",
+      attemptCount: restartExhausted ? 0 : run.attemptCount,
+      deadLetterPublishedAt: null,
+      finishedAt: null,
+      nextRetryAt: null,
+      jobId: null,
+      errorCategory: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      updatedAt: new Date(),
+    }).where(eq(relationshipSummaryRun.id, run.id));
   });
 }
 

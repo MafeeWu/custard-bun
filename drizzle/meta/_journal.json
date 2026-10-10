@@ -155,6 +155,13 @@
       "when": 1791641192851,
       "tag": "0021_verification_update_lock_order",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791642000000,
+      "tag": "0022_admin_dead_letter_retry",
+      "breakpoints": true
     }
   ]
 }

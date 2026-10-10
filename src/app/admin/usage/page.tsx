@@ -67,6 +67,13 @@ export default async function AdminUsagePage() {
         </ul>
       </section>
 
+      <section aria-labelledby="background-work-heading">
+        <h2 id="background-work-heading">Memory background usage</h2>
+        <p>{tokens(dashboard.backgroundWork.inputTokens, dashboard.backgroundWork.outputTokens)}</p>
+        <p>Estimated rows: {dashboard.backgroundWork.estimatedRows}</p>
+        <p><a href="/admin/memory">Memory operations</a></p>
+      </section>
+
       <section aria-labelledby="models-heading">
         <h2 id="models-heading">Models</h2>
         {dashboard.modelIds.length > 0 ? (
