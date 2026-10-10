@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import { chatSettings } from "@/server/db/chat-schema";
+import { memorySettings } from "@/server/db/memory-schema";
 import { ChatDomainError } from "./chat-errors";
 
 export type ChatTransaction = Parameters<
@@ -24,6 +25,13 @@ export async function lockUserChatMutation(
       "Chat settings are not initialized.",
     );
   }
+
+  await transaction
+    .select({ id: memorySettings.id })
+    .from(memorySettings)
+    .where(eq(memorySettings.id, "global"))
+    .for("update")
+    .limit(1);
 
   await transaction.execute(sql`
     SELECT pg_advisory_xact_lock(

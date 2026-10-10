@@ -28,6 +28,10 @@ export const adminAuditActionEnum = pgEnum(
 );
 
 export type AdminAuditAction = (typeof adminAuditActionEnum.enumValues)[number];
+export type UserAuditAction = Extract<
+  AdminAuditAction,
+  "memory.character_forget"
+>;
 
 export const adminAuditEvent = pgTable("admin_audit_events", {
   id: text("id").primaryKey(),

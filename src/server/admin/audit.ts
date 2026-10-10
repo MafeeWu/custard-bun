@@ -1,7 +1,11 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { adminAuditEvent, type AdminAuditAction } from "@/server/db/audit-schema";
+import {
+  adminAuditEvent,
+  type AdminAuditAction,
+  type UserAuditAction,
+} from "@/server/db/audit-schema";
 import type { Database } from "@/server/db/client";
 import type { AdminActor } from "./admin-actor";
 
@@ -16,8 +20,14 @@ export type AdminAuditMetadataValue = string | number | boolean | null;
 export type AdminAuditMetadata = Record<string, AdminAuditMetadataValue>;
 
 const blockedMetadataKeys = new Set([
+  "archive",
+  "content",
+  "credential",
+  "email",
   "prompt",
   "password",
+  "secret",
+  "summary",
   "token",
   "reason",
   "message",
@@ -83,5 +93,29 @@ export async function recordAdminAudit(
     targetId: event.targetId,
     metadata,
     operationId: actor.operationId,
+  });
+}
+
+export async function recordUserAudit(
+  executor: Pick<Database, "insert">,
+  event: {
+    userId: string;
+    action: UserAuditAction;
+    targetType: string;
+    targetId: string;
+    metadata: Record<string, unknown>;
+  },
+): Promise<void> {
+  const metadata = validateAuditMetadata(event.metadata);
+
+  await executor.insert(adminAuditEvent).values({
+    id: randomUUID(),
+    actorUserId: event.userId,
+    actorLabel: "user",
+    action: event.action,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    metadata,
+    operationId: randomUUID(),
   });
 }
