@@ -17,7 +17,7 @@ function dependencySpec(name: string): string | undefined {
 }
 
 test("uses TypeScript 7 compiler with official TypeScript 6 tool API compatibility", async () => {
-  expect(dependencySpec("typescript")).toBe("npm:@typescript/typescript6@6.0.3");
+  expect(dependencySpec("typescript")).toBe("6.0.3");
   expect(dependencySpec("@typescript/native")).toBe("npm:typescript@7.0.2");
 
   const typescript = await import("typescript");
