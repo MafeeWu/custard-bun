@@ -10,7 +10,7 @@
     "dev": "next dev",
     "build": "pnpm typecheck && next build",
     "start": "node --env-file-if-exists=.env --import tsx src/server/start.ts",
-    "worker": "node --env-file-if-exists=.env --import tsx src/worker.ts",
+    "worker": "node --conditions=react-server --env-file-if-exists=.env --import tsx src/worker.ts",
     "health:worker": "node --env-file-if-exists=.env --import tsx src/server/health/check-worker.ts",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",

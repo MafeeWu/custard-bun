@@ -35,11 +35,15 @@ async function main(): Promise<void> {
       } satisfies HarnessProbeDatabase & { database: ProbeDatabase };
     },
     spawnWorker() {
-      return spawn(process.execPath, ["--import", "tsx", "src/worker.ts"], {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: "inherit",
-      });
+      return spawn(
+        process.execPath,
+        ["--conditions=react-server", "--import", "tsx", "src/worker.ts"],
+        {
+          cwd: process.cwd(),
+          env: process.env,
+          stdio: "inherit",
+        },
+      );
     },
     waitForWorkerSpawn(worker) {
       const child = worker as ReturnType<typeof spawn>;

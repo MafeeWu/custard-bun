@@ -37,6 +37,9 @@ import {
   type ProviderCallSettlement,
 } from "./quota-service";
 import { createTokenCounter, type TokenCounter } from "./token-counter";
+import { getBoss } from "@/server/jobs/boss";
+import { ensureQueues } from "@/server/jobs/queues";
+import { enqueuePendingExtractionRuns } from "@/server/memory/memory-extraction-service";
 
 const CHECKPOINT_INTERVAL_MS = 500;
 const CHECKPOINT_BYTES = 1_024;
@@ -69,6 +72,7 @@ interface GenerationDependencies {
   idFactory: () => string;
   config: GenerationConfig;
   logger: GenerationLogger;
+  enqueueExtractionRuns?: () => Promise<unknown>;
   scheduleCheckpoint?: (
     callback: () => Promise<void>,
     milliseconds: number,
@@ -1076,6 +1080,23 @@ export function createGenerationService(
         );
         return;
       }
+      if (dependencies.enqueueExtractionRuns) {
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            dependencies.enqueueExtractionRuns(),
+            new Promise<void>((resolve) => {
+              timeout = setTimeout(resolve, 2_000);
+            }),
+          ]);
+        } catch (error) {
+          dependencies.logger.error("memory enqueue failed", {
+            name: safeErrorName(error),
+          });
+        } finally {
+          if (timeout) clearTimeout(timeout);
+        }
+      }
       yield {
         type: "completed",
         attemptId: prepared.attemptId,
@@ -1244,6 +1265,11 @@ async function initializeGenerationService(): Promise<GenerationService> {
       requestTimeoutMs: config.public.chat.requestTimeoutMs,
     },
     logger: console,
+    enqueueExtractionRuns: async () => {
+      const boss = await getBoss(config.secret.databaseUrl);
+      await ensureQueues(boss);
+      return enqueuePendingExtractionRuns(database, boss, new Date());
+    },
   });
 }
 

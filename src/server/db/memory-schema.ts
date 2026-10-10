@@ -78,10 +78,10 @@ export const backgroundOperationStatusEnum = pgEnum(
   ],
 );
 
-export const backgroundWorkloadTypeEnum = pgEnum(
-  "background_workload_type",
-  ["memory_extraction", "summary_refresh"],
-);
+export const backgroundWorkloadTypeEnum = pgEnum("background_workload_type", [
+  "memory_extraction",
+  "summary_refresh",
+]);
 
 export const dataExportStatusEnum = pgEnum("data_export_status", [
   "pending",
@@ -188,6 +188,8 @@ export const memoryItem = pgTable(
     content: text("content").notNull(),
     normalizedContent: text("normalized_content").notNull(),
     normalizedDigest: text("normalized_digest").notNull(),
+    automaticDigest: text("automatic_digest"),
+    isActive: boolean("is_active").notNull().default(true),
     origin: memoryOriginEnum("origin").notNull(),
     sensitivity: memorySensitivityEnum("sensitivity").notNull(),
     explicitness: memoryExplicitnessEnum("explicitness").notNull(),
@@ -209,9 +211,7 @@ export const memoryItem = pgTable(
     revision: integer("revision").notNull().default(1),
   },
   (table) => [
-    unique(
-      "memory_items_relationship_type_epoch_digest_unique",
-    ).on(
+    unique("memory_items_relationship_type_epoch_digest_unique").on(
       table.userId,
       table.characterId,
       table.type,
@@ -293,6 +293,8 @@ export const memoryExtractionRun = pgTable(
       .default("pending"),
     jobId: text("job_id"),
     attemptCount: integer("attempt_count").notNull().default(0),
+    claimToken: text("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
     errorCategory: text("error_category"),
     providerRequestIds: jsonb("provider_request_ids")
@@ -340,6 +342,10 @@ export const memoryExtractionRun = pgTable(
       nonnegative(table.attemptCount),
     ),
     check(
+      "memory_extraction_runs_attempt_count_limit",
+      sql`${table.attemptCount} <= 5`,
+    ),
+    check(
       "memory_extraction_runs_estimated_tokens_nonnegative",
       nonnegative(table.estimatedInputTokens),
     ),
@@ -366,6 +372,70 @@ export const memoryExtractionRun = pgTable(
         OR
         (${table.status} IN ('pending', 'queued', 'running', 'retrying') AND ${table.finishedAt} IS NULL)
       )`,
+    ),
+  ],
+);
+
+export const memoryExtractionExecution = pgTable(
+  "memory_extraction_executions",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => memoryExtractionRun.id, {
+        onDelete: "cascade",
+      }),
+    executionNumber: integer("execution_number").notNull(),
+    candidates:
+      jsonb("candidates").$type<
+        import("@/server/memory/memory-contracts").MemoryCandidate[]
+      >(),
+    modelId: text("model_id").notNull(),
+    providerIdentity: jsonb("provider_identity")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    estimatedInputTokens: bigint("estimated_input_tokens", {
+      mode: "number",
+    }).notNull(),
+    estimatedOutputTokens: bigint("estimated_output_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    inputTokens: bigint("input_tokens", { mode: "number" }),
+    outputTokens: bigint("output_tokens", { mode: "number" }),
+    latencyMs: integer("latency_ms").notNull().default(0),
+    errorCategory: text("error_category"),
+    retryable: boolean("retryable").notNull().default(false),
+    responseAt: timestamp("response_at", { withTimezone: true }),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("memory_extraction_executions_run_number_unique").on(
+      table.runId,
+      table.executionNumber,
+    ),
+    check(
+      "memory_extraction_executions_number_check",
+      sql`${table.executionNumber} BETWEEN 1 AND 5`,
+    ),
+    check(
+      "memory_extraction_executions_tokens_check",
+      sql`
+      ${table.estimatedInputTokens} >= 0 AND ${table.estimatedOutputTokens} >= 0
+      AND (${table.inputTokens} IS NULL OR ${table.inputTokens} >= 0)
+      AND (${table.outputTokens} IS NULL OR ${table.outputTokens} >= 0)
+      AND ${table.latencyMs} >= 0
+    `,
+    ),
+    check(
+      "memory_extraction_executions_receipt_shape",
+      sql`
+      (${table.settledAt} IS NULL OR (${table.responseAt} IS NOT NULL AND ${table.candidates} IS NULL))
+      AND (${table.candidates} IS NULL OR (JSONB_TYPEOF(${table.candidates}) = 'array' AND JSONB_ARRAY_LENGTH(${table.candidates}) <= 20))
+    `,
     ),
   ],
 );
@@ -479,10 +549,7 @@ export const relationshipSummary = pgTable(
       "relationship_summaries_epoch_nonnegative",
       nonnegative(table.memoryEpoch),
     ),
-    check(
-      "relationship_summaries_revision_positive",
-      positive(table.revision),
-    ),
+    check("relationship_summaries_revision_positive", positive(table.revision)),
   ],
 );
 

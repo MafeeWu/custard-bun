@@ -9,16 +9,29 @@ test("production start uses the socket-bound, validating server", async () => {
   expect(manifest.scripts.start).toContain("src/server/start.ts");
 });
 
+test("worker launch paths enable server-only model and accounting imports", async () => {
+  const manifest = JSON.parse(await readFile("package.json", "utf8"));
+  expect(manifest.scripts.worker).toContain("--conditions=react-server");
+  expect(
+    await readFile("tests/e2e/support/worker-harness.ts", "utf8"),
+  ).toContain("--conditions=react-server");
+});
+
 test.each(["src/server/start.ts", "src/worker.ts"])(
   "%s exits before listening with specific sanitized config diagnostics",
   async (entry) => {
+    const manifest = JSON.parse(await readFile("package.json", "utf8"));
+    const command: string =
+      entry === "src/worker.ts"
+        ? manifest.scripts.worker
+        : manifest.scripts.start;
     const result = await new Promise<{
       code: number | string | undefined;
       output: string;
     }>((resolve) => {
       execFile(
         process.execPath,
-        ["--import", "tsx", entry],
+        command.split(" ").slice(1),
         {
           env: {
             ...process.env,

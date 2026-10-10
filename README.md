@@ -4,7 +4,9 @@ Custard Bun is a self-hosted application for private, streamed AI companion
 conversations. Phase 3 includes runtime branding, account lifecycle, official
 character administration, version-pinned conversations, an OpenAI-compatible
 model gateway, explicit interruption/retry states, transactional quotas, and
-aggregate-only usage administration. Long-term memory remains a later phase.
+aggregate-only usage administration. Phase 4 now includes durable automatic
+memory extraction; summaries, prompt recall, and the remaining privacy
+operations are still being implemented.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -287,6 +289,33 @@ Phase 3 deliberately excludes long-term memory, user-created/shared characters,
 marketplace/social features, avatar uploads/object storage, public history
 browsing, web administrator-role management, automatic ban expiry, voice,
 image generation, RAG, plugins, billing, and relationship levels.
+
+### Automatic memory extraction (Phase 4)
+
+Successful current replies now create durable extraction runs in the same
+transaction as chat settlement. Only attempts created after memory settings
+were initialized are eligible; there is no historical backfill. Recording and
+prompt usage are independent controls: disabling usage does not stop recording.
+Automatic direct facts are visible immediately. Inferred ordinary preferences
+remain hidden until two distinct user messages support them. User edits are
+authoritative; automatic confirmation cannot overwrite them.
+
+The existing email worker additionally processes `memory-extraction` and
+reconciles pending work at startup and every 30 seconds. PostgreSQL is the
+source of truth; pg-boss jobs contain only a run ID. Both counters allow five
+total executions (initial plus four retries), with exponential backoff starting
+at 60 seconds and a `memory-extraction-dead-letter` queue. Background calls
+consume instance tokens only, never user request or token allowances.
+
+Internal execution receipts retain only locally policy-approved candidates
+until apply, together with accounting data and hashed provider identities.
+They are not operational/admin metadata. Apply and settlement commit atomically;
+replaying a durable receipt does not call or charge the provider again. If a
+worker dies before recording the response, lease recovery charges one
+conservative estimated usage record for that ambiguous call before retrying.
+Forget, recording disable, account lockout, and conversation deletion prevent
+stale results from applying. Credentials are never stored as memory or receipt
+candidates. Relationship summaries and prompt recall are not implemented yet.
 
 ## Service health
 

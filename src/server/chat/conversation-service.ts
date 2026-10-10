@@ -15,6 +15,7 @@ import {
   type ChatTransaction,
 } from "./chat-locks";
 import { reconcileExpiredConversationInTransaction } from "./quota-service";
+import { cancelConversationExtractions } from "@/server/memory/memory-extraction-service";
 
 export interface ConversationService {
   openOrCreate(input: {
@@ -384,6 +385,11 @@ export function createConversationService(
           throw generationInProgress();
         }
 
+        await cancelConversationExtractions(
+          transaction,
+          selectedConversation.id,
+          new Date(),
+        );
         await transaction
           .delete(conversation)
           .where(

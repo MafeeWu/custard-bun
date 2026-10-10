@@ -64,6 +64,27 @@
       "when": 1791621639008,
       "tag": "0008_background_settlement_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791622433139,
+      "tag": "0009_aspiring_ser_duncan",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791622521209,
+      "tag": "0010_extraction_retry_invariants",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791623235868,
+      "tag": "0011_extraction_recording_fences",
+      "breakpoints": true
     }
   ]
 }

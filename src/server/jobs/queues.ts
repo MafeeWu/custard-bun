@@ -2,6 +2,9 @@ import type { PgBoss } from "pg-boss";
 
 export const AUTH_EMAIL_QUEUE = "auth-email";
 export const AUTH_EMAIL_DEAD_LETTER_QUEUE = "auth-email-dead-letter";
+export const MEMORY_EXTRACTION_QUEUE = "memory-extraction";
+export const MEMORY_EXTRACTION_DEAD_LETTER_QUEUE =
+  "memory-extraction-dead-letter";
 
 interface EnsureQueuesOptions {
   authEmailRetryDelay?: number;
@@ -26,4 +29,16 @@ export async function ensureQueues(
     retryDelay: authEmailRetryDelay,
     deadLetter: AUTH_EMAIL_DEAD_LETTER_QUEUE,
   });
+  await boss.createQueue(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+  const extractionOptions = {
+    retryLimit: 4,
+    retryBackoff: true,
+    retryDelay: 60,
+    deadLetter: MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+  };
+  await boss.createQueue(MEMORY_EXTRACTION_QUEUE, {
+    ...extractionOptions,
+    policy: "exclusive",
+  });
+  await boss.updateQueue(MEMORY_EXTRACTION_QUEUE, extractionOptions);
 }

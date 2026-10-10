@@ -1,9 +1,39 @@
 // @vitest-environment node
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { validSecretEnv } from "@/test/unit/runtime-config-fixture";
+import { createDatabase } from "@/server/db/client";
+import {
+  memoryExtractionRun,
+  memoryItem,
+  usageLedger,
+} from "@/server/db/schema";
+import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
+import { createExtractionRunForCompletedAttempt } from "@/server/memory/memory-extraction-service";
+import {
+  extractionAttempt,
+  extractionCandidate,
+  extractionCounter,
+  extractionFixture,
+  extractionGateway,
+  extractionNow,
+  extractionResult,
+  resetExtractionDatabase,
+} from "@/test/memory-extraction-fixture";
 import type { PgBoss } from "pg-boss";
 import { createBoss } from "@/server/jobs/boss";
-import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
+import {
+  AUTH_EMAIL_QUEUE,
+  MEMORY_EXTRACTION_QUEUE,
+  MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+  ensureQueues,
+} from "@/server/jobs/queues";
 import { testDatabaseUrl } from "@/test/database-target";
+import { eq, sql } from "drizzle-orm";
+import { ModelGatewayError } from "@/server/model-gateway/model-error";
 
 const databaseUrl = testDatabaseUrl();
 let boss: PgBoss;
@@ -58,3 +88,294 @@ test("retains an SMTP failure for retry on the production queue", async () => {
   expect(job?.startedOn).toBeTruthy();
   expect(job?.state).toBe("retry");
 });
+
+test("production extraction worker startup reconciles a committed run while keeping auth registration intact", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  const logger = { error: vi.fn() };
+  let stop: (() => Promise<void>) | undefined;
+  try {
+    await resetExtractionDatabase(database);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    const fixture = await extractionFixture(database);
+    const attempt = await extractionAttempt(database, fixture);
+    await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    stop = await registerMemoryExtractionWorker(
+      database,
+      boss,
+      extractionGateway(async () =>
+        extractionResult([extractionCandidate(attempt.sourceMessageId)]),
+      ),
+      extractionCounter,
+      logger,
+    );
+    await expect
+      .poll(
+        async () =>
+          (await database.select().from(memoryExtractionRun))[0].status,
+        { timeout: 6_000 },
+      )
+      .toBe("complete");
+    expect(await database.select().from(memoryItem)).toHaveLength(1);
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(await boss.getQueue(AUTH_EMAIL_QUEUE)).not.toBeNull();
+  } finally {
+    await stop?.();
+    await boss.offWork(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    await database.$client.end();
+  }
+});
+
+test("production extraction queue exhausts exactly five executions into a safe dead-letter job", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  const logger = { error: vi.fn() };
+  let stop: (() => Promise<void>) | undefined;
+  try {
+    await resetExtractionDatabase(database);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    const fixture = await extractionFixture(database);
+    const attempt = await extractionAttempt(database, fixture);
+    const run = await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    stop = await registerMemoryExtractionWorker(
+      database,
+      boss,
+      extractionGateway(async () => {
+        throw new ModelGatewayError("server", {
+          retryable: true,
+          providerRequestId: "private-provider-id",
+        });
+      }),
+      extractionCounter,
+      logger,
+    );
+    let jobId: string | null = null;
+    for (let count = 1; count <= 5; count++) {
+      await expect
+        .poll(
+          async () => {
+            const row = (await database.select().from(memoryExtractionRun))[0];
+            return { status: row.status, count: row.attemptCount };
+          },
+          { timeout: 6_000 },
+        )
+        .toEqual({ status: count < 5 ? "retrying" : "dead_letter", count });
+      const durable = (await database.select().from(memoryExtractionRun))[0];
+      expect(durable.attemptCount).toBe(count);
+      jobId = durable.jobId;
+      await expect
+        .poll(
+          async () =>
+            (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, jobId!))?.state,
+          { timeout: 6_000 },
+        )
+        .toBe(count < 5 ? "retry" : "failed");
+      if (count < 5) {
+        await database
+          .update(memoryExtractionRun)
+          .set({ nextRetryAt: new Date(0) })
+          .where(eq(memoryExtractionRun.id, run!.runId));
+        await database.execute(
+          sql`UPDATE job.job SET start_after = NOW() WHERE id = ${jobId} AND name = ${MEMORY_EXTRACTION_QUEUE}`,
+        );
+      }
+    }
+    const deadLetters = await boss.fetch<{ runId: string }>(
+      MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+    );
+    expect(deadLetters).toMatchObject([{ data: { runId: run!.runId } }]);
+    expect(
+      (await boss.getJobById(MEMORY_EXTRACTION_QUEUE, jobId!))?.retryCount,
+    ).toBe(4);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(
+      "private-provider-id",
+    );
+    expect(logger.error).toHaveBeenCalledTimes(5);
+  } finally {
+    await stop?.();
+    await boss.offWork(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_DEAD_LETTER_QUEUE);
+    await database.$client.end();
+  }
+}, 35_000);
+
+test("periodic production reconciler discovers completion after worker startup without an immediate send", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  let stop: (() => Promise<void>) | undefined;
+  try {
+    await resetExtractionDatabase(database);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    const fixture = await extractionFixture(database);
+    const attempt = await extractionAttempt(database, fixture);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    stop = await registerMemoryExtractionWorker(
+      database,
+      boss,
+      extractionGateway(async () =>
+        extractionResult([extractionCandidate(attempt.sourceMessageId)]),
+      ),
+      extractionCounter,
+      { error: vi.fn() },
+    );
+    const run = await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...fixture,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    expect(
+      (await database.select().from(memoryExtractionRun))[0].jobId,
+    ).toBeNull();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect
+      .poll(
+        async () =>
+          (await database.select().from(memoryExtractionRun))[0].status,
+        { timeout: 6_000 },
+      )
+      .toBe("complete");
+    expect((await database.select().from(memoryExtractionRun))[0].id).toBe(
+      run!.runId,
+    );
+  } finally {
+    await stop?.();
+    vi.useRealTimers();
+    await boss.offWork(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await database.$client.end();
+  }
+});
+
+test("real worker CLI starts, processes structured extraction and auth jobs, and shuts down cleanly", async () => {
+  const database = createDatabase(testDatabaseUrl());
+  let child: ReturnType<typeof spawn> | undefined;
+  let exit: Promise<unknown> | undefined;
+  let output = "";
+  let calls = 0;
+  let schemaType: unknown;
+  await resetExtractionDatabase(database);
+  const owner = await extractionFixture(database);
+  const attempt = await extractionAttempt(database, owner);
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    schemaType = body.response_format.json_schema.schema.type;
+    calls++;
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "x-request-id": "cli-provider-fixture",
+    });
+    response.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: extractionResult([
+                extractionCandidate(attempt.sourceMessageId),
+              ]).content,
+            },
+          },
+        ],
+        usage: { prompt_tokens: 13, completion_tokens: 7 },
+      }),
+    );
+  });
+  try {
+    await boss.offWork(AUTH_EMAIL_QUEUE);
+    await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await database.transaction((tx) =>
+      createExtractionRunForCompletedAttempt(tx, {
+        ...owner,
+        ...attempt,
+        now: extractionNow,
+      }),
+    );
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing local provider port.");
+    const manifest = JSON.parse(await readFile("package.json", "utf8"));
+    child = spawn(
+      process.execPath,
+      manifest.scripts.worker.split(" ").slice(1),
+      {
+        env: {
+          ...process.env,
+          ...validSecretEnv,
+          DATABASE_URL: testDatabaseUrl(),
+          MODEL_API_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+          MODEL_ID: "test-model",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    child.stdout?.on("data", (value: Buffer) => {
+      output += value.toString();
+    });
+    child.stderr?.on("data", (value: Buffer) => {
+      output += value.toString();
+    });
+    exit = once(child, "exit").then(([code]) => code);
+    void exit.catch(() => undefined);
+    await expect
+      .poll(
+        async () =>
+          (await database.select().from(memoryExtractionRun))[0].status,
+        { timeout: 10_000 },
+      )
+      .toBe("complete");
+    const authJob = await boss.send(AUTH_EMAIL_QUEUE, { kind: "noop" });
+    await expect
+      .poll(
+        async () => (await boss.getJobById(AUTH_EMAIL_QUEUE, authJob!))?.state,
+        { timeout: 6_000 },
+      )
+      .toBe("completed");
+    expect(calls).toBe(1);
+    expect(schemaType).toBe("object");
+    expect(await database.select().from(memoryItem)).toHaveLength(1);
+    expect(await database.select().from(usageLedger)).toMatchObject([
+      { inputTokens: 13, outputTokens: 7 },
+    ]);
+    child.kill("SIGTERM");
+    await expect(exit).resolves.toBe(0);
+    expect(output).not.toContain(validSecretEnv.MODEL_API_KEY);
+    expect(output).not.toContain("Likes green tea.");
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      let timeout: NodeJS.Timeout | undefined;
+      await Promise.race([
+        exit,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 3_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await exit;
+    }
+    if (server.listening)
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await database.$client.end();
+  }
+}, 25_000);

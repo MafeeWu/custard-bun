@@ -1,6 +1,11 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
+import {
+  createExtractionRunForCompletedAttempt,
+  lockExtractionRelationship,
+} from "@/server/memory/memory-extraction-service";
+import { settleUserExtractionWorkBeforeDeletion } from "@/server/memory/background-usage-service";
 import { and, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import {
@@ -367,6 +372,29 @@ async function settleLockedGeneration(
     return undefined;
   }
 
+  const [sourceConversation] =
+    input.outcome === "complete"
+      ? await transaction
+          .select({
+            id: conversation.id,
+            characterId: conversation.characterId,
+          })
+          .from(conversation)
+          .where(
+            and(
+              eq(conversation.id, reservationPreview.conversationId),
+              eq(conversation.userId, reservationPreview.userId),
+            ),
+          )
+          .limit(1)
+      : [];
+  if (sourceConversation) {
+    await lockExtractionRelationship(transaction, {
+      userId: reservationPreview.userId,
+      characterId: sourceConversation.characterId,
+    });
+  }
+
   const instanceBucket = await lockExistingBucket(
     transaction,
     reservationPreview.instanceBucketId,
@@ -577,6 +605,17 @@ async function settleLockedGeneration(
       updatedAt: input.now,
     })
     .where(eq(generationAttempt.id, input.attemptId));
+
+  if (committedOutcome === "complete") {
+    if (sourceConversation)
+      await createExtractionRunForCompletedAttempt(transaction, {
+        attemptId: input.attemptId,
+        userId: reservation.userId,
+        characterId: sourceConversation.characterId,
+        conversationId: sourceConversation.id,
+        now: input.now,
+      });
+  }
 
   return committedOutcome;
 }
@@ -970,6 +1009,7 @@ export async function deleteUserWithGenerationSettlement(
         attemptId: null,
       })
       .where(eq(usageLedger.userId, userId));
+    await settleUserExtractionWorkBeforeDeletion(transaction, { userId, now });
     await transaction.delete(user).where(eq(user.id, userId));
   });
 }

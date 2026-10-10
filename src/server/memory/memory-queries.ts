@@ -54,9 +54,7 @@ export async function getCharacterMemoryView(
     })
     .from(user)
     .innerJoin(character, eq(character.id, input.characterId))
-    .where(
-      and(eq(user.id, input.userId), isNull(user.deletionPendingAt)),
-    )
+    .where(and(eq(user.id, input.userId), isNull(user.deletionPendingAt)))
     .limit(1);
   if (!owner) {
     return null;
@@ -106,6 +104,7 @@ export async function getCharacterMemoryView(
         eq(memoryItem.userId, input.userId),
         eq(memoryItem.characterId, input.characterId),
         eq(memoryItem.memoryEpoch, settings.memoryEpoch),
+        eq(memoryItem.isActive, true),
       ),
     )
     .groupBy(memoryItem.id)
@@ -122,14 +121,8 @@ export async function getCharacterMemoryView(
     .innerJoin(
       relationshipSummaryVersion,
       and(
-        eq(
-          relationshipSummaryVersion.id,
-          relationshipSummary.currentVersionId,
-        ),
-        eq(
-          relationshipSummaryVersion.userId,
-          relationshipSummary.userId,
-        ),
+        eq(relationshipSummaryVersion.id, relationshipSummary.currentVersionId),
+        eq(relationshipSummaryVersion.userId, relationshipSummary.userId),
         eq(
           relationshipSummaryVersion.characterId,
           relationshipSummary.characterId,

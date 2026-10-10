@@ -25,6 +25,7 @@ import {
 } from "./memory-normalization";
 import { MemoryDomainError } from "./memory-errors";
 import { lockUserMemoryMutation } from "./memory-locks";
+import { cancelRelationshipExtractions } from "./memory-extraction-service";
 
 const nonterminalOperationStatuses = [
   "pending",
@@ -210,6 +211,9 @@ export async function updateMemoryControls(
     }
 
     const revision = actualRevision + 1;
+    if (!input.recordingEnabled) {
+      await cancelRelationshipExtractions(transaction, input, new Date());
+    }
     if (!settings) {
       const inserted = await transaction
         .insert(userCharacterMemorySetting)
@@ -351,7 +355,11 @@ export async function editMemoryItem(
         content: candidate.content,
         normalizedContent: candidate.normalizedContent,
         normalizedDigest: candidate.normalizedDigest,
+        automaticDigest:
+          item.automaticDigest ??
+          (item.origin === "automatic" ? item.normalizedDigest : null),
         origin: "user_edited",
+        isActive: true,
         explicitness: "direct",
         userEditedAt: now,
         updatedAt: now,
@@ -459,6 +467,7 @@ export async function forgetCharacter(
     const now = new Date();
     const memoryEpoch = settings.memoryEpoch + 1;
     const revision = settings.revision + 1;
+    await cancelRelationshipExtractions(transaction, input, now);
     await transaction
       .update(userCharacterMemorySetting)
       .set({

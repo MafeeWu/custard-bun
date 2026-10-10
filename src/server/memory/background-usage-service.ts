@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import {
   lockGlobalChatMutation,
@@ -15,6 +15,8 @@ import {
 import type { Database } from "@/server/db/client";
 import {
   backgroundModelReservation,
+  memoryExtractionExecution,
+  memoryExtractionRun,
   chatSettings,
   quotaBucket,
   usageLedger,
@@ -122,9 +124,7 @@ export async function admitBackgroundModelWork(
 
   const bucket = await lockInstanceQuotaBucket(transaction, input.now);
   if (
-    bucket.consumedTokens +
-      bucket.reservedTokens +
-      input.estimatedTokens >
+    bucket.consumedTokens + bucket.reservedTokens + input.estimatedTokens >
     settings.instanceMonthlyTokenBudget
   ) {
     throw new ChatDomainError(
@@ -157,19 +157,31 @@ export async function admitBackgroundModelWork(
 
 export async function settleBackgroundModelWork(
   database: Database,
-  input: {
-    operationId: string;
-    outcome: BackgroundOutcome;
-    modelId: string;
-    providerRequestIds: string[];
-    inputTokens?: number;
-    outputTokens?: number;
-    estimatedInputTokens: number;
-    estimatedOutputTokens: number;
-    latencyMs: number;
-    errorCategory?: string;
-    now: Date;
-  },
+  input: BackgroundSettlementInput,
+): Promise<void> {
+  await database.transaction((transaction) =>
+    settleBackgroundModelWorkInTransaction(transaction, input),
+  );
+}
+
+interface BackgroundSettlementInput {
+  operationId: string;
+  outcome: BackgroundOutcome;
+  modelId: string;
+  providerRequestIds: string[];
+  inputTokens?: number;
+  outputTokens?: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  latencyMs: number;
+  errorCategory?: string;
+  now: Date;
+  memoryExtractionRunId?: string;
+}
+
+export async function settleBackgroundModelWorkInTransaction(
+  transaction: ChatTransaction,
+  input: BackgroundSettlementInput,
 ): Promise<void> {
   requireNonnegativeInteger(input.estimatedInputTokens, "estimatedInputTokens");
   requireNonnegativeInteger(
@@ -180,132 +192,186 @@ export async function settleBackgroundModelWork(
   if (input.inputTokens !== undefined) {
     requireNonnegativeInteger(input.inputTokens, "inputTokens");
   }
+
   if (input.outputTokens !== undefined) {
     requireNonnegativeInteger(input.outputTokens, "outputTokens");
   }
 
-  await database.transaction(async (transaction) => {
-    await lockGlobalChatMutation(transaction);
-    const [preview] = await transaction
-      .select()
-      .from(backgroundModelReservation)
-      .where(eq(backgroundModelReservation.operationId, input.operationId))
-      .limit(1);
-    if (!preview) {
-      throw new MemoryDomainError(
-        "MEMORY_NOT_FOUND",
-        "Background model reservation was not found.",
-      );
-    }
-
-    const bucket = await lockExistingQuotaBucket(
-      transaction,
-      instanceBucketId(preview.periodStart),
+  await lockGlobalChatMutation(transaction);
+  const [preview] = await transaction
+    .select()
+    .from(backgroundModelReservation)
+    .where(eq(backgroundModelReservation.operationId, input.operationId))
+    .limit(1);
+  if (!preview) {
+    throw new MemoryDomainError(
+      "MEMORY_NOT_FOUND",
+      "Background model reservation was not found.",
     );
-    if (!bucket) {
-      throw new MemoryDomainError(
-        "MEMORY_INTERNAL",
-        "Background model quota bucket is missing.",
-      );
-    }
-    const [reservation] = await transaction
-      .select()
-      .from(backgroundModelReservation)
-      .where(eq(backgroundModelReservation.id, preview.id))
-      .for("update")
-      .limit(1);
-    if (!reservation) {
-      throw new MemoryDomainError(
-        "MEMORY_NOT_FOUND",
-        "Background model reservation was not found.",
-      );
-    }
+  }
 
-    const usageIsEstimated =
-      input.inputTokens === undefined || input.outputTokens === undefined;
-    const consumedInputTokens =
-      input.inputTokens ?? input.estimatedInputTokens;
-    const consumedOutputTokens =
-      input.outputTokens ?? input.estimatedOutputTokens;
-    const fingerprint = settlementFingerprint({
-      outcome: input.outcome,
-      modelId: input.modelId,
-      providerRequestIds: input.providerRequestIds,
+  const bucket = await lockExistingQuotaBucket(
+    transaction,
+    instanceBucketId(preview.periodStart),
+  );
+  if (!bucket) {
+    throw new MemoryDomainError(
+      "MEMORY_INTERNAL",
+      "Background model quota bucket is missing.",
+    );
+  }
+  const [reservation] = await transaction
+    .select()
+    .from(backgroundModelReservation)
+    .where(eq(backgroundModelReservation.id, preview.id))
+    .for("update")
+    .limit(1);
+  if (!reservation) {
+    throw new MemoryDomainError(
+      "MEMORY_NOT_FOUND",
+      "Background model reservation was not found.",
+    );
+  }
+
+  const usageIsEstimated =
+    input.inputTokens === undefined || input.outputTokens === undefined;
+  const consumedInputTokens = input.inputTokens ?? input.estimatedInputTokens;
+  const consumedOutputTokens =
+    input.outputTokens ?? input.estimatedOutputTokens;
+  const fingerprint = settlementFingerprint({
+    outcome: input.outcome,
+    modelId: input.modelId,
+    providerRequestIds: input.providerRequestIds,
+    consumedInputTokens,
+    consumedOutputTokens,
+    usageIsEstimated,
+    latencyMs: input.latencyMs,
+    errorCategory: input.errorCategory,
+  });
+  const [existingLedger] = await transaction
+    .select()
+    .from(usageLedger)
+    .where(eq(usageLedger.backgroundOperationId, input.operationId))
+    .limit(1);
+
+  if (reservation.settledAt) {
+    if (
+      existingLedger &&
+      reservation.settlementFingerprint === fingerprint &&
+      reservation.consumedInputTokens === consumedInputTokens &&
+      reservation.consumedOutputTokens === consumedOutputTokens &&
+      existingLedger.workloadType === reservation.workloadType &&
+      existingLedger.inputTokens === consumedInputTokens &&
+      existingLedger.outputTokens === consumedOutputTokens &&
+      existingLedger.usageIsEstimated === usageIsEstimated &&
+      existingLedger.modelId === input.modelId &&
+      existingLedger.memoryExtractionRunId ===
+        (reservation.workloadType === "memory_extraction"
+          ? (input.memoryExtractionRunId ?? input.operationId)
+          : null) &&
+      existingLedger.outcome === input.outcome &&
+      existingLedger.errorCategory === (input.errorCategory ?? null) &&
+      existingLedger.latencyMs === input.latencyMs
+    ) {
+      return;
+    }
+    throw settlementConflict();
+  }
+  if (existingLedger) {
+    throw settlementConflict();
+  }
+
+  const consumedTokens = consumedInputTokens + consumedOutputTokens;
+  await transaction
+    .update(quotaBucket)
+    .set({
+      reservedTokens: sql`${quotaBucket.reservedTokens} - ${reservation.reservedTokens}`,
+      consumedTokens: sql`${quotaBucket.consumedTokens} + ${consumedTokens}`,
+      updatedAt: input.now,
+    })
+    .where(eq(quotaBucket.id, bucket.id));
+
+  await transaction.insert(usageLedger).values({
+    id: randomUUID(),
+    backgroundOperationId: input.operationId,
+    memoryExtractionRunId:
+      reservation.workloadType === "memory_extraction"
+        ? (input.memoryExtractionRunId ?? input.operationId)
+        : null,
+    workloadType: reservation.workloadType,
+    periodStart: reservation.periodStart,
+    periodEnd: reservation.periodEnd,
+    userRequestUnits: 0,
+    providerCallNumber: 1,
+    inputTokens: consumedInputTokens,
+    outputTokens: consumedOutputTokens,
+    usageIsEstimated,
+    modelId: input.modelId,
+    outcome: input.outcome,
+    errorCategory: input.errorCategory ?? null,
+    automaticRetryCount: 0,
+    latencyMs: input.latencyMs,
+    createdAt: input.now,
+  });
+  await transaction
+    .update(backgroundModelReservation)
+    .set({
       consumedInputTokens,
       consumedOutputTokens,
-      usageIsEstimated,
-      latencyMs: input.latencyMs,
-      errorCategory: input.errorCategory,
+      settlementFingerprint: fingerprint,
+      settledAt: input.now,
+    })
+    .where(eq(backgroundModelReservation.id, reservation.id));
+}
+
+export async function settleUserExtractionWorkBeforeDeletion(
+  transaction: ChatTransaction,
+  input: { userId: string; now: Date },
+): Promise<void> {
+  await lockUserChatMutation(transaction, input.userId);
+  const outstanding = await transaction
+    .select({
+      execution: memoryExtractionExecution,
+      reservation: backgroundModelReservation,
+    })
+    .from(memoryExtractionExecution)
+    .innerJoin(
+      memoryExtractionRun,
+      eq(memoryExtractionRun.id, memoryExtractionExecution.runId),
+    )
+    .innerJoin(
+      backgroundModelReservation,
+      eq(backgroundModelReservation.operationId, memoryExtractionExecution.id),
+    )
+    .where(
+      and(
+        eq(memoryExtractionRun.userId, input.userId),
+        isNull(backgroundModelReservation.settledAt),
+      ),
+    )
+    .orderBy(
+      asc(backgroundModelReservation.periodStart),
+      asc(memoryExtractionExecution.id),
+    );
+  for (const { execution, reservation } of outstanding) {
+    await settleBackgroundModelWorkInTransaction(transaction, {
+      operationId: execution.id,
+      memoryExtractionRunId: execution.runId,
+      outcome: "cancelled",
+      modelId: execution.modelId,
+      providerRequestIds: execution.providerIdentity,
+      inputTokens: execution.inputTokens ?? undefined,
+      outputTokens: execution.outputTokens ?? undefined,
+      estimatedInputTokens: execution.estimatedInputTokens,
+      estimatedOutputTokens: execution.responseAt
+        ? execution.estimatedOutputTokens
+        : Math.max(
+            0,
+            reservation.reservedTokens - execution.estimatedInputTokens,
+          ),
+      latencyMs: execution.latencyMs,
+      errorCategory: "account_deleted",
+      now: input.now,
     });
-    const [existingLedger] = await transaction
-      .select()
-      .from(usageLedger)
-      .where(eq(usageLedger.backgroundOperationId, input.operationId))
-      .limit(1);
-
-    if (reservation.settledAt) {
-      if (
-        existingLedger &&
-        reservation.settlementFingerprint === fingerprint &&
-        reservation.consumedInputTokens === consumedInputTokens &&
-        reservation.consumedOutputTokens === consumedOutputTokens &&
-        existingLedger.workloadType === reservation.workloadType &&
-        existingLedger.inputTokens === consumedInputTokens &&
-        existingLedger.outputTokens === consumedOutputTokens &&
-        existingLedger.usageIsEstimated === usageIsEstimated &&
-        existingLedger.modelId === input.modelId &&
-        existingLedger.outcome === input.outcome &&
-        existingLedger.errorCategory === (input.errorCategory ?? null) &&
-        existingLedger.latencyMs === input.latencyMs
-      ) {
-        return;
-      }
-      throw settlementConflict();
-    }
-    if (existingLedger) {
-      throw settlementConflict();
-    }
-
-    const consumedTokens = consumedInputTokens + consumedOutputTokens;
-    await transaction
-      .update(quotaBucket)
-      .set({
-        reservedTokens: sql`${quotaBucket.reservedTokens} - ${reservation.reservedTokens}`,
-        consumedTokens: sql`${quotaBucket.consumedTokens} + ${consumedTokens}`,
-        updatedAt: input.now,
-      })
-      .where(eq(quotaBucket.id, bucket.id));
-
-    await transaction.insert(usageLedger).values({
-      id: randomUUID(),
-      backgroundOperationId: input.operationId,
-      memoryExtractionRunId:
-        reservation.workloadType === "memory_extraction"
-          ? input.operationId
-          : null,
-      workloadType: reservation.workloadType,
-      periodStart: reservation.periodStart,
-      periodEnd: reservation.periodEnd,
-      userRequestUnits: 0,
-      providerCallNumber: 1,
-      inputTokens: consumedInputTokens,
-      outputTokens: consumedOutputTokens,
-      usageIsEstimated,
-      modelId: input.modelId,
-      outcome: input.outcome,
-      errorCategory: input.errorCategory ?? null,
-      automaticRetryCount: 0,
-      latencyMs: input.latencyMs,
-      createdAt: input.now,
-    });
-    await transaction
-      .update(backgroundModelReservation)
-      .set({
-        consumedInputTokens,
-        consumedOutputTokens,
-        settlementFingerprint: fingerprint,
-        settledAt: input.now,
-      })
-      .where(eq(backgroundModelReservation.id, reservation.id));
-  });
+  }
 }

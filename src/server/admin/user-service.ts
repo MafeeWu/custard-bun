@@ -7,6 +7,7 @@ import type { Database } from "@/server/db/client";
 import { session, user } from "@/server/db/auth-schema";
 import { generationAttempt } from "@/server/db/chat-schema";
 import { lockUserChatMutation } from "@/server/chat/chat-locks";
+import { cancelRelationshipExtractions } from "@/server/memory/memory-extraction-service";
 import { requireAdminWrite } from "./require-admin-write";
 
 export function validateDisableReason(reason: string): string {
@@ -61,6 +62,11 @@ export async function disableOrdinaryUser(
       })
       .where(eq(user.id, input.userId));
     const cancellationRequestedAt = new Date();
+    await cancelRelationshipExtractions(
+      transaction,
+      { userId: input.userId },
+      cancellationRequestedAt,
+    );
     await transaction
       .update(generationAttempt)
       .set({

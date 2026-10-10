@@ -8,6 +8,9 @@ import { createBoss } from "@/server/jobs/boss";
 import { AUTH_EMAIL_QUEUE, ensureQueues } from "@/server/jobs/queues";
 import { runWorkerProcess } from "@/server/worker/lifecycle";
 import { startupDiagnostic } from "@/server/config/configuration-error";
+import { OpenAiCompatibleGateway } from "@/server/model-gateway/openai-compatible-gateway";
+import { createTokenCounter } from "@/server/chat/token-counter";
+import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
 
 async function main(): Promise<void> {
   const config = await loadRuntimeConfig();
@@ -16,12 +19,22 @@ async function main(): Promise<void> {
     query_timeout: 10_000,
     statement_timeout: 10_000,
   });
+  const tokenCounter = createTokenCounter(config.secret.model.modelId);
+  let stopMemoryWorker: (() => Promise<void>) | undefined;
 
   await runWorkerProcess({
     createDatabase: () => database,
     createBoss: () => createBoss(config.secret.databaseUrl),
     ensureQueues,
-    startHeartbeat: () => startWorkerHeartbeat(database),
+    startHeartbeat: async () => {
+      const heartbeat = await startWorkerHeartbeat(database);
+      return {
+        stop: async () => {
+          await stopMemoryWorker?.();
+          await heartbeat.stop();
+        },
+      };
+    },
     registerWorker: async (boss) => {
       await boss.work<EmailQueueJob>(AUTH_EMAIL_QUEUE, async ([job]) => {
         await processEmail(database, job.data, (email) =>
@@ -31,6 +44,13 @@ async function main(): Promise<void> {
           }),
         );
       });
+      stopMemoryWorker = await registerMemoryExtractionWorker(
+        database,
+        boss,
+        new OpenAiCompatibleGateway(config.secret.model),
+        tokenCounter,
+        console,
+      );
     },
     onSignal: (signal, listener) => process.once(signal, listener),
     logger: console,

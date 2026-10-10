@@ -17,6 +17,7 @@ import {
   generationAttempt,
   generationLease,
   memorySettings,
+  memoryExtractionRun,
   quotaReservation,
   quotaBucket,
   session,
@@ -89,7 +90,9 @@ class FakeGateway implements ModelGateway {
 
   completeStructured(_input: StructuredCompletionInput): Promise<never> {
     void _input;
-    return Promise.reject(new Error("Structured completion is not configured."));
+    return Promise.reject(
+      new Error("Structured completion is not configured."),
+    );
   }
 }
 
@@ -134,6 +137,7 @@ beforeEach(async () => {
     id: "global",
     enabled: true,
     deploymentDefaultEnabled: true,
+    createdAt: new Date(baseNow.getTime() - 1),
   });
 });
 
@@ -260,6 +264,84 @@ async function collect(
   }
   return events;
 }
+
+test("successful current generation settlement atomically creates a durable extraction run", async () => {
+  const userId = await insertUser();
+  const conversationId = await insertConversation(userId);
+  const service = serviceWith(
+    new FakeGateway(async function* () {
+      yield { type: "delta", text: "I hear you." };
+      yield {
+        type: "usage",
+        inputTokens: 10,
+        outputTokens: 5,
+        estimated: false,
+      };
+    }),
+  );
+  await collect(
+    service.startNewMessage({
+      userId,
+      conversationId,
+      clientRequestId: randomUUID(),
+      content: "I prefer green tea.",
+      signal: new AbortController().signal,
+    }),
+  );
+  const runs = await database.select().from(memoryExtractionRun);
+  expect(runs).toMatchObject([
+    { userId, conversationId, status: "pending", attemptCount: 0 },
+  ]);
+  expect(await database.select().from(quotaReservation)).toMatchObject([
+    { status: "settled" },
+  ]);
+});
+
+test("extraction insertion failure rolls back chat attempt settlement and all quota accounting", async () => {
+  const userId = await insertUser();
+  const conversationId = await insertConversation(userId);
+  const service = serviceWith(successfulGateway());
+  await database.execute(
+    sql.raw(`
+    CREATE FUNCTION task5_fail_run() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected run insertion failure'; END $$;
+    CREATE TRIGGER task5_fail_run BEFORE INSERT ON memory_extraction_runs
+    FOR EACH ROW EXECUTE FUNCTION task5_fail_run()
+  `),
+  );
+  try {
+    await expect(
+      collect(
+        service.startNewMessage({
+          userId,
+          conversationId,
+          clientRequestId: randomUUID(),
+          content: "I prefer green tea.",
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).rejects.toBeDefined();
+    expect(await database.select().from(memoryExtractionRun)).toHaveLength(0);
+    expect(await database.select().from(usageLedger)).toHaveLength(0);
+    expect(await database.select().from(quotaReservation)).toMatchObject([
+      { status: "active" },
+    ]);
+    expect(
+      (await database.select().from(generationAttempt))[0].status,
+    ).not.toBe("complete");
+    expect(
+      (await database.select().from(quotaBucket)).every(
+        (bucket) => bucket.consumedTokens === 0,
+      ),
+    ).toBe(true);
+  } finally {
+    await database.execute(
+      sql.raw(
+        "DROP TRIGGER task5_fail_run ON memory_extraction_runs; DROP FUNCTION task5_fail_run()",
+      ),
+    );
+  }
+});
 
 function successfulGateway(events?: GatewayStreamEvent[]) {
   return new FakeGateway(async function* () {
