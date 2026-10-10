@@ -31,6 +31,7 @@ import {
   ensureQueues,
 } from "@/server/jobs/queues";
 import { createBoss } from "@/server/jobs/boss";
+import * as snapshotService from "./data-export-snapshot";
 
 const database = createDatabase(testDatabaseUrl());
 beforeEach(() => resetExtractionDatabase(database));
@@ -90,14 +91,9 @@ test("transient failures persist bounded retry state; exhausted work is failed w
     userId,
     now: extractionNow,
   });
-  const original = database.transaction.bind(database);
   const spy = vi
-    .spyOn(database, "transaction")
-    .mockImplementation((callback, config) => {
-      if (config?.isolationLevel === "repeatable read")
-        return Promise.reject(new Error("private-provider-body-secret"));
-      return original(callback, config);
-    });
+    .spyOn(snapshotService, "readDataExportSnapshot")
+    .mockRejectedValue(new Error("private-provider-body-secret"));
   try {
     for (let i = 0; i < 5; i++)
       await expect(
@@ -107,6 +103,8 @@ test("transient failures persist bounded retry state; exhausted work is failed w
           new Date(extractionNow.getTime() + i * 3600000),
         ),
       ).rejects.toThrow("Data export execution failed.");
+    expect(database.$client.idleCount).toBe(database.$client.totalCount);
+    expect(database.$client.waitingCount).toBe(0);
   } finally {
     spy.mockRestore();
   }
@@ -278,16 +276,9 @@ test("worker failures log only validated export ID and safe status and throw san
     userId,
     now: new Date(),
   });
-  const original = database.transaction.bind(database);
   const spy = vi
-    .spyOn(database, "transaction")
-    .mockImplementation((callback, config) => {
-      if (config?.isolationLevel === "repeatable read")
-        return Promise.reject(
-          new Error("private messages provider body secret"),
-        );
-      return original(callback, config);
-    });
+    .spyOn(snapshotService, "readDataExportSnapshot")
+    .mockRejectedValue(new Error("private messages provider body secret"));
   try {
     const handler = work.mock.calls.find(
       ([name]) => name === DATA_EXPORT_QUEUE,

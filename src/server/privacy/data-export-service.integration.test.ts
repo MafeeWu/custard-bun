@@ -27,6 +27,8 @@ import {
   DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
 } from "@/server/memory/relationship-summary-service";
 import { deleteUserWithGenerationSettlement } from "@/server/chat/quota-service";
+import { lockUserChatMutation } from "@/server/chat/chat-locks";
+import * as snapshotService from "./data-export-snapshot";
 import {
   requestDataExport,
   getDataExportForUser,
@@ -63,6 +65,26 @@ const decode = (bytes: Buffer) =>
       JSON.parse(strFromU8(value)),
     ]),
   );
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("export race timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 test("ZIP has a versioned deterministic owner-only allowlist, including evidence and summary history", async () => {
   const owner = await summaryFixture(database);
@@ -356,9 +378,47 @@ test("scheduled expiry physically removes bytes and retained metadata never expo
   expect(view).toMatchObject({ id: exportId, status: "complete" });
   expect(JSON.stringify(view)).not.toMatch(/archive|jobId|errorCategory/);
   expect(
-    await expireDataExports(database, new Date(now.getTime() + 86400000)),
+    await expireDataExports(database, new Date(view!.expiresAt!)),
   ).toBe(1);
   expect((await row(exportId)).archiveBytes).toBeNull();
+});
+
+test("download and cleanup use exactly 24 hours from publication, not dispatch or snapshot time", async () => {
+  const { userId } = await summaryFixture(database);
+  const { exportId } = await request(userId);
+  let clockNow = now;
+  const publishedAt = new Date("2026-10-10T14:37:00.000Z");
+  const expiry = new Date("2026-10-11T14:37:00.000Z");
+  const readSnapshot = snapshotService.readDataExportSnapshot;
+  vi.spyOn(snapshotService, "readDataExportSnapshot").mockImplementation(
+    async (...args) => {
+      const archive = await readSnapshot(...args);
+      clockNow = publishedAt;
+      return archive;
+    },
+  );
+  const policy = { maxArchiveBytes: 262144000, clock: () => clockNow };
+  await processDataExport(database, exportId, now, policy);
+  const complete = await row(exportId);
+  expect(complete.completedAt).toEqual(publishedAt);
+  expect(complete.expiresAt).toEqual(expiry);
+  expect(complete.updatedAt).toEqual(publishedAt);
+  expect(decode(complete.archiveBytes!)["manifest.json"].snapshotAt).toBe(
+    now.toISOString(),
+  );
+  expect(await expireDataExports(database, new Date(expiry.getTime() - 1))).toBe(0);
+  expect(
+    await downloadDataExport(database, {
+      userId, exportId, now: new Date(expiry.getTime() - 1),
+    }),
+  ).toMatchObject({ bytes: complete.archiveBytes });
+  expect(await expireDataExports(database, expiry)).toBe(1);
+  expect(await downloadDataExport(database, { userId, exportId, now: expiry })).toBeNull();
+  expect(await row(exportId)).toMatchObject({
+    status: "expired", archiveBytes: null, archiveSize: null,
+    archiveSha256: null, expiresAt: null,
+  });
+  expect(await expireDataExports(database, expiry)).toBe(0);
 });
 
 test("cancellation seam and hard deletion make all jobs inaccessible and remove bytes", async () => {
@@ -425,6 +485,266 @@ test("download independently rejects corrupt stored integrity without returning 
   }
 });
 
+test("two-connection pool completes under deletion/download/writer pressure with an old repeatable snapshot", async () => {
+  const owner = await summaryFixture(database);
+  const other = await summaryFixture(database);
+  const { exportId } = await request(owner.userId);
+  const exporter = createDatabase(testDatabaseUrl(), {
+    application_name: "export-two-connection-race",
+    max: 2,
+    connectionTimeoutMillis: 1000,
+    statement_timeout: 3000,
+  });
+  const deleter = createDatabase(testDatabaseUrl(), {
+    application_name: "export-two-connection-deleter",
+    max: 1,
+    connectionTimeoutMillis: 1000,
+    statement_timeout: 3000,
+  });
+  const lockHeld = deferred();
+  const startSnapshot = deferred();
+  const snapshotRead = deferred();
+  const finishSnapshot = deferred();
+  const original = exporter.transaction.bind(exporter);
+  let transactions = 0;
+  const transactionSpy = vi.spyOn(exporter, "transaction").mockImplementation(
+    (callback, config) => original(async (tx) => {
+      if (++transactions === 2) {
+        const select = tx.select.bind(tx);
+        vi.spyOn(tx, "select").mockImplementation(((
+          ...args: Parameters<typeof select>
+        ) => {
+          const query = select(...args);
+          const from = query.from.bind(query);
+          query.from = ((table: unknown) => {
+            const result = from(table as never);
+            if (table === dataExportJob) {
+              const execute = result.execute.bind(result);
+              vi.spyOn(result, "execute").mockImplementation(async (...values) => {
+                const rows = await execute(...values);
+                lockHeld.resolve();
+                await startSnapshot.promise;
+                return rows;
+              });
+            }
+            return result;
+          }) as typeof query.from;
+          return query;
+        }) as typeof tx.select);
+      }
+      return callback(tx);
+    }, config),
+  );
+  const readSnapshot = snapshotService.readDataExportSnapshot;
+  let capturedArchive: Awaited<ReturnType<typeof readSnapshot>> | undefined;
+  const snapshotSpy = vi.spyOn(snapshotService, "readDataExportSnapshot")
+    .mockImplementation(async (tx, ...args) => {
+      const isolation = await tx.execute(sql`
+        SELECT current_setting('transaction_isolation') AS isolation,
+               current_setting('transaction_read_only') AS read_only
+      `);
+      expect(isolation.rows[0]).toEqual({
+        isolation: "repeatable read", read_only: "on",
+      });
+      const select = tx.select.bind(tx);
+      let first = true;
+      vi.spyOn(tx, "select").mockImplementation(((
+        ...values: Parameters<typeof select>
+      ) => {
+        const query = select(...values);
+        const from = query.from.bind(query);
+        query.from = ((table: unknown) => {
+          const result = from(table as never);
+          if (first) {
+            first = false;
+            const execute = result.execute.bind(result);
+            vi.spyOn(result, "execute").mockImplementation(async (...values) => {
+              const rows = await execute(...values);
+              snapshotRead.resolve();
+              await finishSnapshot.promise;
+              return rows;
+            });
+          }
+          return result;
+        }) as typeof query.from;
+        return query;
+      }) as typeof tx.select);
+      capturedArchive = await readSnapshot(tx, ...args);
+      return capturedArchive;
+    });
+  const operations: Promise<unknown>[] = [];
+  try {
+    const processing = processDataExport(exporter, exportId, now);
+    operations.push(processing);
+    void processing.catch(() => {});
+    await bounded(lockHeld.promise);
+    const deletion = deleter.transaction(async (tx) => {
+      await cancelDataExportsForUser(tx, owner.userId, now);
+      await tx.update(user).set({ deletionPendingAt: now })
+        .where(eq(user.id, owner.userId));
+    });
+    operations.push(deletion);
+    void deletion.catch(() => {});
+    await bounded((async () => {
+      for (;;) {
+        const result = await database.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE application_name = 'export-two-connection-deleter' AND wait_event_type = 'Lock'`,
+        );
+        if (result.rows.length) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    })());
+    // Old code lends the remaining client to a download waiter, starving snapshot checkout.
+    const downloading = downloadDataExport(exporter, {
+      userId: owner.userId, exportId, now,
+    });
+    const writing = exporter.transaction(async (tx) => {
+      await lockUserChatMutation(tx, other.userId);
+      await tx.update(user).set({ name: "Pressure writer" })
+        .where(eq(user.id, other.userId));
+    });
+    operations.push(downloading, writing);
+    void downloading.catch(() => {});
+    void writing.catch(() => {});
+    await bounded((async () => {
+      while (exporter.$client.totalCount < 2 || exporter.$client.waitingCount === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    })());
+    startSnapshot.resolve();
+    await bounded(Promise.race([
+      snapshotRead.promise,
+      processing.then(() => { throw new Error("export skipped snapshot"); }),
+    ]));
+    await database.transaction(async (tx) => {
+      await tx.update(user).set({ name: "New name" })
+        .where(eq(user.id, owner.userId));
+      await tx.update(conversationMessage).set({ content: "New user message" })
+        .where(eq(conversationMessage.id, owner.sourceMessageId));
+    });
+    finishSnapshot.resolve();
+    await bounded(Promise.all(operations));
+    expect(decode(capturedArchive!.bytes)["profile.json"].name).toBe("Memory User");
+    expect(decode(capturedArchive!.bytes)["conversations.json"].messages[0].content)
+      .toBe("I prefer green tea.");
+    expect(await downloading).toBeNull();
+    expect(await row(exportId)).toBeUndefined();
+    expect((await database.select().from(user).where(eq(user.id, other.userId)))[0].name)
+      .toBe("Pressure writer");
+    expect(exporter.$client.totalCount).toBe(2);
+    expect(exporter.$client.idleCount).toBe(2);
+    expect(exporter.$client.waitingCount).toBe(0);
+  } finally {
+    startSnapshot.resolve();
+    finishSnapshot.resolve();
+    await bounded(Promise.allSettled(operations));
+    transactionSpy.mockRestore();
+    snapshotSpy.mockRestore();
+    await Promise.all([exporter.$client.end(), deleter.$client.end()]);
+  }
+});
+
+test("concurrent exports reserve paired capacity without splitting a two-connection pool", async () => {
+  const owners = await Promise.all([summaryFixture(database), summaryFixture(database)]);
+  const exports = await Promise.all(owners.map((owner) => request(owner.userId)));
+  const exporter = createDatabase(testDatabaseUrl(), {
+    max: 2, connectionTimeoutMillis: 1000, statement_timeout: 3000,
+  });
+  const claimed = deferred();
+  let claims = 0;
+  const original = exporter.transaction.bind(exporter);
+  const spy = vi.spyOn(exporter, "transaction").mockImplementation(
+    async (callback, config) => {
+      const result = await original(callback, config);
+      if (result && typeof result === "object" && "attemptCount" in result) {
+        if (++claims === 2) claimed.resolve();
+        await claimed.promise;
+      }
+      return result;
+    },
+  );
+  const processing = exports.map(({ exportId }) =>
+    processDataExport(exporter, exportId, now));
+  for (const operation of processing) void operation.catch(() => {});
+  try {
+    await bounded(Promise.all(processing));
+    for (let i = 0; i < exports.length; i++) {
+      const completed = await row(exports[i].exportId);
+      expect(completed.status).toBe("complete");
+      expect(decode(completed.archiveBytes!)["profile.json"].id).toBe(owners[i].userId);
+    }
+    expect(exporter.$client.idleCount).toBe(2);
+    expect(exporter.$client.waitingCount).toBe(0);
+  } finally {
+    claimed.resolve();
+    await bounded(Promise.allSettled(processing));
+    spy.mockRestore();
+    await exporter.$client.end();
+  }
+});
+
+test.each(["snapshot checkout", "owner checkout", "owner transaction", "snapshot read"])(
+  "%s failure releases reserved clients and locks so a two-connection retry completes",
+  async (stage) => {
+    const { userId } = await summaryFixture(database);
+    const { exportId } = await request(userId);
+    const exporter = createDatabase(testDatabaseUrl(), {
+      max: 2, connectionTimeoutMillis: 1000, statement_timeout: 3000,
+    });
+    const fault = new Error("private connection or snapshot fault");
+    const connect = exporter.$client.connect.bind(exporter.$client);
+    let checkouts = 0;
+    const connectSpy = vi.spyOn(exporter.$client, "connect").mockImplementation(
+      ((callback?: Parameters<typeof connect>[0]) => {
+        checkouts++;
+        if (callback) return connect(callback);
+        if (
+          (stage === "snapshot checkout" && checkouts === 3) ||
+          (stage === "owner checkout" && checkouts === 4)
+        ) return Promise.reject(fault);
+        return connect();
+      }) as typeof exporter.$client.connect,
+    );
+    const original = exporter.transaction.bind(exporter);
+    let transactions = 0;
+    const transactionSpy = vi.spyOn(exporter, "transaction").mockImplementation(
+      (callback, config) => original(async (tx) => {
+        if (++transactions === 2 && stage === "owner transaction") throw fault;
+        return callback(tx);
+      }, config),
+    );
+    const readSnapshot = snapshotService.readDataExportSnapshot;
+    const snapshotSpy = vi.spyOn(snapshotService, "readDataExportSnapshot")
+      .mockImplementation((...args) => {
+        if (stage === "snapshot read") return Promise.reject(fault);
+        return readSnapshot(...args);
+      });
+    try {
+      await expect(bounded(processDataExport(exporter, exportId, now)))
+        .rejects.toThrow("Data export execution failed.");
+      expect(await row(exportId)).toMatchObject({
+        status: stage === "snapshot read" ? "pending" : "running",
+        attemptCount: 1, archiveBytes: null, archiveSize: null,
+        archiveSha256: null, expiresAt: null,
+      });
+      expect(exporter.$client.idleCount).toBe(exporter.$client.totalCount);
+      expect(exporter.$client.waitingCount).toBe(0);
+      connectSpy.mockRestore();
+      transactionSpy.mockRestore();
+      snapshotSpy.mockRestore();
+      await bounded(processDataExport(exporter, exportId, new Date(now.getTime() + 3600000)));
+      expect((await row(exportId)).status).toBe("complete");
+      expect(exporter.$client.idleCount).toBe(2);
+      expect(exporter.$client.waitingCount).toBe(0);
+    } finally {
+      connectSpy.mockRestore();
+      transactionSpy.mockRestore();
+      snapshotSpy.mockRestore();
+      await exporter.$client.end();
+    }
+  },
+);
+
 test("named PostgreSQL repeatable snapshot and deletion serialize across the entire private boundary", async () => {
   const owner = await summaryFixture(database);
   const { exportId } = await request(owner.userId);
@@ -445,45 +765,40 @@ test("named PostgreSQL repeatable snapshot and deletion serialize across the ent
   const paused = new Promise<void>((resolve) => {
     reached = resolve;
   });
-  const original = exporter.transaction.bind(exporter);
+  const original = snapshotService.readDataExportSnapshot;
   let capturedArchive: { bytes: Buffer } | undefined;
   const spy = vi
-    .spyOn(exporter, "transaction")
-    .mockImplementation((callback, config) =>
-      original(async (tx) => {
-        if (config?.isolationLevel === "repeatable read") {
-          const select = tx.select.bind(tx);
-          let first = true;
-          vi.spyOn(tx, "select").mockImplementation(((
-            ...args: Parameters<typeof select>
-          ) => {
-            const query = select(...args);
-            const from = query.from.bind(query);
-            query.from = ((table: unknown) => {
-              const result = from(table as never);
-              if (first) {
-                first = false;
-                const execute = result.execute.bind(result);
-                vi.spyOn(result, "execute").mockImplementation(
-                  async (...values) => {
-                    const rows = await execute(...values);
-                    reached();
-                    await gate;
-                    return rows;
-                  },
-                );
-              }
-              return result;
-            }) as typeof query.from;
-            return query;
-          }) as typeof tx.select);
-        }
-        const result = await callback(tx);
-        if (config?.isolationLevel === "repeatable read")
-          capturedArchive = result as { bytes: Buffer };
-        return result;
-      }, config),
-    );
+    .spyOn(snapshotService, "readDataExportSnapshot")
+    .mockImplementation(async (tx, ...args) => {
+      const select = tx.select.bind(tx);
+      let first = true;
+      vi.spyOn(tx, "select").mockImplementation(((
+        ...values: Parameters<typeof select>
+      ) => {
+        const query = select(...values);
+        const from = query.from.bind(query);
+        query.from = ((table: unknown) => {
+          const result = from(table as never);
+          if (first) {
+            first = false;
+            const execute = result.execute.bind(result);
+            vi.spyOn(result, "execute").mockImplementation(
+              async (...values) => {
+                const rows = await execute(...values);
+                reached();
+                await gate;
+                return rows;
+              },
+            );
+          }
+          return result;
+        }) as typeof query.from;
+        return query;
+      }) as typeof tx.select);
+      const result = await original(tx, ...args);
+      capturedArchive = result;
+      return result;
+    });
   let processing: Promise<void> | undefined;
   let deletion: Promise<unknown> | undefined;
   let downloading: ReturnType<typeof downloadDataExport> | undefined;

@@ -157,8 +157,9 @@ copies securely.
 Only the current authenticated owner can download an unexpired archive. ZIP
 bytes live in PostgreSQL `bytea`, never on disk or in queue payloads; SHA-256 and
 size are verified again at download. Downloads use `private, no-store` headers.
-Expiry is exactly 24 hours after completion; scheduled cleanup and owner reads
-remove expired archive bytes. The `memory.maxExportArchiveBytes` configuration
+Expiry is exactly 24 hours after final archive publication, not worker dispatch
+or snapshot start; scheduled cleanup and owner reads remove expired archive
+bytes. The `memory.maxExportArchiveBytes` configuration
 defaults to 262144000 bytes and can be lowered; oversized exports fail without
 partial storage. An explicit failed-job retry creates a new job, preserving
 terminal database invariants.
@@ -168,8 +169,11 @@ expiry cleanup alongside email, extraction, and summary work. Database retry
 counts/backoff and periodic reconciliation survive lost enqueue attempts and
 worker restarts. Snapshot generation holds canonical global/user mutation locks
 through a separate repeatable-read snapshot and archive publication; its database
-pool therefore needs at least two connections. Account-deletion integration must
-invoke `cancelDataExportsForUser` in the transaction that marks the user pending
+pool therefore needs at least two connections. Snapshot capacity is reserved
+before canonical lock waiting, with paired export checkouts serialized to avoid
+pool starvation even at that minimum. The repeatable-read transaction starts
+only after the owning global/user locks are held. Account-deletion integration
+must invoke `cancelDataExportsForUser` in the transaction that marks the user pending
 deletion: it cancels nonterminal jobs and physically removes completed archives.
 The existing hard-delete owning service already calls this seam.
 

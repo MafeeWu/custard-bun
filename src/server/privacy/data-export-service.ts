@@ -1,7 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, lte } from "drizzle-orm";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { PoolClient } from "pg";
 import type { Database } from "@/server/db/client";
+import * as schema from "@/server/db/schema";
 import {
   lockUserChatMutation,
   type ChatTransaction,
@@ -19,6 +22,7 @@ export const EXPORT_MAX_ATTEMPTS = 5;
 export const EXPORT_LEASE_MS = 15 * 60_000;
 export interface DataExportPolicy {
   maxArchiveBytes: number;
+  clock?: () => Date;
 }
 export interface DataExportView {
   id: string;
@@ -53,6 +57,43 @@ async function privateTransaction<T>(
   } catch (error) {
     if (error instanceof DataExportError) throw error;
     throw new DataExportError("EXPORT_INTERNAL");
+  }
+}
+
+const snapshotCheckouts = new WeakMap<Database["$client"], Promise<void>>();
+
+async function withReservedExportSnapshot<T>(
+  database: Database,
+  operation: (
+    tx: ChatTransaction,
+    snapshot: NodePgDatabase<typeof schema>,
+  ) => Promise<T>,
+): Promise<T> {
+  const pool = database.$client;
+  const previous = snapshotCheckouts.get(pool) ?? Promise.resolve();
+  let unlock!: () => void;
+  const checkout = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  snapshotCheckouts.set(pool, checkout);
+  await previous;
+  const releaseCheckout = () => {
+    unlock();
+    if (snapshotCheckouts.get(pool) === checkout) snapshotCheckouts.delete(pool);
+  };
+  let snapshotClient: PoolClient | undefined;
+  try {
+    // Serialize paired checkout so concurrent exports cannot each reserve half the pool.
+    // Reserve snapshot capacity before the owning transaction can wait on canonical locks.
+    snapshotClient = await pool.connect();
+    const snapshot = drizzle(snapshotClient, { schema });
+    return await database.transaction(async (tx) => {
+      releaseCheckout();
+      return operation(tx, snapshot);
+    });
+  } finally {
+    releaseCheckout();
+    snapshotClient?.release();
   }
 }
 
@@ -344,7 +385,7 @@ async function processDataExportInTransaction(
   });
   if (!claim) return;
   // The short claim commits before private work, so crashes consume a durable attempt and lease.
-  const failed = await database.transaction(async (tx) => {
+  const failed = await withReservedExportSnapshot(database, async (tx, snapshotDatabase) => {
     await lockUserChatMutation(tx, claim.userId);
     const [job] = await tx
       .select(metadata)
@@ -365,7 +406,7 @@ async function processDataExportInTransaction(
       // Lock acquisition is READ COMMITTED: a waiter must see deletion committed by its predecessor.
       // A separate read-only RR connection starts its MVCC snapshot only AFTER canonical locks are held.
       // The owning transaction keeps them through ZIP construction and publication; never reverse this order.
-      const archive = await database.transaction(
+      const archive = await snapshotDatabase.transaction(
         (snapshot) =>
           readDataExportSnapshot(
             snapshot,
@@ -375,6 +416,7 @@ async function processDataExportInTransaction(
           ),
         { isolationLevel: "repeatable read", accessMode: "read only" },
       );
+      const completedAt = policy.clock?.() ?? new Date();
       await tx
         .update(dataExportJob)
         .set({
@@ -382,11 +424,11 @@ async function processDataExportInTransaction(
           archiveBytes: archive.bytes,
           archiveSize: archive.size,
           archiveSha256: archive.sha256,
-          completedAt: now,
-          expiresAt: new Date(now.getTime() + 86_400_000),
+          completedAt,
+          expiresAt: new Date(completedAt.getTime() + 86_400_000),
           errorCategory: null,
           nextRetryAt: null,
-          updatedAt: now,
+          updatedAt: completedAt,
         })
         .where(eq(dataExportJob.id, exportId));
       return false;
