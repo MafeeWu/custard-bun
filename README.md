@@ -199,6 +199,11 @@ Impersonated sessions also require an eligible, existing impersonator, and both
 session relationships are revoked on lockout and final purge. Recovery record
 insertion validates the exact current owner under the canonical deletion fence;
 delayed recovery against a pending or removed owner stays a uniform no-op.
+Verification UPDATE keeps identifier/value immutable and checks current owners
+without late settings/user locks: its already-held row lock serializes with final
+purge, which removes the unchanged private identity. Active owners may refresh
+expiry; rotation requires a new fenced INSERT. Pending or missing owners cannot
+restore retained verification rows.
 Administrator user-state and quota mutations cannot target pending accounts.
 
 The worker dispatches the ID-only `account-purge` queue at high priority. Each

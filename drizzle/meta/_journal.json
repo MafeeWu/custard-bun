@@ -148,6 +148,13 @@
       "when": 1791639864961,
       "tag": "0020_session_refresh_lock_order",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791641192851,
+      "tag": "0021_verification_update_lock_order",
+      "breakpoints": true
     }
   ]
 }

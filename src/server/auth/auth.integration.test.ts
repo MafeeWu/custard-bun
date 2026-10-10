@@ -961,6 +961,213 @@ describe("createAuth", () => {
     },
   );
 
+  test("verification update already holding its row cannot deadlock final purge or retain private content", async () => {
+    const { auth } = await createTestAuth({ registrationOpen: true });
+    await auth.handler(post("/sign-up/email", signUpBody));
+    const [owner] = await database.select().from(user);
+    const now = new Date();
+    await database.insert(verification).values({
+      id: "purge-racing-verification",
+      identifier: "reset-password:private-reset-token",
+      value: owner.id,
+      expiresAt: new Date(now.getTime() + 3_600_000),
+    });
+    await boss.send(AUTH_EMAIL_QUEUE, {
+      kind: "reset-password",
+      to: owner.email,
+      actionUrl: `${baseUrl}/reset-password?token=private-reset-token`,
+    });
+    const requested = await requestAccountDeletion(database, {
+      userId: owner.id,
+      email: owner.email,
+      now,
+    });
+    await confirmAccountDeletion(database, {
+      token: requested.verificationToken,
+      now,
+    });
+    for (let stage = 0; stage < 5; stage++)
+      expect(
+        await processAccountPurgeStage(database, requested.requestId, now),
+      ).toBe("continue");
+    const updating = createDatabase(databaseUrl, {
+      application_name: "verification-update-before-purge",
+    });
+    const purging = createDatabase(databaseUrl, {
+      application_name: "purge-after-verification-update",
+    });
+    await database.execute(sql`
+      CREATE FUNCTION task10_pause_verification_update() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_advisory_xact_lock(hashtextextended('task10-verification-update', 0)); RETURN NEW; END $$;
+      CREATE TRIGGER a_task10_pause_verification_update BEFORE UPDATE ON verification
+      FOR EACH ROW EXECUTE FUNCTION task10_pause_verification_update()
+    `);
+    let update: Promise<string> | undefined;
+    let purge: Promise<string> | undefined;
+    try {
+      await database.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended('task10-verification-update', 0))`,
+        );
+        update = updating
+          .transaction(async (updateTx) => {
+            await updateTx.execute(sql`SET LOCAL deadlock_timeout = '100ms'`);
+            await updateTx
+              .update(verification)
+              .set({ expiresAt: new Date(now.getTime() + 7_200_000) })
+              .where(eq(verification.id, "purge-racing-verification"));
+          })
+          .then(
+            () => "accepted",
+            (error: unknown) => {
+              const cause = error instanceof Error ? error.cause : undefined;
+              return cause && typeof cause === "object" && "code" in cause
+                ? String(cause.code)
+                : "unexpected-error";
+            },
+          );
+        await waitForDatabaseLock("verification-update-before-purge");
+        purge = processAccountPurgeStage(purging, requested.requestId, now).catch(
+          () => "failed",
+        );
+        await waitForDatabaseLock("purge-after-verification-update");
+        const { rows } = await database.$client.query(
+          `SELECT query, pg_blocking_pids(pid) @> ARRAY[
+            (SELECT pid FROM pg_stat_activity WHERE application_name = $2 AND state = 'active')
+          ] AS blocked_by_update FROM pg_stat_activity
+          WHERE application_name = $1 AND state = 'active'`,
+          [
+            "purge-after-verification-update",
+            "verification-update-before-purge",
+          ],
+        );
+        expect(rows[0].query).toMatch(/delete from verification/i);
+        expect(rows[0].blocked_by_update).toBe(true);
+      });
+      expect(await update).toBe("23514");
+      expect(await purge).toBe("complete");
+      expect(await database.select().from(verification)).toHaveLength(0);
+      expect(await database.select().from(user)).toHaveLength(0);
+      const jobs = await boss.findJobs<EmailQueueJob>(AUTH_EMAIL_QUEUE, {});
+      expect(JSON.stringify(jobs)).not.toMatch(
+        /person@example|private-reset-token|actionUrl/,
+      );
+    } finally {
+      await Promise.allSettled([update, purge].filter(Boolean));
+      await database.execute(sql`
+        DROP TRIGGER a_task10_pause_verification_update ON verification;
+        DROP FUNCTION task10_pause_verification_update()
+      `);
+      await updating.$client.end();
+      await purging.$client.end();
+    }
+  });
+
+  test.each([
+    ["recovery", "pending"],
+    ["recovery", "missing"],
+    ["email", "pending"],
+    ["email", "missing"],
+  ])(
+    "%s verification cannot be restored for a %s authoritative owner",
+    async (kind, state) => {
+      await database.insert(user).values({
+        id: "verification-owner",
+        name: "Owner",
+        email: "verification@example.com",
+      });
+      await database.insert(verification).values({
+        id: "retained-verification",
+        identifier:
+          kind === "recovery"
+            ? "reset-password:private-token"
+            : "verification@example.com",
+        value: kind === "recovery" ? "verification-owner" : "private-token",
+        expiresAt: new Date(0),
+      });
+      if (state === "pending")
+        await database
+          .update(user)
+          .set({ deletionPendingAt: new Date() })
+          .where(eq(user.id, "verification-owner"));
+      else
+        await database.delete(user).where(eq(user.id, "verification-owner"));
+      await expect(
+        database
+          .update(verification)
+          .set({ expiresAt: new Date(Date.now() + 3_600_000) })
+          .where(eq(verification.id, "retained-verification")),
+      ).rejects.toMatchObject({ cause: { code: "23514" } });
+      expect(
+        (await database.select().from(verification))[0].expiresAt,
+      ).toEqual(new Date(0));
+    },
+  );
+
+  test.each([
+    ["recovery reassignment", { value: "other-verification-owner" }],
+    ["recovery token rotation", { identifier: "reset-password:rotated-token" }],
+    ["email owner removal", { identifier: "unowned-identifier" }],
+    ["email token rotation", { value: "rotated-private-token" }],
+  ])("verification update rejects %s", async (kind, mutation) => {
+    await database.insert(user).values([
+      {
+        id: "verification-owner",
+        name: "Owner",
+        email: "verification@example.com",
+      },
+      {
+        id: "other-verification-owner",
+        name: "Other",
+        email: "other@example.com",
+      },
+    ]);
+    const original = {
+      id: "immutable-verification",
+      identifier: kind.startsWith("recovery")
+        ? "reset-password:private-token"
+        : "verification@example.com",
+      value: kind.startsWith("recovery") ? "verification-owner" : "private-token",
+      expiresAt: new Date(Date.now() + 3_600_000),
+    };
+    await database.insert(verification).values(original);
+    await expect(
+      database
+        .update(verification)
+        .set(mutation)
+        .where(eq(verification.id, original.id)),
+    ).rejects.toMatchObject({ cause: { code: "23514" } });
+    expect(await database.select().from(verification)).toMatchObject([original]);
+  });
+
+  test.each(["recovery", "email"])(
+    "active %s verification can refresh without changing its private identity",
+    async (kind) => {
+      await database.insert(user).values({
+        id: "verification-owner",
+        name: "Owner",
+        email: "verification@example.com",
+      });
+      await database.insert(verification).values({
+        id: "active-verification",
+        identifier:
+          kind === "recovery"
+            ? "reset-password:private-token"
+            : "verification@example.com",
+        value: kind === "recovery" ? "verification-owner" : "private-token",
+        expiresAt: new Date(0),
+      });
+      const expiresAt = new Date(Date.now() + 3_600_000);
+      await database
+        .update(verification)
+        .set({ expiresAt })
+        .where(eq(verification.id, "active-verification"));
+      expect((await database.select().from(verification))[0].expiresAt).toEqual(
+        expiresAt,
+      );
+    },
+  );
+
   test("Better Auth admin mutations cannot rewrite a pending target or publish its identity", async () => {
     const { auth } = await createTestAuth({ registrationOpen: true });
     const cookie = await signInVerified(auth);
