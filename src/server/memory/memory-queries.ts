@@ -42,6 +42,7 @@ export interface RelationshipMemoryScreenView {
   items: CharacterMemoryView["items"];
   summary: CharacterMemoryView["summary"];
   summaryRevision: number;
+  summaryEpoch: number;
   extractions: Array<{
     id: string;
     status: MemorySyncStatus;
@@ -179,6 +180,7 @@ export async function getRelationshipMemoryScreenView(
         items: view.items,
         summary: view.summary,
         summaryRevision: view.summary?.revision ?? 0,
+        summaryEpoch: view.settings.memoryEpoch,
         extractions,
         summaryStatus: summaryRun ? syncStatus(summaryRun.status) : "synced",
         ...(active ? { conversationId: active.id } : {}),

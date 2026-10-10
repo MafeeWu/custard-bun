@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import {
   idleMemoryState,
   MemoryFormStatus,
+  useMemoryRevision,
   type MemoryAction,
 } from "./memory-form-state";
 
@@ -16,7 +17,7 @@ export function ForgetCharacterForm({
 }) {
   const [state, action, pending] = useActionState(forget, idleMemoryState);
   const [confirmed, setConfirmed] = useState(false);
-  const [baseRevision, setBaseRevision] = useState(revision);
+  const baseRevision = useMemoryRevision(revision, state);
   const [previousState, setPreviousState] = useState(state);
   if (previousState !== state) {
     setPreviousState(state);
@@ -32,13 +33,11 @@ export function ForgetCharacterForm({
         Removes memory, evidence, and relationship summary. Cancels old work and
         starts a new memory epoch. Your conversation transcripts are kept.
       </p>
-      <form action={action}>
+      <form action={action} onSubmit={baseRevision.beginSubmission}>
         <input
           name="expectedRevision"
           type="hidden"
-          value={
-            confirmed && state.status !== "conflict" ? baseRevision : revision
-          }
+          value={baseRevision.revision}
         />
         <label>
           <input
@@ -48,7 +47,8 @@ export function ForgetCharacterForm({
             checked={confirmed}
             disabled={pending}
             onChange={(event) => {
-              if (event.target.checked) setBaseRevision(revision);
+              if (event.target.checked) baseRevision.capture();
+              else baseRevision.reset();
               setConfirmed(event.target.checked);
             }}
           />{" "}

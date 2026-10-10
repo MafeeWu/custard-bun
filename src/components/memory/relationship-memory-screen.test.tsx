@@ -341,16 +341,14 @@ test.each(["synced", "processing", "retrying", "needs_retry"] as const)(
   },
 );
 test("conflict retains draft while refreshing authoritative content and revision", async () => {
-  const actions = actionSet() as unknown as {
-    editMemory: ReturnType<typeof vi.fn>;
-  };
+  const actions = actionSet();
   actions.editMemory.mockResolvedValue({
     status: "conflict",
     message: "Your draft is preserved. Review the refreshed version.",
   });
   const view = memoryScreenFixture();
   const { rerender } = render(
-    <RelationshipMemoryScreen view={view} actions={actions as never} />,
+    <RelationshipMemoryScreen view={view} actions={actions} />,
   );
   await userEvent.clear(screen.getByLabelText("Memory content"));
   await userEvent.type(
@@ -365,7 +363,7 @@ test("conflict retains draft while refreshing authoritative content and revision
   const next = memoryScreenFixture();
   next.items[0].content = "New server value";
   next.items[0].revision = 3;
-  rerender(<RelationshipMemoryScreen view={next} actions={actions as never} />);
+  rerender(<RelationshipMemoryScreen view={next} actions={actions} />);
   expect(screen.getByLabelText("Memory content")).toHaveValue(
     "My authoritative edit",
   );
@@ -375,9 +373,163 @@ test("conflict retains draft while refreshing authoritative content and revision
     message: "Saved.",
   });
   await userEvent.click(screen.getByRole("button", { name: "Save memory" }));
-  const data = actions.editMemory.mock.calls[1][1] as FormData;
+  const data = actions.editMemory.mock.calls[1][1];
   expect(data.get("expectedRevision")).toBe("3");
 });
+
+test.each([
+  { kind: "editMemory", button: "Save memory" },
+  { kind: "deleteMemory", button: "Delete memory" },
+  { kind: "controls", button: "Save controls" },
+  { kind: "summary", button: "Save summary" },
+  { kind: "summary", button: "Clear summary" },
+  { kind: "regenerate", button: "Regenerate summary" },
+  { kind: "forget", button: "Forget character" },
+] as const)(
+  "$kind adopts one conflict refresh, then fences two successive background changes",
+  async ({ kind, button }) => {
+    const actions = actionSet();
+    actions[kind].mockResolvedValue({
+      status: "conflict",
+      message: "Review the refreshed version.",
+    });
+    const { rerender } = render(
+      <RelationshipMemoryScreen
+        view={memoryScreenFixture()}
+        actions={actions}
+      />,
+    );
+    await userEvent.type(screen.getByLabelText("Memory content"), " My draft");
+    await userEvent.type(
+      screen.getByLabelText("Relationship summary"),
+      " My draft",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /explicitly want to remember this summary/,
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Stop using in chat" }),
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Permanently delete this memory.",
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I want this character to forget me.",
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: button }));
+    expect(await screen.findByRole("alert")).toHaveFocus();
+    for (const revision of [3, 4, 5]) {
+      const next = memoryScreenFixture();
+      next.items[0].revision = revision;
+      next.items[0].content = `Server memory ${revision}`;
+      next.summaryRevision = revision;
+      next.summary = {
+        ...next.summary!,
+        revision,
+        content: `Server summary ${revision}`,
+      };
+      next.settings.revision = revision;
+      rerender(<RelationshipMemoryScreen view={next} actions={actions} />);
+    }
+    expect(screen.getByLabelText("Memory content")).toHaveValue(
+      "Likes green tea. My draft",
+    );
+    expect(screen.getByLabelText("Relationship summary")).toHaveValue(
+      "We talk about tea. My draft",
+    );
+    await userEvent.click(screen.getByRole("button", { name: button }));
+    await waitFor(() => expect(actions[kind]).toHaveBeenCalledTimes(2));
+    expect(actions[kind].mock.calls[1][1].get("expectedRevision")).toBe("3");
+  },
+);
+
+test("dirty summary keeps its epoch when forget recreates the same numeric revision", async () => {
+  const actions = actionSet();
+  const { rerender } = render(
+    <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
+  );
+  await userEvent.type(
+    screen.getByLabelText("Relationship summary"),
+    " old draft",
+  );
+  await userEvent.click(
+    screen.getByRole("checkbox", {
+      name: /explicitly want to remember this summary/,
+    }),
+  );
+  const recreated = { ...memoryScreenFixture(), summaryEpoch: 1 };
+  rerender(<RelationshipMemoryScreen view={recreated} actions={actions} />);
+  await userEvent.click(screen.getByRole("button", { name: "Save summary" }));
+  await waitFor(() => expect(actions.summary).toHaveBeenCalled());
+  expect(actions.summary.mock.calls[0][1].get("expectedMemoryEpoch")).toBe("0");
+});
+
+test("forget clears a draft even when the absent summary revision stays zero", async () => {
+  const initial = memoryScreenFixture();
+  initial.summary = null;
+  initial.summaryRevision = 0;
+  const { rerender } = render(
+    <RelationshipMemoryScreen view={initial} actions={actionSet()} />,
+  );
+  await userEvent.type(
+    screen.getByLabelText("Relationship summary"),
+    "Forgotten draft",
+  );
+  const forgotten = { ...initial, summaryEpoch: 1 };
+  rerender(<RelationshipMemoryScreen view={forgotten} actions={actionSet()} />);
+  expect(screen.getByLabelText("Relationship summary")).toHaveValue("");
+});
+
+test.each(["Save summary", "Clear summary", "Regenerate summary"])(
+  "%s conflict adopts one epoch, then freezes across two more epochs at the same revision",
+  async (button) => {
+    const actions = actionSet();
+    const action =
+      button === "Regenerate summary" ? actions.regenerate : actions.summary;
+    action.mockResolvedValue({
+      status: "conflict",
+      message: "Review the refreshed version.",
+    });
+    const { rerender } = render(
+      <RelationshipMemoryScreen
+        view={memoryScreenFixture()}
+        actions={actions}
+      />,
+    );
+    await userEvent.type(
+      screen.getByLabelText("Relationship summary"),
+      " My draft",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /explicitly want to remember this summary/,
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: button }));
+    await screen.findByRole("alert");
+    for (const epoch of [1, 2, 3]) {
+      rerender(
+        <RelationshipMemoryScreen
+          view={{ ...memoryScreenFixture(), summaryEpoch: epoch }}
+          actions={actions}
+        />,
+      );
+    }
+    expect(screen.getByLabelText("Relationship summary")).toHaveValue(
+      "We talk about tea. My draft",
+    );
+    await userEvent.click(screen.getByRole("button", { name: button }));
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
+    expect(action.mock.calls[1][1].get("expectedMemoryEpoch")).toBe("1");
+    expect(action.mock.calls[1][1].get("expectedRevision")).toBe("2");
+  },
+);
 test("forget confirmation distinguishes transcript retention and epoch cancellation", async () => {
   const actions = actionSet();
   render(

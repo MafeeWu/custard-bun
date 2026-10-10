@@ -54,3 +54,17 @@ test("wrong owner or missing character is not-found safe", async () => {
     MemoryPage({ params: Promise.resolve({ characterId: "other-character" }) }),
   ).rejects.toThrow("NOT_FOUND");
 });
+
+test("page sends the scoped summary epoch to edit, clear and regeneration forms", async () => {
+  mocks.get.mockResolvedValue({ ...memoryScreenFixture(), summaryEpoch: 7 });
+  const { container } = render(
+    await MemoryPage({
+      params: Promise.resolve({ characterId: "character-1" }),
+    }),
+  );
+  expect(
+    [...container.querySelectorAll('input[name="expectedMemoryEpoch"]')].map(
+      (input) => input.getAttribute("value"),
+    ),
+  ).toEqual(["7", "7"]);
+});

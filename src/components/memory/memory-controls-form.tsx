@@ -5,6 +5,7 @@ import type { RelationshipMemoryScreenView } from "@/server/memory/memory-querie
 import {
   idleMemoryState,
   MemoryFormStatus,
+  useMemoryRevision,
   type MemoryAction,
 } from "./memory-form-state";
 
@@ -18,7 +19,7 @@ export function MemoryControlsForm({
   const [state, action, pending] = useActionState(update, idleMemoryState);
   const [recording, setRecording] = useState<boolean | null>(null);
   const [usage, setUsage] = useState<boolean | null>(null);
-  const [baseRevision, setBaseRevision] = useState(settings.revision);
+  const baseRevision = useMemoryRevision(settings.revision, state);
   const [previousState, setPreviousState] = useState(state);
   if (previousState !== state) {
     setPreviousState(state);
@@ -28,15 +29,11 @@ export function MemoryControlsForm({
     }
   }
   return (
-    <form action={action}>
+    <form action={action} onSubmit={baseRevision.beginSubmission}>
       <input
         name="expectedRevision"
         type="hidden"
-        value={
-          (recording !== null || usage !== null) && state.status !== "conflict"
-            ? baseRevision
-            : settings.revision
-        }
+        value={baseRevision.revision}
       />
       <fieldset disabled={pending}>
         <legend>Memory controls</legend>
@@ -51,8 +48,7 @@ export function MemoryControlsForm({
             name="stopRecording"
             checked={recording ?? !settings.recordingEnabled}
             onChange={(event) => {
-              if (recording === null && usage === null)
-                setBaseRevision(settings.revision);
+              if (recording === null && usage === null) baseRevision.capture();
               setRecording(event.target.checked);
             }}
           />{" "}
@@ -68,8 +64,7 @@ export function MemoryControlsForm({
             name="stopUsage"
             checked={usage ?? !settings.usageEnabled}
             onChange={(event) => {
-              if (recording === null && usage === null)
-                setBaseRevision(settings.revision);
+              if (recording === null && usage === null) baseRevision.capture();
               setUsage(event.target.checked);
             }}
           />{" "}

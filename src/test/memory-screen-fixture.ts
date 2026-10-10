@@ -24,6 +24,7 @@ export function memoryScreenFixture(): RelationshipMemoryScreenView {
       updatedAt: new Date("2026-10-10T00:00:00Z"),
     },
     summaryRevision: 2,
+    summaryEpoch: 0,
     extractions: [{ id: "run-1", status: "needs_retry", canRetry: true }],
     summaryStatus: "synced",
     conversationId: "conversation-1",

@@ -408,108 +408,114 @@ a {
   padding-left: 1.25rem;
 }
 
+.memory-page {
+  width: min(100% - 2rem, 64rem);
+  margin: 0 auto;
+  padding: 2rem 0;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.memory-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.memory-overview {
+  padding: 0;
+  list-style: none;
+}
+
+.memory-card {
+  padding: 1.25rem;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 0.04);
+  min-width: 0;
+}
+
+.memory-card form,
+.memory-card fieldset {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.memory-card fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.memory-card legend {
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
+
+.memory-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 7rem;
+  resize: vertical;
+  padding: 0.75rem;
+  color: inherit;
+  background: #111827;
+  border: 1px solid #9ca3af;
+  border-radius: 0.5rem;
+}
+
+.memory-card button {
+  justify-self: start;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  color: inherit;
+  background: rgb(255 255 255 / 0.08);
+  border: 1px solid #9ca3af;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.memory-card button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.memory-card :focus-visible {
+  outline: 3px solid var(--brand-primary);
+  outline-offset: 3px;
+}
+
+.memory-card input[type="checkbox"] {
+  accent-color: var(--brand-primary);
+}
+
+.memory-content,
+.memory-card label,
+.memory-card [role="alert"],
+.memory-card [role="status"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.memory-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.memory-danger {
+  border-color: #f87171;
+}
+
 @media (min-width: 48rem) {
   .page-shell {
     width: min(100% - 3rem, 72rem);
     padding-top: 3rem;
   }
 
-  .memory-page {
-    width: min(100% - 2rem, 64rem);
-    margin: 0 auto;
-    padding: 2rem 0;
-    display: grid;
-    gap: 1.25rem;
-  }
-
   .memory-grid {
-    display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
-    gap: 1rem;
-  }
-
-  .memory-overview {
-    padding: 0;
-    list-style: none;
-  }
-
-  .memory-card {
-    padding: 1.25rem;
-    border: 1px solid rgb(255 255 255 / 0.14);
-    border-radius: 1rem;
-    background: rgb(255 255 255 / 0.04);
-    min-width: 0;
-  }
-
-  .memory-card form,
-  .memory-card fieldset {
-    display: grid;
-    gap: 0.75rem;
-  }
-
-  .memory-card fieldset {
-    margin: 0;
-    padding: 0;
-    border: 0;
-    min-width: 0;
-  }
-
-  .memory-card legend {
-    font-weight: 700;
-    margin-bottom: 0.75rem;
-  }
-
-  .memory-card textarea {
-    width: 100%;
-    box-sizing: border-box;
-    min-height: 7rem;
-    resize: vertical;
-    padding: 0.75rem;
-    color: inherit;
-    background: #111827;
-    border: 1px solid #9ca3af;
-    border-radius: 0.5rem;
-  }
-
-  .memory-card button {
-    justify-self: start;
-    min-height: 2.75rem;
-    padding: 0.5rem 1rem;
-    color: inherit;
-    background: rgb(255 255 255 / 0.08);
-    border: 1px solid #9ca3af;
-    border-radius: 0.5rem;
-    cursor: pointer;
-  }
-
-  .memory-card button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .memory-card :focus-visible {
-    outline: 3px solid var(--brand-primary);
-    outline-offset: 3px;
-  }
-
-  .memory-card input[type="checkbox"] {
-    accent-color: var(--brand-primary);
-  }
-
-  .memory-content,
-  .memory-card label {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  .memory-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-  }
-
-  .memory-danger {
-    border-color: #f87171;
   }
 
   .character-profile-header {

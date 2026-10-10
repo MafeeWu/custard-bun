@@ -32,8 +32,11 @@ function text(data: FormData, key: string): string {
   return value;
 }
 
-function revision(data: FormData): number {
-  const value = text(data, "expectedRevision");
+function revision(
+  data: FormData,
+  key: "expectedRevision" | "expectedMemoryEpoch" = "expectedRevision",
+): number {
+  const value = text(data, key);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))
     throw new MemoryDomainError("MEMORY_VALIDATION", "Invalid revision.");
   return Number(value);
@@ -165,7 +168,9 @@ export async function editSummaryAction(
       userId,
       characterId,
       expectedRevision: revision(data),
+      expectedMemoryEpoch: revision(data, "expectedMemoryEpoch"),
       content,
+      userExplicitlyAskedToRemember: data.get("explicitIntent") === "on",
     });
   });
 }
@@ -180,6 +185,7 @@ export async function regenerateSummaryAction(
       userId,
       characterId,
       expectedRevision: revision(data),
+      expectedMemoryEpoch: revision(data, "expectedMemoryEpoch"),
     });
   });
 }

@@ -5,6 +5,7 @@ import type { RelationshipMemoryScreenView } from "@/server/memory/memory-querie
 import {
   idleMemoryState,
   MemoryFormStatus,
+  useMemoryRevision,
   type MemoryAction,
 } from "./memory-form-state";
 
@@ -23,8 +24,8 @@ export function MemoryItemForm({
     idleMemoryState,
   );
   const [draft, setDraft] = useState<string | null>(null);
-  const [baseRevision, setBaseRevision] = useState(item.revision);
-  const [deleteRevision, setDeleteRevision] = useState(item.revision);
+  const editRevision = useMemoryRevision(item.revision, state);
+  const deleteRevision = useMemoryRevision(item.revision, deleteState);
   const [explicit, setExplicit] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [previousState, setPreviousState] = useState(state);
@@ -53,16 +54,12 @@ export function MemoryItemForm({
           {item.lastConfirmedAt.toISOString().slice(0, 10)}
         </time>
       </p>
-      <form action={action}>
+      <form action={action} onSubmit={editRevision.beginSubmission}>
         <input name="memoryId" type="hidden" value={item.id} />
         <input
           name="expectedRevision"
           type="hidden"
-          value={
-            draft !== null && state.status !== "conflict"
-              ? baseRevision
-              : item.revision
-          }
+          value={editRevision.revision}
         />
         <fieldset disabled={busy}>
           <label htmlFor={id}>Memory content</label>
@@ -73,7 +70,7 @@ export function MemoryItemForm({
             required
             value={content}
             onChange={(event) => {
-              if (draft === null) setBaseRevision(item.revision);
+              if (draft === null) editRevision.capture();
               setDraft(event.target.value);
             }}
           />
@@ -95,16 +92,12 @@ export function MemoryItemForm({
         </fieldset>
         <MemoryFormStatus state={state} />
       </form>
-      <form action={remove}>
+      <form action={remove} onSubmit={deleteRevision.beginSubmission}>
         <input name="memoryId" type="hidden" value={item.id} />
         <input
           name="expectedRevision"
           type="hidden"
-          value={
-            confirmed && deleteState.status !== "conflict"
-              ? deleteRevision
-              : item.revision
-          }
+          value={deleteRevision.revision}
         />
         <label>
           <input
@@ -114,7 +107,8 @@ export function MemoryItemForm({
             disabled={busy}
             checked={confirmed}
             onChange={(event) => {
-              if (event.target.checked) setDeleteRevision(item.revision);
+              if (event.target.checked) deleteRevision.capture();
+              else deleteRevision.reset();
               setConfirmed(event.target.checked);
             }}
           />{" "}

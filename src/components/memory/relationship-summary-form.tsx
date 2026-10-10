@@ -5,8 +5,16 @@ import type { RelationshipMemoryScreenView } from "@/server/memory/memory-querie
 import {
   idleMemoryState,
   MemoryFormStatus,
+  useMemoryRevision,
   type MemoryAction,
 } from "./memory-form-state";
+
+type SummaryRevision = { memoryEpoch: number; revision: number };
+function sameSummaryRevision(left: SummaryRevision, right: SummaryRevision) {
+  return (
+    left.memoryEpoch === right.memoryEpoch && left.revision === right.revision
+  );
+}
 
 export function RelationshipSummaryForm({
   view,
@@ -23,12 +31,23 @@ export function RelationshipSummaryForm({
     idleMemoryState,
   );
   const [draft, setDraft] = useState<string | null>(null);
-  const [baseRevision, setBaseRevision] = useState(view.summaryRevision);
+  const currentRevision = {
+    memoryEpoch: view.summaryEpoch,
+    revision: view.summaryRevision,
+  };
+  const baseRevision = useMemoryRevision(
+    currentRevision,
+    state,
+    sameSummaryRevision,
+  );
+  const regenRevision = useMemoryRevision(
+    currentRevision,
+    regenState,
+    sameSummaryRevision,
+  );
   const [explicit, setExplicit] = useState(false);
   const [previousState, setPreviousState] = useState(state);
-  const [previousRevision, setPreviousRevision] = useState(
-    view.summaryRevision,
-  );
+  const [previousRevision, setPreviousRevision] = useState(currentRevision);
   if (previousState !== state) {
     setPreviousState(state);
     if (state.status === "success") {
@@ -36,11 +55,13 @@ export function RelationshipSummaryForm({
       setExplicit(false);
     }
   }
-  if (previousRevision !== view.summaryRevision) {
-    setPreviousRevision(view.summaryRevision);
+  if (!sameSummaryRevision(previousRevision, currentRevision)) {
+    setPreviousRevision(currentRevision);
     if (view.summaryRevision === 0) {
       setDraft(null);
       setExplicit(false);
+      baseRevision.reset();
+      regenRevision.reset();
     }
   }
   const id = useId();
@@ -62,15 +83,16 @@ export function RelationshipSummaryForm({
           </time>
         </p>
       ) : null}
-      <form action={action}>
+      <form action={action} onSubmit={baseRevision.beginSubmission}>
         <input
           name="expectedRevision"
           type="hidden"
-          value={
-            draft !== null && state.status !== "conflict"
-              ? baseRevision
-              : view.summaryRevision
-          }
+          value={baseRevision.revision.revision}
+        />
+        <input
+          name="expectedMemoryEpoch"
+          type="hidden"
+          value={baseRevision.revision.memoryEpoch}
         />
         <fieldset disabled={busy}>
           <label htmlFor={id}>Relationship summary</label>
@@ -80,7 +102,7 @@ export function RelationshipSummaryForm({
             maxLength={4000}
             value={draft ?? view.summary?.content ?? ""}
             onChange={(event) => {
-              if (draft === null) setBaseRevision(view.summaryRevision);
+              if (draft === null) baseRevision.capture();
               setDraft(event.target.value);
             }}
           />
@@ -114,11 +136,16 @@ export function RelationshipSummaryForm({
         </fieldset>
         <MemoryFormStatus state={state} />
       </form>
-      <form action={regenerate}>
+      <form action={regenerate} onSubmit={regenRevision.beginSubmission}>
         <input
           name="expectedRevision"
           type="hidden"
-          value={view.summaryRevision}
+          value={regenRevision.revision.revision}
+        />
+        <input
+          name="expectedMemoryEpoch"
+          type="hidden"
+          value={regenRevision.revision.memoryEpoch}
         />
         <p>
           Regenerate replaces your summary with a new automatic summary based on

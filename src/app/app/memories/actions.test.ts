@@ -56,6 +56,7 @@ beforeEach(() => {
 function form() {
   const data = new FormData();
   data.set("expectedRevision", "2");
+  data.set("expectedMemoryEpoch", "0");
   data.set("memoryId", "memory-1");
   data.set("content", "My edit");
   data.set("runId", "run-1");
@@ -205,7 +206,9 @@ test("clear summary uses the service revision with empty content", async () => {
       userId: "owner",
       characterId: "character-1",
       expectedRevision: 2,
+      expectedMemoryEpoch: 0,
       content: "",
+      userExplicitlyAskedToRemember: true,
     },
   );
 });
@@ -231,6 +234,97 @@ test("summary edits without explicit intent cannot reach the service", async () 
       .status,
   ).toBe("error");
   expect(mocks.summary).not.toHaveBeenCalled();
+});
+
+test("summary consent and epoch reach the service for manual edits", async () => {
+  const data = form();
+  data.set("expectedMemoryEpoch", "4");
+  await actions.editSummaryAction("character-1", { status: "idle" }, data);
+  expect(mocks.summary).toHaveBeenCalledWith(
+    {},
+    {
+      userId: "owner",
+      characterId: "character-1",
+      expectedRevision: 2,
+      expectedMemoryEpoch: 4,
+      content: "My edit",
+      userExplicitlyAskedToRemember: true,
+    },
+  );
+});
+
+test("summary clear forwards false-default consent and scoped epoch", async () => {
+  const data = form();
+  data.set("operation", "clear");
+  data.delete("explicitIntent");
+  expect(
+    (await actions.editSummaryAction("character-1", { status: "idle" }, data))
+      .status,
+  ).toBe("success");
+  expect(mocks.summary).toHaveBeenCalledWith(
+    {},
+    expect.objectContaining({
+      expectedMemoryEpoch: 0,
+      content: "",
+      userExplicitlyAskedToRemember: false,
+    }),
+  );
+});
+
+test.each([undefined, "-1", "NaN", "1.5", "9007199254740992"])(
+  "summary edit, clear and regeneration reject invalid epoch %s",
+  async (epoch) => {
+    const data = form();
+    if (epoch === undefined) data.delete("expectedMemoryEpoch");
+    else data.set("expectedMemoryEpoch", epoch);
+    for (const operation of ["edit", "clear"]) {
+      data.set("operation", operation);
+      expect(
+        (
+          await actions.editSummaryAction(
+            "character-1",
+            { status: "idle" },
+            data,
+          )
+        ).status,
+      ).toBe("error");
+    }
+    expect(
+      (
+        await actions.regenerateSummaryAction(
+          "character-1",
+          { status: "idle" },
+          data,
+        )
+      ).status,
+    ).toBe("error");
+    expect(mocks.summary).not.toHaveBeenCalled();
+    expect(mocks.regenerate).not.toHaveBeenCalled();
+  },
+);
+
+test("regeneration forwards the epoch and maps epoch conflicts to safe state", async () => {
+  mocks.regenerate.mockRejectedValueOnce(
+    new MemoryDomainError("MEMORY_REVISION_CONFLICT", "private", {
+      metadata: { actualMemoryEpoch: 3 },
+    }),
+  );
+  const result = await actions.regenerateSummaryAction(
+    "character-1",
+    { status: "idle" },
+    form(),
+  );
+  expect(mocks.regenerate).toHaveBeenCalledWith(
+    {},
+    {
+      userId: "owner",
+      characterId: "character-1",
+      expectedRevision: 2,
+      expectedMemoryEpoch: 0,
+    },
+  );
+  expect(result.status).toBe("conflict");
+  expect(JSON.stringify(result)).not.toMatch(/private|actualMemoryEpoch/);
 });
 test("unauthenticated actions stop at the existing session boundary", async () => {
   const authError = new Error("AUTH_REQUIRED");

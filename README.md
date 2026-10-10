@@ -386,7 +386,17 @@ appends an immutable version and atomically advances the current pointer and
 summary revision.
 Edits and clears append user-edited versions, including empty content, and
 remain authoritative until explicit regeneration confirms the current summary
-revision. Failed regeneration keeps the existing summary; a newly confirmed
+epoch and revision. Manual summary edits require explicit intent at both the
+action and service boundaries; omitted consent is false, and empty clears do
+not require consent. Both manual service entry points use the runtime credential
+policy by default. Edit, clear, and regenerate submissions include
+`expectedMemoryEpoch` as well as `expectedRevision`, so forget cannot make an
+old tab valid again when a recreated summary reaches the same revision.
+Dirty drafts and destructive confirmations adopt the first authoritative
+conflict refresh once, then fence further background changes until another
+submission or explicit reconciliation/reset. Baseline memory form spacing,
+wrapping, textarea sizing, and focus/status rules apply on mobile too.
+Failed regeneration keeps the existing summary; a newly confirmed
 request can retry a failed operation only within its remaining execution budget.
 
 The same worker additively handles `relationship-summary` and reconciles

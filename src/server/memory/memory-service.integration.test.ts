@@ -27,6 +27,12 @@ import { testDatabaseUrl } from "@/test/database-target";
 import { MemoryDomainError } from "./memory-errors";
 import { lockUserMemoryMutation } from "./memory-locks";
 import {
+  DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  editRelationshipSummary,
+  getRelationshipSummary,
+  requestSummaryRegeneration,
+} from "./relationship-summary-service";
+import {
   deleteMemoryItem,
   editMemoryItem,
   forgetCharacter,
@@ -84,6 +90,87 @@ beforeEach(async () => {
 afterAll(async () => {
   await database.$client.end();
 });
+
+test.each(["edit", "clear", "regenerate"] as const)(
+  "pre-forget summary %s conflicts after recreation with the same revision",
+  async (operation) => {
+    const scope = await insertFixture();
+    await editRelationshipSummary(
+      database,
+      {
+        ...scope,
+        expectedRevision: 0,
+        expectedMemoryEpoch: 0,
+        content: "Old summary",
+        userExplicitlyAskedToRemember: true,
+      },
+      DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+    );
+    await forgetCharacter(database, { ...scope, expectedRevision: 1 });
+    await editRelationshipSummary(
+      database,
+      {
+        ...scope,
+        expectedRevision: 0,
+        expectedMemoryEpoch: 1,
+        content: "New summary",
+        userExplicitlyAskedToRemember: true,
+      },
+      DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+    );
+    const stale = { ...scope, expectedRevision: 1, expectedMemoryEpoch: 0 };
+    await expect(
+      operation === "regenerate"
+        ? requestSummaryRegeneration(database, stale)
+        : editRelationshipSummary(
+            database,
+            {
+              ...stale,
+              content: operation === "clear" ? "" : "Stale overwrite",
+              userExplicitlyAskedToRemember: true,
+            },
+            DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+          ),
+    ).rejects.toMatchObject({ code: "MEMORY_REVISION_CONFLICT" });
+    expect(await getRelationshipSummary(database, scope)).toMatchObject({
+      content: "New summary",
+      memoryEpoch: 1,
+      revision: 1,
+    });
+    expect(
+      await database.select().from(relationshipSummaryVersion),
+    ).toHaveLength(1);
+    expect(await database.select().from(relationshipSummaryRun)).toEqual([]);
+  },
+);
+
+test.each(["edit", "clear", "regenerate"] as const)(
+  "pre-forget empty summary %s conflicts when both epochs have revision zero",
+  async (operation) => {
+    const scope = await insertFixture();
+    await database.insert(userCharacterMemorySetting).values(scope);
+    await forgetCharacter(database, { ...scope, expectedRevision: 1 });
+    const stale = { ...scope, expectedRevision: 0, expectedMemoryEpoch: 0 };
+    await expect(
+      operation === "regenerate"
+        ? requestSummaryRegeneration(database, stale)
+        : editRelationshipSummary(
+            database,
+            {
+              ...stale,
+              content: operation === "clear" ? "" : "Stale creation",
+              userExplicitlyAskedToRemember: true,
+            },
+            DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+          ),
+    ).rejects.toMatchObject({ code: "MEMORY_REVISION_CONFLICT" });
+    expect(await getRelationshipSummary(database, scope)).toBeNull();
+    expect(await database.select().from(relationshipSummaryVersion)).toEqual(
+      [],
+    );
+    expect(await database.select().from(relationshipSummaryRun)).toEqual([]);
+  },
+);
 
 async function insertFixture(options: { secondUser?: boolean } = {}) {
   const userId = randomUUID();

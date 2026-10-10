@@ -22,10 +22,51 @@ import {
   listMemoryRelationships,
 } from "./memory-queries";
 import { editRelationshipSummary } from "./relationship-summary-service";
+import { forgetCharacter } from "./memory-service";
 
 const database = createDatabase(testDatabaseUrl());
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
+
+test("screen DTO scopes even absent and recreated summary revisions to the relationship epoch", async () => {
+  const input = await extractionFixture(database);
+  expect(await getRelationshipMemoryScreenView(database, input)).toMatchObject({
+    summaryRevision: 0,
+    summaryEpoch: 0,
+  });
+  await editRelationshipSummary(
+    database,
+    {
+      ...input,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+      content: "Old",
+      userExplicitlyAskedToRemember: true,
+    },
+    { maxSummaryCharacters: 4000, secretValues: [] },
+  );
+  await forgetCharacter(database, { ...input, expectedRevision: 1 });
+  expect(await getRelationshipMemoryScreenView(database, input)).toMatchObject({
+    summaryRevision: 0,
+    summaryEpoch: 1,
+  });
+  await editRelationshipSummary(
+    database,
+    {
+      ...input,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 1,
+      content: "New",
+      userExplicitlyAskedToRemember: true,
+    },
+    { maxSummaryCharacters: 4000, secretValues: [] },
+  );
+  expect(await getRelationshipMemoryScreenView(database, input)).toMatchObject({
+    summaryRevision: 1,
+    summaryEpoch: 1,
+    summary: { content: "New" },
+  });
+});
 test("overview and screen isolate owner relationships including after transcript deletion", async () => {
   const own = await extractionFixture(database);
   const other = await extractionFixture(database);
@@ -130,7 +171,7 @@ test("cleared summary retains its optimistic revision and deletion-pending owner
   const input = await extractionFixture(database);
   await editRelationshipSummary(
     database,
-    { ...input, expectedRevision: 0, content: "" },
+    { ...input, expectedRevision: 0, expectedMemoryEpoch: 0, content: "" },
     { maxSummaryCharacters: 4000, secretValues: [] },
   );
   expect(

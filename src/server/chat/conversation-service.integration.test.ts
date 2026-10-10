@@ -75,7 +75,13 @@ async function memoryDeletionFixture() {
   );
   await editRelationshipSummary(
     database,
-    { ...fixture, expectedRevision: 0, content: "We discuss tea." },
+    {
+      ...fixture,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+      content: "We discuss tea.",
+      userExplicitlyAskedToRemember: true,
+    },
     { maxSummaryCharacters: 4000, secretValues: [] },
   );
   const second = await extractionAttempt(

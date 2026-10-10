@@ -301,6 +301,26 @@ function confirmRevision(expectedRevision: number, actualRevision: number) {
     );
 }
 
+type SummaryEditInput = Scope & {
+  expectedRevision: number;
+  expectedMemoryEpoch: number;
+  content: string;
+  userExplicitlyAskedToRemember?: boolean;
+};
+
+function confirmSummaryEpoch(
+  expectedMemoryEpoch: number,
+  actualMemoryEpoch: number,
+) {
+  if (!Number.isSafeInteger(expectedMemoryEpoch) || expectedMemoryEpoch < 0)
+    throw new MemoryDomainError("MEMORY_VALIDATION", "Invalid summary epoch.");
+  if (expectedMemoryEpoch !== actualMemoryEpoch)
+    throw new MemoryDomainError(
+      "MEMORY_REVISION_CONFLICT",
+      "Summary changed since it was loaded.",
+    );
+}
+
 export async function cancelSummaryRuns(
   transaction: ChatTransaction,
   input: Scope,
@@ -337,13 +357,24 @@ export async function cancelSummaryRuns(
 
 export async function editRelationshipSummaryInTransaction(
   transaction: ChatTransaction,
-  input: Scope & { expectedRevision: number; content: string },
-  policy: RelationshipSummaryPolicy = DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+  input: SummaryEditInput,
+  policy?: RelationshipSummaryPolicy,
 ) {
   const settings = await requireRelationship(transaction, input);
   const { current } = await lockSummaryState(transaction, input);
+  confirmSummaryEpoch(input.expectedMemoryEpoch, settings.memoryEpoch);
+  if (current)
+    confirmSummaryEpoch(input.expectedMemoryEpoch, current.memoryEpoch);
   confirmRevision(input.expectedRevision, current?.revision ?? 0);
-  const content = normalizeSummaryText(input.content, policy);
+  const content = normalizeSummaryText(
+    input.content,
+    policy ?? relationshipSummaryPolicyFromConfig(await getRuntimeConfig()),
+  );
+  if (content && input.userExplicitlyAskedToRemember !== true)
+    throw new MemoryDomainError(
+      "MEMORY_VALIDATION",
+      "Explicit summary intent required.",
+    );
   const now = new Date();
   await cancelSummaryRuns(transaction, input, now);
   const versionId = randomUUID();
@@ -382,7 +413,7 @@ export async function editRelationshipSummaryInTransaction(
 
 export async function editRelationshipSummary(
   database: Database,
-  input: Scope & { expectedRevision: number; content: string },
+  input: SummaryEditInput,
   policy?: RelationshipSummaryPolicy,
 ): Promise<{ revision: number; versionId: string }> {
   const effectivePolicy =
@@ -539,11 +570,14 @@ async function createSummaryRun(
 
 export async function requestSummaryRegeneration(
   database: Database,
-  input: Scope & { expectedRevision: number },
+  input: Scope & { expectedRevision: number; expectedMemoryEpoch: number },
 ): Promise<{ operationId: string }> {
   return database.transaction(async (tx) => {
     const settings = await requireRelationship(tx, input);
     const { current } = await lockSummaryState(tx, input);
+    confirmSummaryEpoch(input.expectedMemoryEpoch, settings.memoryEpoch);
+    if (current)
+      confirmSummaryEpoch(input.expectedMemoryEpoch, current.memoryEpoch);
     confirmRevision(input.expectedRevision, current?.revision ?? 0);
     if (!(await summaryControlsEligible(tx, input)))
       throw new MemoryDomainError(

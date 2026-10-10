@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { afterAll, beforeEach, expect, test } from "vitest";
+import { afterAll, beforeEach, expect, test, vi } from "vitest";
+import { parse } from "yaml";
 import { eq } from "drizzle-orm";
 import { createDatabase } from "@/server/db/client";
 import {
@@ -11,6 +12,9 @@ import {
   userCharacterMemorySetting,
 } from "@/server/db/schema";
 import { testDatabaseUrl } from "@/test/database-target";
+import { validYaml } from "@/test/unit/runtime-config-fixture";
+import { publicAppConfigSchema } from "@/server/config/schema";
+import * as configLoader from "@/server/config/load-config";
 import {
   extractionCounter,
   extractionGateway,
@@ -21,6 +25,7 @@ import { summaryFixture, summaryResult } from "@/test/memory-summary-fixture";
 import {
   DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
   editRelationshipSummary as editRelationshipSummaryWithRuntimeConfig,
+  editRelationshipSummaryInTransaction,
   getRelationshipSummary,
   requestSummaryRegeneration,
   ensureAutomaticSummaryRefresh,
@@ -54,20 +59,226 @@ const configuredSummaryPolicy = (maxSummaryCharacters: number) =>
   });
 const editRelationshipSummary = (
   database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
-  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+  input: Omit<
+    Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+    "expectedMemoryEpoch"
+  > & { expectedMemoryEpoch?: number },
 ) =>
   editRelationshipSummaryWithRuntimeConfig(
     database,
-    input,
+    { expectedMemoryEpoch: 0, userExplicitlyAskedToRemember: true, ...input },
     DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
   );
-const editWithPolicy = editRelationshipSummaryWithRuntimeConfig as unknown as (
+const editWithPolicy = (
   database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
-  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+  input: Omit<
+    Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+    "expectedMemoryEpoch"
+  >,
   policy: ReturnType<typeof configuredSummaryPolicy>,
-) => ReturnType<typeof editRelationshipSummaryWithRuntimeConfig>;
+) =>
+  editRelationshipSummaryWithRuntimeConfig(
+    database,
+    {
+      expectedMemoryEpoch: 0,
+      userExplicitlyAskedToRemember: true,
+      ...input,
+    },
+    policy,
+  );
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
+
+test.each([
+  { entry: "database", intent: undefined },
+  { entry: "database", intent: false },
+  { entry: "transaction", intent: undefined },
+  { entry: "transaction", intent: false },
+] as const)(
+  "$entry manual summary edit rejects $intent consent before changing history or work",
+  async ({ entry, intent }) => {
+    const input = {
+      ...(await summaryFixture(database)),
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+      content: "My medical diagnosis is private.",
+      ...(intent === undefined
+        ? {}
+        : { userExplicitlyAskedToRemember: intent }),
+    };
+    const operation =
+      entry === "database"
+        ? editRelationshipSummaryWithRuntimeConfig(
+            database,
+            input,
+            DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+          )
+        : database.transaction((tx) =>
+            editRelationshipSummaryInTransaction(
+              tx,
+              input,
+              DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+            ),
+          );
+    await expect(operation).rejects.toMatchObject({
+      code: "MEMORY_VALIDATION",
+    });
+    expect(await getRelationshipSummary(database, input)).toBeNull();
+    expect(await database.select().from(relationshipSummaryVersion)).toEqual(
+      [],
+    );
+    expect(await database.select().from(relationshipSummaryRun)).toMatchObject([
+      { status: "pending" },
+    ]);
+  },
+);
+
+test.each(["database", "transaction"] as const)(
+  "%s manual summary entry accepts explicit intent and allows empty clear without it",
+  async (entry) => {
+    const scope = await summaryFixture(database);
+    const input = {
+      ...scope,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+      content: "My medical diagnosis is private.",
+      userExplicitlyAskedToRemember: true,
+    };
+    if (entry === "database")
+      await editRelationshipSummaryWithRuntimeConfig(
+        database,
+        input,
+        DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+      );
+    else
+      await database.transaction((tx) =>
+        editRelationshipSummaryInTransaction(
+          tx,
+          input,
+          DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+        ),
+      );
+    const clear = {
+      ...scope,
+      expectedRevision: 1,
+      expectedMemoryEpoch: 0,
+      content: " \n ",
+    };
+    if (entry === "database")
+      await editRelationshipSummaryWithRuntimeConfig(
+        database,
+        clear,
+        DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+      );
+    else
+      await database.transaction((tx) =>
+        editRelationshipSummaryInTransaction(
+          tx,
+          clear,
+          DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+        ),
+      );
+    expect(await getRelationshipSummary(database, scope)).toMatchObject({
+      revision: 2,
+      content: "",
+    });
+    expect(
+      await database.select().from(relationshipSummaryVersion),
+    ).toHaveLength(2);
+  },
+);
+
+test("ordinary manual summary edits also require explicit intent", async () => {
+  const scope = await summaryFixture(database);
+  await expect(
+    editRelationshipSummaryWithRuntimeConfig(
+      database,
+      {
+        ...scope,
+        expectedRevision: 0,
+        expectedMemoryEpoch: 0,
+        content: "Likes tea.",
+      },
+      DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+    ),
+  ).rejects.toMatchObject({
+    code: "MEMORY_VALIDATION",
+  });
+  expect(await database.select().from(relationshipSummaryVersion)).toEqual([]);
+});
+
+test.each(["My password is hunter2", configuredSecrets.modelApiKey])(
+  "transactional manual edits reject credentials and runtime secrets despite explicit consent",
+  async (content) => {
+    const scope = await summaryFixture(database);
+    await expect(
+      database.transaction((tx) =>
+        editRelationshipSummaryInTransaction(
+          tx,
+          {
+            ...scope,
+            expectedRevision: 0,
+            expectedMemoryEpoch: 0,
+            content,
+            userExplicitlyAskedToRemember: true,
+          },
+          configuredSummaryPolicy(4000),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "MEMORY_VALIDATION",
+    });
+    expect(await database.select().from(relationshipSummaryVersion)).toEqual(
+      [],
+    );
+  },
+);
+
+test.each(["database", "transaction"] as const)(
+  "%s manual entry defaults to runtime secret rejection even with consent",
+  async (entry) => {
+    const scope = await summaryFixture(database);
+    vi.spyOn(configLoader, "getRuntimeConfig").mockResolvedValue({
+      public: publicAppConfigSchema.parse(parse(validYaml)),
+      secret: {
+        nodeEnv: "test",
+        databaseUrl: `postgresql://app:${configuredSecrets.databasePassword}@127.0.0.1:5432/app`,
+        betterAuthSecret: configuredSecrets.authSecret,
+        betterAuthUrl: "http://127.0.0.1:3000",
+        smtp: {
+          host: "127.0.0.1",
+          port: 1025,
+          secure: false,
+          user: "test",
+          password: configuredSecrets.smtpPassword,
+          from: "test@example.com",
+        },
+        model: {
+          apiBaseUrl: "http://127.0.0.1:3102/v1",
+          apiKey: configuredSecrets.modelApiKey,
+          modelId: "test-model",
+        },
+      },
+    });
+    const input = {
+      ...scope,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+      content: `Reflected value: ${configuredSecrets.modelApiKey}`,
+      userExplicitlyAskedToRemember: true,
+    };
+    await expect(
+      entry === "database"
+        ? editRelationshipSummaryWithRuntimeConfig(database, input)
+        : database.transaction((tx) =>
+            editRelationshipSummaryInTransaction(tx, input),
+          ),
+    ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+    expect(await database.select().from(relationshipSummaryVersion)).toEqual(
+      [],
+    );
+  },
+);
 
 test("committed memoryRevision creates one pending refresh independent of settings revision", async () => {
   const input = await summaryFixture(database);
@@ -168,16 +379,22 @@ test("explicit regeneration confirms the summary revision, preserves edited cont
     content: "My version.",
   });
   await expect(
-    requestSummaryRegeneration(database, { ...input, expectedRevision: 0 }),
+    requestSummaryRegeneration(database, {
+      ...input,
+      expectedRevision: 0,
+      expectedMemoryEpoch: 0,
+    }),
   ).rejects.toMatchObject({ code: "MEMORY_REVISION_CONFLICT" });
   const requested = await requestSummaryRegeneration(database, {
     ...input,
     expectedRevision: 1,
+    expectedMemoryEpoch: 0,
   });
   expect(
     await requestSummaryRegeneration(database, {
       ...input,
       expectedRevision: 1,
+      expectedMemoryEpoch: 0,
     }),
   ).toEqual(requested);
   expect(await getRelationshipSummary(database, input)).toMatchObject({
@@ -205,6 +422,7 @@ test("explicit regeneration confirms the summary revision, preserves edited cont
   const again = await requestSummaryRegeneration(database, {
     ...input,
     expectedRevision: 2,
+    expectedMemoryEpoch: 0,
   });
   expect(again.operationId).not.toBe(requested.operationId);
 });
@@ -224,6 +442,7 @@ test("forget removes every immutable version and pointer and cancels pending ref
   const requested = await requestSummaryRegeneration(database, {
     ...input,
     expectedRevision: 2,
+    expectedMemoryEpoch: 0,
   });
   await forgetCharacter(database, { ...input, expectedRevision: 1 });
   expect(await getRelationshipSummary(database, input)).toBeNull();
@@ -502,6 +721,7 @@ test("confirmed regeneration retries a failed execution without resetting its op
   const requested = await requestSummaryRegeneration(database, {
     ...input,
     expectedRevision: 1,
+    expectedMemoryEpoch: 0,
   });
   await expect(
     processRelationshipSummaryRefresh(
@@ -520,6 +740,7 @@ test("confirmed regeneration retries a failed execution without resetting its op
     await requestSummaryRegeneration(database, {
       ...input,
       expectedRevision: 1,
+      expectedMemoryEpoch: 0,
     }),
   ).toEqual(requested);
   await processRelationshipSummaryRefresh(

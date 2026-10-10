@@ -68,11 +68,14 @@ const configuredSummaryPolicy = (
   });
 const editRelationshipSummary = (
   database: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[0],
-  input: Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+  input: Omit<
+    Parameters<typeof editRelationshipSummaryWithRuntimeConfig>[1],
+    "expectedMemoryEpoch"
+  >,
 ) =>
   editRelationshipSummaryWithRuntimeConfig(
     database,
-    input,
+    { expectedMemoryEpoch: 0, userExplicitlyAskedToRemember: true, ...input },
     DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
   );
 const processWithPolicy =
@@ -464,6 +467,7 @@ test("five database executions persist exponential retries and failed regenerati
   const run = await requestSummaryRegeneration(database, {
     ...input,
     expectedRevision: 1,
+    expectedMemoryEpoch: 0,
   });
   let calls = 0;
   const gateway = extractionGateway(async () => {
@@ -618,11 +622,17 @@ test.each([
         if (kind === "user-edit") {
           const { editRelationshipSummaryInTransaction } =
             await import("./relationship-summary-service");
-          await editRelationshipSummaryInTransaction(tx, {
-            ...input,
-            expectedRevision: 0,
-            content: "Race winner.",
-          });
+          await editRelationshipSummaryInTransaction(
+            tx,
+            {
+              ...input,
+              expectedRevision: 0,
+              expectedMemoryEpoch: 0,
+              content: "Race winner.",
+              userExplicitlyAskedToRemember: true,
+            },
+            DEFAULT_RELATIONSHIP_SUMMARY_POLICY,
+          );
         }
         locked();
         await lockDone;
