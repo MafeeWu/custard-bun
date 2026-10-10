@@ -313,6 +313,42 @@ describe("memory controls", () => {
 });
 
 describe("memory item mutations", () => {
+  test("sensitive manual edit without explicit intent cannot cross the service boundary", async () => {
+    const fixture = await insertFixture();
+    const memoryId = await insertMemory(fixture);
+    await expect(
+      editMemoryItem(database, {
+        ...fixture,
+        memoryId,
+        expectedRevision: 1,
+        content: "Has diabetes.",
+        userExplicitlyAskedToRemember: false,
+      }),
+    ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+    expect((await database.select().from(memoryItem))[0].content).toBe(
+      "Likes green tea.",
+    );
+  });
+  test("omitting explicit manual intent cannot save sensitive content", async () => {
+    const fixture = await insertFixture();
+    const memoryId = await insertMemory(fixture);
+    await expect(
+      editMemoryItem(database, {
+        ...fixture,
+        memoryId,
+        expectedRevision: 1,
+        content: "Has diabetes.",
+      }),
+    ).rejects.toMatchObject({ code: "MEMORY_VALIDATION" });
+  });
+  test("stale delete revision preserves the current user-edited memory", async () => {
+    const fixture = await insertFixture();
+    const memoryId = await insertMemory({ ...fixture, revision: 3 });
+    await expect(
+      deleteMemoryItem(database, { ...fixture, memoryId, expectedRevision: 1 }),
+    ).rejects.toMatchObject({ code: "MEMORY_REVISION_CONFLICT" });
+    expect((await database.select().from(memoryItem))[0].revision).toBe(3);
+  });
   test("makes a user edit authoritative, normalizes it, and increments only content revisions", async () => {
     const fixture = await insertFixture();
     await database.insert(userCharacterMemorySetting).values({
@@ -390,6 +426,7 @@ describe("memory item mutations", () => {
         memoryId,
         expectedRevision: 1,
         content: "Lives at 123 Maple Street.",
+        userExplicitlyAskedToRemember: true,
       }),
     ).resolves.toEqual({ revision: 2 });
 

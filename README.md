@@ -5,8 +5,9 @@ conversations. Phase 3 includes runtime branding, account lifecycle, official
 character administration, version-pinned conversations, an OpenAI-compatible
 model gateway, explicit interruption/retry states, transactional quotas, and
 aggregate-only usage administration. Phase 4 now includes durable automatic
-memory extraction and versioned relationship summaries; prompt recall and the
-remaining privacy operations are still being implemented.
+memory extraction, versioned relationship summaries, prompt recall, and
+owner-scoped memory management. Export and account-purge operations are still
+being implemented.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -152,6 +153,11 @@ pins the immutable character version selected at creation:
 - archived history is read-only and can be deleted independently; and
 - deleting an active chat removes it permanently and returns to the app home.
 
+Deleting a conversation keeps already-formed long-term memory and its
+relationship summary. Evidence retains its source count but loses transcript
+references. Unapplied extraction from that conversation is cancelled, so the
+deleted transcript cannot later form new memory.
+
 Archiving a character removes it from new/public selection. Existing active
 conversations remain usable, but they cannot be restarted until the character
 is restored with a selected default.
@@ -193,6 +199,34 @@ separately for both scopes.
 Administration exposes counts, token totals, outcomes, retry counts, latency,
 model IDs, and provider failure categories only. It never exposes prompts,
 message text, provider credentials, or raw provider bodies.
+
+## Memory and privacy controls
+
+**Manage memory** in the chat header opens `/app/memories/<characterId>`.
+The privacy section at `/account` and `/app/memories` list only the signed-in
+user's character relationships, including relationships whose transcripts
+have been deleted.
+
+- Automatic memories are visible and active immediately; edits are
+  authoritative and cannot be overwritten by automatic extraction.
+- **Stop recording** prevents new automatic memories and cancels pending
+  extraction. **Stop using in chat** independently prevents memory and summary
+  recall in future prompts. Neither switch deletes existing memory; a reply
+  already started may retain its admitted prompt.
+- Memory cards show text, origin, source count, and last-confirmed date—not
+  evidence message text, provider identifiers, or operational payloads.
+- Memories can be edited or deleted. Summary text can be edited, cleared, or
+  explicitly regenerated from current memory. Credential-class content is
+  rejected; sensitive manual content requires explicit intent.
+- Stale revisions show a conflict, preserve the draft, and refresh the
+  authoritative version before the user saves again. Background refreshes do
+  not silently advance the base revision of unsaved edits.
+- Status is shown as **Synced**, **Processing**, **Retrying**, or **Needs retry**.
+  Manual extraction retry is offered only for an eligible **Needs retry** run.
+- **Forget character** requires confirmation: it removes memory, evidence,
+  and summary, advances the memory epoch, and cancels old work. Conversation
+  transcripts are kept. New eligible conversations/turns can form new memory
+  unless recording is stopped separately.
 
 ## Characters and administration
 

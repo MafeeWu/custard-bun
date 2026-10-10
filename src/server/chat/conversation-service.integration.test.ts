@@ -18,7 +18,31 @@ import {
   quotaBucket,
   usageLedger,
   user,
+  memoryItem,
+  memoryEvidence,
+  memoryExtractionRun,
+  memoryExtractionExecution,
+  userCharacterMemorySetting,
+  relationshipSummaryVersion,
 } from "@/server/db/schema";
+import {
+  extractionFixture,
+  extractionAttempt,
+  extractionCandidate,
+  extractionCounter,
+  extractionGateway,
+  extractionResult,
+  extractionNow,
+  waitForExtractionLock,
+} from "@/test/memory-extraction-fixture";
+import {
+  createExtractionRunForCompletedAttempt,
+  lockExtractionRelationship,
+} from "@/server/memory/memory-extraction-service";
+import { processMemoryExtractionRun } from "@/server/memory/memory-job";
+import { forgetCharacter } from "@/server/memory/memory-service";
+import { editRelationshipSummary } from "@/server/memory/relationship-summary-service";
+import { getCharacterMemoryView } from "@/server/memory/memory-queries";
 import { testDatabaseUrl } from "@/test/database-target";
 import { lockUserChatMutation } from "./chat-locks";
 import { createConversationService } from "./conversation-service";
@@ -26,6 +50,350 @@ import { getConversationForUser } from "./conversation-queries";
 
 const database = createDatabase(testDatabaseUrl());
 const service = createConversationService(database);
+
+async function memoryDeletionFixture() {
+  await database
+    .update(memorySettings)
+    .set({ createdAt: new Date(extractionNow.getTime() - 1000) });
+  const fixture = await extractionFixture(database);
+  const first = await extractionAttempt(database, fixture);
+  const run = await database.transaction((tx) =>
+    createExtractionRunForCompletedAttempt(tx, {
+      ...fixture,
+      ...first,
+      now: extractionNow,
+    }),
+  );
+  await processMemoryExtractionRun(
+    database,
+    extractionGateway(async () =>
+      extractionResult([extractionCandidate(first.sourceMessageId)]),
+    ),
+    extractionCounter,
+    run!.runId,
+    new AbortController().signal,
+  );
+  await editRelationshipSummary(
+    database,
+    { ...fixture, expectedRevision: 0, content: "We discuss tea." },
+    { maxSummaryCharacters: 4000, secretValues: [] },
+  );
+  const second = await extractionAttempt(
+    database,
+    fixture,
+    3,
+    "I enjoy hiking.",
+  );
+  const pending = await database.transaction((tx) =>
+    createExtractionRunForCompletedAttempt(tx, {
+      ...fixture,
+      ...second,
+      now: extractionNow,
+    }),
+  );
+  await database
+    .update(memoryExtractionRun)
+    .set({ jobId: "queued-memory-job" })
+    .where(eq(memoryExtractionRun.id, pending!.runId));
+  return { ...fixture, ...second, runId: pending!.runId };
+}
+
+test("conversation deletion retains formed memory, nulls evidence, cancels jobs and does not advance epoch", async () => {
+  const input = await memoryDeletionFixture();
+  await service.delete(input);
+  expect(await getConversationForUser(database, input)).toBeNull();
+  expect(await database.select().from(conversationMessage)).toEqual([]);
+  expect(await database.select().from(memoryItem)).toMatchObject([
+    { content: "Likes green tea.", isActive: true },
+  ]);
+  expect(await database.select().from(memoryEvidence)).toMatchObject([
+    {
+      sourceMessageId: null,
+      sourceAttemptId: null,
+      sourceDeletedAt: expect.any(Date),
+    },
+  ]);
+  const [run] = await database
+    .select()
+    .from(memoryExtractionRun)
+    .where(eq(memoryExtractionRun.id, input.runId));
+  expect(run).toMatchObject({
+    status: "cancelled",
+    conversationId: null,
+    generationAttemptId: null,
+    jobId: null,
+    nextRetryAt: null,
+    claimToken: null,
+    leaseExpiresAt: null,
+  });
+  expect(
+    (await database.select().from(userCharacterMemorySetting))[0].memoryEpoch,
+  ).toBe(0);
+  expect((await getCharacterMemoryView(database, input))?.items).toHaveLength(
+    1,
+  );
+});
+
+test.each(["delete", "forget"] as const)(
+  "named PostgreSQL %s service fences a ready provider response and replay cannot resurrect content",
+  async (kind) => {
+    const input = await memoryDeletionFixture();
+    const writerName = `task8-${kind}-receipt`;
+    const writer = createDatabase(testDatabaseUrl(), {
+      application_name: writerName,
+      max: 1,
+    });
+    const mutator = createDatabase(testDatabaseUrl(), {
+      application_name: `task8-${kind}-service`,
+      max: 1,
+    });
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const work = processMemoryExtractionRun(
+      writer,
+      extractionGateway(async () => {
+        enter();
+        await ready;
+        return extractionResult([
+          extractionCandidate(input.sourceMessageId, {
+            content: "Enjoys hiking.",
+          }),
+        ]);
+      }),
+      extractionCounter,
+      input.runId,
+      new AbortController().signal,
+    );
+    try {
+      await entered;
+      await mutator.transaction(async (tx) => {
+        await lockExtractionRelationship(tx, input);
+        release();
+        expect(await waitForExtractionLock(database, writerName)).toMatch(
+          /chat_settings/,
+        );
+        if (kind === "delete")
+          await createConversationService(tx as unknown as Database).delete(
+            input,
+          );
+        else
+          await forgetCharacter(tx as unknown as Database, {
+            ...input,
+            expectedRevision: 1,
+          });
+      });
+
+      await work;
+      await processMemoryExtractionRun(
+        writer,
+        extractionGateway(async () => {
+          throw new Error("No provider replay");
+        }),
+        extractionCounter,
+        input.runId,
+        new AbortController().signal,
+      );
+      const view = await getCharacterMemoryView(database, input);
+      expect(view?.items.map((item) => item.content)).toEqual(
+        kind === "delete" ? ["Likes green tea."] : [],
+      );
+      expect(view?.settings.memoryEpoch).toBe(kind === "delete" ? 0 : 1);
+      expect(
+        (
+          await database
+            .select()
+            .from(memoryExtractionExecution)
+            .where(eq(memoryExtractionExecution.runId, input.runId))
+        )[0].candidates,
+      ).toBeNull();
+      if (kind === "forget") {
+        expect(await getConversationForUser(database, input)).not.toBeNull();
+        expect(await database.select().from(memoryEvidence)).toEqual([]);
+        expect(
+          await database.select().from(relationshipSummaryVersion),
+        ).toEqual([]);
+      }
+    } finally {
+      release();
+      await Promise.allSettled([work]);
+      await writer.$client.end();
+      await mutator.$client.end();
+    }
+  },
+);
+
+test.each(["delete", "forget"] as const)(
+  "named PostgreSQL %s service cancels an already-staged durable receipt before application",
+  async (kind) => {
+    const input = await memoryDeletionFixture();
+    const writerName = `task8-${kind}-staged-apply`;
+    const writer = createDatabase(testDatabaseUrl(), {
+      application_name: writerName,
+      max: 1,
+    });
+    const mutator = createDatabase(testDatabaseUrl(), {
+      application_name: `task8-${kind}-staged-mutation`,
+      max: 1,
+    });
+    let work: Promise<void> | undefined;
+    try {
+      await database.execute(
+        sql.raw(`
+      CREATE FUNCTION task8_pause_apply() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'pause application'; END $$;
+      CREATE TRIGGER task8_pause_apply BEFORE INSERT ON usage_ledger
+      FOR EACH ROW EXECUTE FUNCTION task8_pause_apply()
+    `),
+      );
+      try {
+        await expect(
+          processMemoryExtractionRun(
+            writer,
+            extractionGateway(async () =>
+              extractionResult([
+                extractionCandidate(input.sourceMessageId, {
+                  content: "Enjoys hiking.",
+                }),
+              ]),
+            ),
+            extractionCounter,
+            input.runId,
+            new AbortController().signal,
+          ),
+        ).rejects.toBeDefined();
+      } finally {
+        await database.execute(
+          sql.raw(
+            "DROP TRIGGER task8_pause_apply ON usage_ledger; DROP FUNCTION task8_pause_apply()",
+          ),
+        );
+      }
+      expect(
+        (
+          await database
+            .select()
+            .from(memoryExtractionExecution)
+            .where(eq(memoryExtractionExecution.runId, input.runId))
+        )[0],
+      ).toMatchObject({
+        responseAt: expect.any(Date),
+        settledAt: null,
+        candidates: [{ content: "Enjoys hiking." }],
+      });
+      await mutator.transaction(async (tx) => {
+        await lockExtractionRelationship(tx, input);
+        work = processMemoryExtractionRun(
+          writer,
+          extractionGateway(async () => {
+            throw new Error("Replay cannot call provider");
+          }),
+          extractionCounter,
+          input.runId,
+          new AbortController().signal,
+        );
+        expect(await waitForExtractionLock(database, writerName)).toMatch(
+          /chat_settings/,
+        );
+        if (kind === "delete")
+          await createConversationService(tx as unknown as Database).delete(
+            input,
+          );
+        else
+          await forgetCharacter(tx as unknown as Database, {
+            ...input,
+            expectedRevision: 1,
+          });
+      });
+      await work;
+      expect(
+        (await getCharacterMemoryView(database, input))?.items.map(
+          (item) => item.content,
+        ),
+      ).toEqual(kind === "delete" ? ["Likes green tea."] : []);
+      expect(
+        (
+          await database
+            .select()
+            .from(memoryExtractionExecution)
+            .where(eq(memoryExtractionExecution.runId, input.runId))
+        )[0].candidates,
+      ).toBeNull();
+    } finally {
+      await Promise.allSettled([work]);
+      await writer.$client.end();
+      await mutator.$client.end();
+    }
+  },
+);
+
+test("deletion waits for the canonical named relationship lock before transcript cascade", async () => {
+  const input = await memoryDeletionFixture();
+  const blocker = createDatabase(testDatabaseUrl(), {
+    application_name: "task8-relationship-blocker",
+    max: 1,
+  });
+  const deleter = createDatabase(testDatabaseUrl(), {
+    application_name: "task8-relationship-deleter",
+    max: 1,
+  });
+  let deletion: Promise<void> | undefined;
+  try {
+    await blocker.$client.query("BEGIN");
+    await blocker.$client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`chat-user-character:${input.userId}:${input.characterId}`],
+    );
+    deletion = createConversationService(deleter).delete(input);
+    expect(
+      await waitForExtractionLock(database, "task8-relationship-deleter"),
+    ).toMatch(/pg_advisory_xact_lock/);
+    expect(await getConversationForUser(database, input)).not.toBeNull();
+    await blocker.$client.query("COMMIT");
+    await deletion;
+    expect(await getConversationForUser(database, input)).toBeNull();
+  } finally {
+    await blocker.$client.query("ROLLBACK");
+    await Promise.allSettled([deletion]);
+    await blocker.$client.end();
+    await deleter.$client.end();
+  }
+});
+
+test("named concurrent delete and forget serialize without resurrecting memory or transcript", async () => {
+  const input = await memoryDeletionFixture();
+  const deleter = createDatabase(testDatabaseUrl(), {
+    application_name: "task8-delete-forget-delete",
+    max: 1,
+  });
+  const forgetter = createDatabase(testDatabaseUrl(), {
+    application_name: "task8-delete-forget-forget",
+    max: 1,
+  });
+  try {
+    await Promise.all([
+      createConversationService(deleter).delete(input),
+      forgetCharacter(forgetter, { ...input, expectedRevision: 1 }),
+    ]);
+    expect(await getConversationForUser(database, input)).toBeNull();
+    expect(await database.select().from(memoryItem)).toEqual([]);
+    expect(await database.select().from(memoryEvidence)).toEqual([]);
+    expect(await database.select().from(relationshipSummaryVersion)).toEqual(
+      [],
+    );
+    expect(
+      (await database.select().from(userCharacterMemorySetting))[0].memoryEpoch,
+    ).toBe(1);
+  } finally {
+    await deleter.$client.end();
+    await forgetter.$client.end();
+  }
+});
 
 const baseContent = {
   displayName: "Mira",
@@ -275,9 +643,7 @@ async function waitForApplicationLockWait(
       `,
       [applicationName],
     );
-    const waiting = result.rows.find(
-      (row) => row.wait_event_type === "Lock",
-    );
+    const waiting = result.rows.find((row) => row.wait_event_type === "Lock");
     if (waiting) {
       return waiting.query;
     }
@@ -413,9 +779,12 @@ describe("conversation lifecycle service", () => {
       });
       const blocker = await database.$client.connect();
       let blockerCommitted = false;
-      let lifecycleOperation: Promise<
-        { conversationId: string; created: boolean } | { conversationId: string }
-      > | undefined;
+      let lifecycleOperation:
+        | Promise<
+            | { conversationId: string; created: boolean }
+            | { conversationId: string }
+          >
+        | undefined;
 
       try {
         await blocker.query("BEGIN");
@@ -483,9 +852,12 @@ describe("conversation lifecycle service", () => {
       });
       const blocker = await database.$client.connect();
       let blockerCommitted = false;
-      let lifecycleOperation: Promise<
-        { conversationId: string; created: boolean } | { conversationId: string }
-      > | undefined;
+      let lifecycleOperation:
+        | Promise<
+            | { conversationId: string; created: boolean }
+            | { conversationId: string }
+          >
+        | undefined;
 
       try {
         await blocker.query("BEGIN");
@@ -609,7 +981,9 @@ describe("conversation lifecycle service", () => {
       }),
       "CHAT_READ_ONLY",
     );
-    await expect(getConversationRows(userId, fixture.characterId)).resolves.toEqual([
+    await expect(
+      getConversationRows(userId, fixture.characterId),
+    ).resolves.toEqual([
       expect.objectContaining({
         id: opened.conversationId,
         lifecycle: "active",

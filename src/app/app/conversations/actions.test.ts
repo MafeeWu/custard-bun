@@ -116,7 +116,9 @@ test("restart requires confirmation, archives through the service, and redirects
   expect(mocks.service.restart).not.toHaveBeenCalled();
   expect(mocks.requireSession).toHaveBeenCalledOnce();
 
-  mocks.service.restart.mockResolvedValue({ conversationId: "conversation-new" });
+  mocks.service.restart.mockResolvedValue({
+    conversationId: "conversation-new",
+  });
   const confirmed = new FormData();
   confirmed.set("confirm", "on");
   await expect(
@@ -184,17 +186,18 @@ test.each([
     form.set("confirm", "on");
 
     await expect(
-      deleteConversationAction(
-        "conversation-delete",
-        { status: "idle" },
-        form,
-      ),
+      deleteConversationAction("conversation-delete", { status: "idle" }, form),
     ).rejects.toBe(mocks.redirectError);
 
     expect(mocks.service.delete).toHaveBeenCalledWith({
       userId: "user-1",
       conversationId: "conversation-delete",
     });
+    expect(mocks.revalidatePath).toHaveBeenCalledWith("/app/memories");
+    expect(mocks.revalidatePath).toHaveBeenCalledWith(
+      "/app/memories/character-1",
+    );
+    expect(mocks.revalidatePath).toHaveBeenCalledWith("/account");
     expect(mocks.redirect).toHaveBeenCalledWith(expectedRedirect);
   },
 );

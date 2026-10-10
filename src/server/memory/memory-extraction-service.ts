@@ -444,6 +444,7 @@ export async function cancelConversationExtractions(
     .update(memoryExtractionRun)
     .set({
       status: "cancelled",
+      jobId: null,
       nextRetryAt: null,
       finishedAt: now,
       updatedAt: now,

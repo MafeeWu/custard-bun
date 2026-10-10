@@ -6,6 +6,28 @@ import { ChatScreen } from "./chat-screen";
 const action = vi.fn(async () => ({ status: "success" as const }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
+test("memory entry targets the current character and deletion explains retained memory and cancelled sources", () => {
+  render(
+    <ChatScreen
+      conversation={conversation({ messages: [] })}
+      archivedConversations={[]}
+      restartAction={action}
+      deleteAction={action}
+    />,
+  );
+  expect(screen.getByRole("link", { name: "Manage memory" })).toHaveAttribute(
+    "href",
+    "/app/memories/character-1",
+  );
+  expect(
+    screen
+      .getByLabelText(/Permanently delete this conversation/)
+      .closest("label"),
+  ).toHaveTextContent(
+    "Existing long-term memory is retained. Unapplied extraction from this conversation is cancelled. The deleted transcript cannot later form memory.",
+  );
+});
+
 function conversation(
   overrides: Partial<UserConversationDetail> = {},
 ): UserConversationDetail {

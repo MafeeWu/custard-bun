@@ -363,6 +363,7 @@ export function createConversationService(
         const [selectedConversation] = await transaction
           .select({
             id: conversation.id,
+            characterId: conversation.characterId,
           })
           .from(conversation)
           .where(
@@ -371,11 +372,27 @@ export function createConversationService(
               eq(conversation.userId, input.userId),
             ),
           )
-          .for("update")
           .limit(1);
         if (!selectedConversation) {
           throw notFound();
         }
+        await lockUserCharacterChatMutation(
+          transaction,
+          input.userId,
+          selectedConversation.characterId,
+        );
+        const [lockedConversation] = await transaction
+          .select({ id: conversation.id })
+          .from(conversation)
+          .where(
+            and(
+              eq(conversation.id, selectedConversation.id),
+              eq(conversation.userId, input.userId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!lockedConversation) throw notFound();
         if (
           await hasGenerationLease(transaction, {
             userId: input.userId,

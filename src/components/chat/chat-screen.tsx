@@ -20,6 +20,8 @@ export type ConversationAction = (
 ) => Promise<ConversationActionState>;
 
 const idleState: ConversationActionState = { status: "idle" };
+const deletionConfirmation =
+  "Permanently delete this conversation. Existing long-term memory is retained. Unapplied extraction from this conversation is cancelled. The deleted transcript cannot later form memory.";
 
 export function StartConversationForm({
   action,
@@ -121,6 +123,12 @@ export function ChatScreen({
           </div>
         </div>
         <div className="chat-header-actions">
+          <Link
+            className="brand-link"
+            href={`/app/memories/${conversation.character.id}`}
+          >
+            Manage memory
+          </Link>
           <ConversationHistory conversations={archivedConversations} />
           {active ? (
             <details className="chat-disclosure">
@@ -134,7 +142,7 @@ export function ChatScreen({
                 />
                 <ConfirmAction
                   action={deleteAction}
-                  confirmation="Permanently delete this conversation."
+                  confirmation={deletionConfirmation}
                   disabled={generating}
                   label="Delete conversation"
                 />
@@ -144,7 +152,7 @@ export function ChatScreen({
             <div className="chat-archived-action">
               <ConfirmAction
                 action={deleteAction}
-                confirmation="Permanently delete this conversation."
+                confirmation={deletionConfirmation}
                 disabled={generating}
                 label="Delete conversation"
               />

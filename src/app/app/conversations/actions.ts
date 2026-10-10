@@ -104,6 +104,7 @@ export async function deleteConversationAction(
   const database = await getDatabase();
   let returnPath = "/app";
   let characterSlug: string | undefined;
+  let characterId: string | undefined;
   try {
     const selected = await getConversationForUser(database, {
       userId: session.user.id,
@@ -116,14 +117,15 @@ export async function deleteConversationAction(
       );
     }
     characterSlug = selected.character.slug;
+    characterId = selected.character.id;
     await createConversationService(database).delete({
       userId: session.user.id,
       conversationId,
     });
     if (selected.lifecycle === "archived") {
-      const active = (await listActiveConversations(database, session.user.id)).find(
-        (candidate) => candidate.character.id === selected.character.id,
-      );
+      const active = (
+        await listActiveConversations(database, session.user.id)
+      ).find((candidate) => candidate.character.id === selected.character.id);
       if (active) {
         returnPath = `/app/conversations/${active.id}`;
       }
@@ -134,6 +136,9 @@ export async function deleteConversationAction(
 
   revalidatePath("/app");
   revalidatePath(`/app/conversations/${conversationId}`);
+  revalidatePath("/app/memories");
+  revalidatePath("/account");
+  if (characterId) revalidatePath(`/app/memories/${characterId}`);
   if (characterSlug) {
     revalidatePath(`/characters/${characterSlug}`);
   }

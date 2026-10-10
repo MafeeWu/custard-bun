@@ -161,6 +161,7 @@ function validateManualEdit(input: {
   confidence: number;
   importance: number;
   content: string;
+  userExplicitlyAskedToRemember?: boolean;
 }) {
   const normalizedText = normalizeMemoryText(input.content);
   if (normalizedText.length === 0) {
@@ -177,7 +178,8 @@ function validateManualEdit(input: {
       sourceMessageId: "00000000-0000-0000-0000-000000000000",
       explicitness: "direct",
       sensitivity: input.sensitivity,
-      userExplicitlyAskedToRemember: true,
+      userExplicitlyAskedToRemember:
+        input.userExplicitlyAskedToRemember ?? false,
       confidence: input.confidence,
       importance: input.importance,
     });
@@ -286,6 +288,7 @@ export async function editMemoryItem(
     memoryId: string;
     expectedRevision: number;
     content: string;
+    userExplicitlyAskedToRemember?: boolean;
   },
 ): Promise<{ revision: number }> {
   return database.transaction(async (transaction) => {
@@ -327,6 +330,7 @@ export async function editMemoryItem(
       confidence: item.confidence,
       importance: item.importance,
       content: input.content,
+      userExplicitlyAskedToRemember: input.userExplicitlyAskedToRemember,
     });
     const [duplicate] = await transaction
       .select({ id: memoryItem.id })
@@ -391,6 +395,7 @@ export async function deleteMemoryItem(
     userId: string;
     characterId: string;
     memoryId: string;
+    expectedRevision?: number;
   },
 ): Promise<void> {
   await database.transaction(async (transaction) => {
@@ -403,7 +408,7 @@ export async function deleteMemoryItem(
       (await ensureRelationshipSettings(transaction, input));
     await lockSummaryState(transaction, input);
     const [item] = await transaction
-      .select({ id: memoryItem.id })
+      .select({ id: memoryItem.id, revision: memoryItem.revision })
       .from(memoryItem)
       .where(
         and(
@@ -417,6 +422,16 @@ export async function deleteMemoryItem(
       .limit(1);
     if (!item) {
       throw notFound();
+    }
+    if (
+      input.expectedRevision !== undefined &&
+      item.revision !== input.expectedRevision
+    ) {
+      throw revisionConflict({
+        memoryId: input.memoryId,
+        expectedRevision: input.expectedRevision,
+        actualRevision: item.revision,
+      });
     }
 
     await transaction
