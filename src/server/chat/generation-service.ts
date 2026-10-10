@@ -11,6 +11,7 @@ import {
   generationAttempt,
   generationLease,
   characterVersion,
+  user,
 } from "@/server/db/schema";
 import type {
   ModelGateway,
@@ -43,6 +44,7 @@ import {
   captureExtractionAdmission,
   enqueuePendingExtractionRuns,
 } from "@/server/memory/memory-extraction-service";
+import { loadMemoryContext } from "@/server/memory/memory-recall";
 
 const CHECKPOINT_INTERVAL_MS = 500;
 const CHECKPOINT_BYTES = 1_024;
@@ -62,6 +64,9 @@ interface GenerationConfig {
   maxOutputTokens: number;
   firstTokenTimeoutMs: number;
   requestTimeoutMs: number;
+  memoryPromptTokenBudget: number;
+  relationshipSummaryTokenBudget: number;
+  memoryItemsTokenBudget: number;
 }
 
 interface GenerationLogger {
@@ -88,6 +93,9 @@ interface PreparedGeneration {
   leaseOwner: string;
   gatewayInput: Omit<ModelGatewayStreamInput, "signal">;
   estimatedInputTokens: number;
+  memoryDiagnostics?: ReturnType<
+    typeof assembleChatPrompt
+  >["memoryDiagnostics"];
   replay?: ChatStreamEvent;
 }
 
@@ -253,8 +261,11 @@ async function promptContext(
       id: conversation.id,
       lifecycle: conversation.lifecycle,
       characterVersionId: conversation.characterVersionId,
+      characterId: conversation.characterId,
+      deletionPendingAt: user.deletionPendingAt,
     })
     .from(conversation)
+    .innerJoin(user, eq(user.id, conversation.userId))
     .where(
       and(
         eq(conversation.id, input.conversationId),
@@ -264,6 +275,12 @@ async function promptContext(
     .limit(1);
   if (!selectedConversation) {
     throw new ChatDomainError("CHAT_NOT_FOUND", "Conversation not found.");
+  }
+  if (selectedConversation.deletionPendingAt) {
+    throw new ChatDomainError(
+      "CHAT_READ_ONLY",
+      "This account is pending deletion.",
+    );
   }
   if (selectedConversation.lifecycle !== "active") {
     throw new ChatDomainError("CHAT_READ_ONLY", "Conversation is read-only.");
@@ -288,7 +305,12 @@ async function promptContext(
       safetyAdditions: characterVersion.safetyAdditions,
     })
     .from(characterVersion)
-    .where(eq(characterVersion.id, selectedConversation.characterVersionId))
+    .where(
+      and(
+        eq(characterVersion.id, selectedConversation.characterVersionId),
+        eq(characterVersion.characterId, selectedConversation.characterId),
+      ),
+    )
     .limit(1);
   if (!character) {
     throw new ChatDomainError(
@@ -378,6 +400,13 @@ async function promptContext(
     character.generationParameters.maxOutputTokens,
     input.config.maxOutputTokens,
   );
+  const memoryContext = await loadMemoryContext(transaction, {
+    userId: input.userId,
+    characterId: character.characterId,
+    summaryTokenBudget: input.config.relationshipSummaryTokenBudget,
+    itemTokenBudget: input.config.memoryItemsTokenBudget,
+    tokenCounter: input.tokenCounter,
+  });
   const assembled = assembleChatPrompt({
     character,
     userId: input.userId,
@@ -388,6 +417,10 @@ async function promptContext(
     promptTokenBudget: input.config.promptTokenBudget,
     maxOutputTokens,
     tokenCounter: input.tokenCounter,
+    memoryContext,
+    memoryPromptTokenBudget: input.config.memoryPromptTokenBudget,
+    relationshipSummaryTokenBudget: input.config.relationshipSummaryTokenBudget,
+    memoryItemsTokenBudget: input.config.memoryItemsTokenBudget,
   });
   return {
     assembled,
@@ -614,6 +647,7 @@ export function createGenerationService(
         leaseOwner: admission.leaseOwner,
         gatewayInput: gatewayInput(context, dependencies.config),
         estimatedInputTokens: context.assembled.estimatedInputTokens,
+        memoryDiagnostics: context.assembled.memoryDiagnostics,
       };
     });
   }
@@ -735,6 +769,7 @@ export function createGenerationService(
         leaseOwner: admission.leaseOwner,
         gatewayInput: gatewayInput(context, dependencies.config),
         estimatedInputTokens: context.assembled.estimatedInputTokens,
+        memoryDiagnostics: context.assembled.memoryDiagnostics,
       };
     });
   }
@@ -1280,6 +1315,10 @@ async function initializeGenerationService(): Promise<GenerationService> {
       maxOutputTokens: config.public.chat.maxOutputTokens,
       firstTokenTimeoutMs: config.public.chat.firstTokenTimeoutMs,
       requestTimeoutMs: config.public.chat.requestTimeoutMs,
+      memoryPromptTokenBudget: config.public.memory.promptTokenBudget,
+      relationshipSummaryTokenBudget:
+        config.public.memory.relationshipSummaryTokenBudget,
+      memoryItemsTokenBudget: config.public.memory.memoryItemsTokenBudget,
     },
     logger: console,
     enqueueExtractionRuns: async () => {

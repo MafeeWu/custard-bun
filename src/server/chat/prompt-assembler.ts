@@ -1,5 +1,12 @@
 import type { GenerationStatus } from "@/server/db/chat-schema";
 import type { PublishedCharacterVersion } from "@/server/characters/character-queries";
+import type { RecalledMemoryContext } from "@/server/memory/memory-recall";
+import {
+  boundMemoryContext,
+  boundedMemoryTokenBudget,
+  memoryPromptLimits,
+  serializeUntrustedMemoryContext,
+} from "@/server/memory/memory-prompt";
 import { ChatDomainError } from "./chat-errors";
 import type { TokenCounter } from "./token-counter";
 
@@ -114,7 +121,10 @@ function createCompleteTurns(history: PromptHistoryMessage[]): PromptTurn[] {
   const sorted = [...history].sort(
     (left, right) => left.sequence - right.sequence,
   );
-  const users = new Map<string, Extract<PromptHistoryMessage, { role: "user" }>>();
+  const users = new Map<
+    string,
+    Extract<PromptHistoryMessage, { role: "user" }>
+  >();
   const assistants = new Map<
     string,
     Extract<PromptHistoryMessage, { role: "assistant"; kind: "generated" }>
@@ -258,10 +268,18 @@ export function assembleChatPrompt(input: {
   promptTokenBudget: number;
   maxOutputTokens: number;
   tokenCounter: TokenCounter;
+  memoryContext: RecalledMemoryContext;
+  memoryPromptTokenBudget: number;
+  relationshipSummaryTokenBudget: number;
+  memoryItemsTokenBudget: number;
 }): {
   messages: GatewayMessage[];
   estimatedInputTokens: number;
   includedHistoryMessageIds: string[];
+  memoryDiagnostics: {
+    memoryItemIds: string[];
+    summaryVersionId?: string;
+  };
 } {
   const currentUserMessage: GatewayMessage = {
     role: "user",
@@ -301,8 +319,33 @@ export function assembleChatPrompt(input: {
     maxOutputTokens: input.maxOutputTokens,
     promptTokenBudget: input.promptTokenBudget,
   });
+  const selectedMemory = boundMemoryContext(input.memoryContext, {
+    summaryTokenBudget: input.relationshipSummaryTokenBudget,
+    itemTokenBudget: input.memoryItemsTokenBudget,
+    tokenCounter: input.tokenCounter,
+  });
+  const memoryBudget = boundedMemoryTokenBudget(
+    input.memoryPromptTokenBudget,
+    memoryPromptLimits.totalTokens,
+  );
+  let memoryMessages = serializeUntrustedMemoryContext(selectedMemory);
+  while (memoryMessages.length > 0) {
+    if (
+      input.tokenCounter.estimateMessages(memoryMessages) <= memoryBudget &&
+      fitsWithinBudget({
+        tokenCounter: input.tokenCounter,
+        messages: [...withExamples, ...memoryMessages, currentUserMessage],
+        maxOutputTokens: input.maxOutputTokens,
+        promptTokenBudget: input.promptTokenBudget,
+      })
+    )
+      break;
+    if (selectedMemory.items.length > 0) selectedMemory.items.pop();
+    else delete selectedMemory.summary;
+    memoryMessages = serializeUntrustedMemoryContext(selectedMemory);
+  }
   const withHistory = appendHistoryTurns({
-    selected: withExamples,
+    selected: [...withExamples, ...memoryMessages],
     currentUserMessage,
     userId: input.userId,
     conversationId: input.conversationId,
@@ -317,5 +360,11 @@ export function assembleChatPrompt(input: {
     messages,
     estimatedInputTokens: estimateInputTokens(input.tokenCounter, messages),
     includedHistoryMessageIds: withHistory.includedHistoryMessageIds,
+    memoryDiagnostics: {
+      memoryItemIds: selectedMemory.items.map((item) => item.id),
+      ...(selectedMemory.summary
+        ? { summaryVersionId: selectedMemory.summary.versionId }
+        : {}),
+    },
   };
 }
