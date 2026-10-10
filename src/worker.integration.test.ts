@@ -9,12 +9,14 @@ import { createDatabase } from "@/server/db/client";
 import {
   memoryExtractionRun,
   memoryItem,
+  relationshipSummaryRun,
   usageLedger,
 } from "@/server/db/schema";
 import {
   registerMemoryExtractionWorker,
   processMemoryExtractionRun,
 } from "@/server/memory/memory-job";
+import { enqueuePendingSummaryRuns } from "@/server/memory/relationship-summary-job";
 import {
   createExtractionRunForCompletedAttempt,
   enqueuePendingExtractionRuns,
@@ -35,6 +37,8 @@ import {
   AUTH_EMAIL_QUEUE,
   MEMORY_EXTRACTION_QUEUE,
   MEMORY_EXTRACTION_DEAD_LETTER_QUEUE,
+  RELATIONSHIP_SUMMARY_QUEUE,
+  RELATIONSHIP_SUMMARY_DEAD_LETTER_QUEUE,
   ensureQueues,
 } from "@/server/jobs/queues";
 import { testDatabaseUrl } from "@/test/database-target";
@@ -458,7 +462,7 @@ test("periodic production reconciler discovers completion after worker startup w
   }
 });
 
-test("real worker CLI starts, processes structured extraction and auth jobs, and shuts down cleanly", async () => {
+test("real worker CLI starts, processes structured extraction, summary and auth jobs, and shuts down cleanly", async () => {
   const database = createDatabase(testDatabaseUrl());
   let child: ReturnType<typeof spawn> | undefined;
   let exit: Promise<unknown> | undefined;
@@ -483,9 +487,14 @@ test("real worker CLI starts, processes structured extraction and auth jobs, and
         choices: [
           {
             message: {
-              content: extractionResult([
-                extractionCandidate(attempt.sourceMessageId),
-              ]).content,
+              content:
+                body.response_format.json_schema.schema.required.includes(
+                  "summary",
+                )
+                  ? JSON.stringify({ summary: "Enjoys green tea." })
+                  : extractionResult([
+                      extractionCandidate(attempt.sourceMessageId),
+                    ]).content,
             },
           },
         ],
@@ -497,6 +506,7 @@ test("real worker CLI starts, processes structured extraction and auth jobs, and
     await boss.offWork(AUTH_EMAIL_QUEUE);
     await boss.deleteAllJobs(AUTH_EMAIL_QUEUE);
     await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(RELATIONSHIP_SUMMARY_QUEUE);
     await database.transaction((tx) =>
       createExtractionRunForCompletedAttempt(tx, {
         ...owner,
@@ -539,6 +549,14 @@ test("real worker CLI starts, processes structured extraction and auth jobs, and
         { timeout: 10_000 },
       )
       .toBe("complete");
+    await enqueuePendingSummaryRuns(database, boss, new Date());
+    await expect
+      .poll(
+        async () =>
+          (await database.select().from(relationshipSummaryRun))[0]?.status,
+        { timeout: 6000 },
+      )
+      .toBe("complete");
     const authJob = await boss.send(AUTH_EMAIL_QUEUE, { kind: "noop" });
     await expect
       .poll(
@@ -546,16 +564,18 @@ test("real worker CLI starts, processes structured extraction and auth jobs, and
         { timeout: 6_000 },
       )
       .toBe("completed");
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     expect(schemaType).toBe("object");
     expect(await database.select().from(memoryItem)).toHaveLength(1);
     expect(await database.select().from(usageLedger)).toMatchObject([
+      { inputTokens: 13, outputTokens: 7 },
       { inputTokens: 13, outputTokens: 7 },
     ]);
     child.kill("SIGTERM");
     await expect(exit).resolves.toBe(0);
     expect(output).not.toContain(validSecretEnv.MODEL_API_KEY);
     expect(output).not.toContain("Likes green tea.");
+    expect(output).not.toContain("Enjoys green tea.");
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
@@ -574,6 +594,8 @@ test("real worker CLI starts, processes structured extraction and auth jobs, and
     if (server.listening)
       await new Promise<void>((resolve) => server.close(() => resolve()));
     await boss.deleteAllJobs(MEMORY_EXTRACTION_QUEUE);
+    await boss.deleteAllJobs(RELATIONSHIP_SUMMARY_QUEUE);
+    await boss.deleteAllJobs(RELATIONSHIP_SUMMARY_DEAD_LETTER_QUEUE);
     await database.$client.end();
   }
 }, 25_000);

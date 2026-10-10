@@ -123,7 +123,7 @@ function containsExplicitBankingCredential(value: string): boolean {
   );
 }
 
-function containsCredential(value: string): boolean {
+export function containsCredential(value: string): boolean {
   return (
     credentialPatterns.some((pattern) => pattern.test(value)) ||
     containsPaymentCardNumber(value) ||

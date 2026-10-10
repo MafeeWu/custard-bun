@@ -6,7 +6,7 @@ import {
   lockExtractionRelationship,
 } from "@/server/memory/memory-extraction-service";
 import { settleUserExtractionWorkBeforeDeletion } from "@/server/memory/background-usage-service";
-import { and, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import type { Database } from "@/server/db/client";
 import {
   chatSettings,
@@ -14,11 +14,19 @@ import {
   conversationMessage,
   generationAttempt,
   generationLease,
+  memoryEvidence,
+  memoryExtractionRun,
+  memoryItem,
+  relationshipSummary,
+  relationshipSummaryRun,
+  relationshipSummaryExecution,
+  relationshipSummaryVersion,
   quotaBucket,
   quotaReservation,
   usageLedger,
   user,
   userChatQuotaOverride,
+  userCharacterMemorySetting,
 } from "@/server/db/schema";
 import { ChatDomainError } from "./chat-errors";
 import { lockUserChatMutation, type ChatTransaction } from "./chat-locks";
@@ -963,6 +971,66 @@ export async function deleteUserWithGenerationSettlement(
 ): Promise<void> {
   await database.transaction(async (transaction) => {
     await lockUserChatMutation(transaction, userId);
+    const relationships = await transaction
+      .select({ characterId: userCharacterMemorySetting.characterId })
+      .from(userCharacterMemorySetting)
+      .where(eq(userCharacterMemorySetting.userId, userId))
+      .orderBy(asc(userCharacterMemorySetting.characterId));
+    for (const relationship of relationships)
+      await lockExtractionRelationship(transaction, {
+        userId,
+        ...relationship,
+      });
+    await transaction
+      .select({ id: memoryExtractionRun.id })
+      .from(memoryExtractionRun)
+      .where(eq(memoryExtractionRun.userId, userId))
+      .orderBy(asc(memoryExtractionRun.id))
+      .for("update");
+    await transaction
+      .select({ id: relationshipSummaryRun.id })
+      .from(relationshipSummaryRun)
+      .where(eq(relationshipSummaryRun.userId, userId))
+      .orderBy(asc(relationshipSummaryRun.id))
+      .for("update");
+    await transaction
+      .select({ id: relationshipSummaryExecution.id })
+      .from(relationshipSummaryExecution)
+      .where(
+        sql`${relationshipSummaryExecution.runId} IN (
+        SELECT ${relationshipSummaryRun.id} FROM ${relationshipSummaryRun} WHERE ${relationshipSummaryRun.userId} = ${userId}
+      )`,
+      )
+      .orderBy(asc(relationshipSummaryExecution.id))
+      .for("update");
+    await transaction
+      .select({ characterId: relationshipSummary.characterId })
+      .from(relationshipSummary)
+      .where(eq(relationshipSummary.userId, userId))
+      .orderBy(asc(relationshipSummary.characterId))
+      .for("update");
+    await transaction
+      .select({ id: relationshipSummaryVersion.id })
+      .from(relationshipSummaryVersion)
+      .where(eq(relationshipSummaryVersion.userId, userId))
+      .orderBy(asc(relationshipSummaryVersion.id))
+      .for("update");
+    await transaction
+      .select({ id: memoryItem.id })
+      .from(memoryItem)
+      .where(eq(memoryItem.userId, userId))
+      .orderBy(asc(memoryItem.id))
+      .for("update");
+    await transaction
+      .select({ id: memoryEvidence.id })
+      .from(memoryEvidence)
+      .where(
+        sql`${memoryEvidence.memoryId} IN (
+        SELECT ${memoryItem.id} FROM ${memoryItem} WHERE ${memoryItem.userId} = ${userId}
+      )`,
+      )
+      .orderBy(asc(memoryEvidence.id))
+      .for("update");
 
     const reservations = await transaction
       .select()
@@ -1010,6 +1078,18 @@ export async function deleteUserWithGenerationSettlement(
       })
       .where(eq(usageLedger.userId, userId));
     await settleUserExtractionWorkBeforeDeletion(transaction, { userId, now });
+    // Remove dependent private data before auth cascades detach evidence sources.
+    await transaction
+      .delete(relationshipSummary)
+      .where(eq(relationshipSummary.userId, userId));
+    await transaction
+      .delete(relationshipSummaryVersion)
+      .where(eq(relationshipSummaryVersion.userId, userId));
+    await transaction.delete(memoryEvidence)
+      .where(sql`${memoryEvidence.memoryId} IN (
+      SELECT ${memoryItem.id} FROM ${memoryItem} WHERE ${memoryItem.userId} = ${userId}
+    )`);
+    await transaction.delete(memoryItem).where(eq(memoryItem.userId, userId));
     await transaction.delete(user).where(eq(user.id, userId));
   });
 }

@@ -11,6 +11,7 @@ import { startupDiagnostic } from "@/server/config/configuration-error";
 import { OpenAiCompatibleGateway } from "@/server/model-gateway/openai-compatible-gateway";
 import { createTokenCounter } from "@/server/chat/token-counter";
 import { registerMemoryExtractionWorker } from "@/server/memory/memory-job";
+import { registerRelationshipSummaryWorker } from "@/server/memory/relationship-summary-job";
 
 async function main(): Promise<void> {
   const config = await loadRuntimeConfig();
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
   });
   const tokenCounter = createTokenCounter(config.secret.model.modelId);
   let stopMemoryWorker: (() => Promise<void>) | undefined;
+  let stopSummaryWorker: (() => Promise<void>) | undefined;
 
   await runWorkerProcess({
     createDatabase: () => database,
@@ -31,6 +33,7 @@ async function main(): Promise<void> {
       return {
         stop: async () => {
           await stopMemoryWorker?.();
+          await stopSummaryWorker?.();
           await heartbeat.stop();
         },
       };
@@ -45,6 +48,13 @@ async function main(): Promise<void> {
         );
       });
       stopMemoryWorker = await registerMemoryExtractionWorker(
+        database,
+        boss,
+        new OpenAiCompatibleGateway(config.secret.model),
+        tokenCounter,
+        console,
+      );
+      stopSummaryWorker = await registerRelationshipSummaryWorker(
         database,
         boss,
         new OpenAiCompatibleGateway(config.secret.model),

@@ -5,8 +5,8 @@ conversations. Phase 3 includes runtime branding, account lifecycle, official
 character administration, version-pinned conversations, an OpenAI-compatible
 model gateway, explicit interruption/retry states, transactional quotas, and
 aggregate-only usage administration. Phase 4 now includes durable automatic
-memory extraction; summaries, prompt recall, and the remaining privacy
-operations are still being implemented.
+memory extraction and versioned relationship summaries; prompt recall and the
+remaining privacy operations are still being implemented.
 
 The anonymous official character catalog is available at `/characters`, with
 public detail pages at `/characters/<slug>`. Both pages show only active
@@ -335,7 +335,33 @@ worker dies before recording the response, lease recovery charges one
 conservative estimated usage record for that ambiguous call before retrying.
 Forget, recording disable, account lockout, and conversation deletion prevent
 stale results from applying. Credentials are never stored as memory or receipt
-candidates. Relationship summaries and prompt recall are not implemented yet.
+candidates. Prompt recall is not implemented yet.
+
+### Versioned relationship summaries (Phase 4)
+
+Memory revision changes also make an automatic relationship summary eligible.
+Eligibility uses the relationship's `memoryRevision`, not the optimistic
+controls revision. Summary calls receive only active memories from the same
+owner, character and current epoch, plus the prior automatic summary as
+untrusted data; no transcript is sent. Strict structured output is normalized
+and validated against the 4000-character (Unicode code point) and 16000-byte
+limits, without truncation. Every successful refresh appends an immutable
+version and atomically advances the current pointer and summary revision.
+Edits and clears append user-edited versions, including empty content, and
+remain authoritative until explicit regeneration confirms the current summary
+revision. Failed regeneration keeps the existing summary; a newly confirmed
+request can retry a failed operation only within its remaining execution budget.
+
+The same worker additively handles `relationship-summary` and reconciles
+committed work at startup and every 30 seconds. It uses the same five-execution,
+instance-token-only accounting and durable receipt recovery rules as
+extraction. PostgreSQL publishes `relationship-summary-dead-letter` atomically
+with a durable marker, so replacement queue jobs cannot restart retries or
+duplicate dead letters. Memory revision changes, forget, recording disable,
+account lockout and deletion fence stale results; forget removes all versions
+and never creates a new automatic summary from empty forgotten data.
+Operational logs and queue payloads contain operation IDs and safe categories,
+never summary or memory text, provider bodies or raw provider identities.
 
 ## Service health
 

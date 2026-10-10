@@ -26,6 +26,7 @@ import {
 import { MemoryDomainError } from "./memory-errors";
 import { lockUserMemoryMutation } from "./memory-locks";
 import { cancelRelationshipExtractions } from "./memory-extraction-service";
+import { lockSummaryState } from "./relationship-summary-service";
 
 const nonterminalOperationStatuses = [
   "pending",
@@ -295,6 +296,7 @@ export async function editMemoryItem(
     const settings =
       selectedSettings ??
       (await ensureRelationshipSettings(transaction, input));
+    await lockSummaryState(transaction, input);
     const [item] = await transaction
       .select()
       .from(memoryItem)
@@ -399,6 +401,7 @@ export async function deleteMemoryItem(
     const settings =
       selectedSettings ??
       (await ensureRelationshipSettings(transaction, input));
+    await lockSummaryState(transaction, input);
     const [item] = await transaction
       .select({ id: memoryItem.id })
       .from(memoryItem)

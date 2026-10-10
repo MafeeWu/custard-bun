@@ -573,10 +573,18 @@ export const relationshipSummaryRun = pgTable(
     memoryEpoch: integer("memory_epoch").notNull(),
     expectedSummaryRevision: integer("expected_summary_revision").notNull(),
     basedOnMemoryRevision: integer("based_on_memory_revision").notNull(),
+    explicitRegeneration: boolean("explicit_regeneration")
+      .notNull()
+      .default(false),
     status: backgroundOperationStatusEnum("status")
       .notNull()
       .default("pending"),
     jobId: text("job_id"),
+    deadLetterPublishedAt: timestamp("dead_letter_published_at", {
+      withTimezone: true,
+    }),
+    claimToken: text("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     attemptCount: integer("attempt_count").notNull().default(0),
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
     errorCategory: text("error_category"),
@@ -605,7 +613,18 @@ export const relationshipSummaryRun = pgTable(
       table.characterId,
       table.memoryEpoch,
       table.basedOnMemoryRevision,
+      table.expectedSummaryRevision,
     ),
+    uniqueIndex("relationship_summary_runs_one_active_revision")
+      .on(
+        table.userId,
+        table.characterId,
+        table.memoryEpoch,
+        table.basedOnMemoryRevision,
+      )
+      .where(
+        sql`${table.status} IN ('pending', 'queued', 'running', 'retrying')`,
+      ),
     uniqueIndex("relationship_summary_runs_job_unique")
       .on(table.jobId)
       .where(sql`${table.jobId} IS NOT NULL`),
@@ -629,6 +648,14 @@ export const relationshipSummaryRun = pgTable(
     check(
       "relationship_summary_runs_attempt_count_nonnegative",
       nonnegative(table.attemptCount),
+    ),
+    check(
+      "relationship_summary_runs_attempt_count_limit",
+      sql`${table.attemptCount} <= 5`,
+    ),
+    check(
+      "relationship_summary_runs_publication_shape",
+      sql`${table.deadLetterPublishedAt} IS NULL OR ${table.status} = 'dead_letter'`,
     ),
     check(
       "relationship_summary_runs_estimated_tokens_nonnegative",
@@ -657,6 +684,63 @@ export const relationshipSummaryRun = pgTable(
         OR
         (${table.status} IN ('pending', 'queued', 'running', 'retrying') AND ${table.finishedAt} IS NULL)
       )`,
+    ),
+  ],
+);
+
+export const relationshipSummaryExecution = pgTable(
+  "relationship_summary_executions",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => relationshipSummaryRun.id, { onDelete: "cascade" }),
+    executionNumber: integer("execution_number").notNull(),
+    summary: text("summary"),
+    modelId: text("model_id").notNull(),
+    providerIdentity: jsonb("provider_identity")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    estimatedInputTokens: bigint("estimated_input_tokens", {
+      mode: "number",
+    }).notNull(),
+    estimatedOutputTokens: bigint("estimated_output_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    inputTokens: bigint("input_tokens", { mode: "number" }),
+    outputTokens: bigint("output_tokens", { mode: "number" }),
+    latencyMs: integer("latency_ms").notNull().default(0),
+    errorCategory: text("error_category"),
+    retryable: boolean("retryable").notNull().default(false),
+    responseAt: timestamp("response_at", { withTimezone: true }),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("relationship_summary_executions_run_number_unique").on(
+      table.runId,
+      table.executionNumber,
+    ),
+    check(
+      "relationship_summary_executions_number_check",
+      sql`${table.executionNumber} BETWEEN 1 AND 5`,
+    ),
+    check(
+      "relationship_summary_executions_tokens_check",
+      sql`
+      ${table.estimatedInputTokens} >= 0 AND ${table.estimatedOutputTokens} >= 0
+      AND (${table.inputTokens} IS NULL OR ${table.inputTokens} >= 0)
+      AND (${table.outputTokens} IS NULL OR ${table.outputTokens} >= 0)
+      AND ${table.latencyMs} >= 0`,
+    ),
+    check(
+      "relationship_summary_executions_receipt_shape",
+      sql`
+      (${table.settledAt} IS NULL OR (${table.responseAt} IS NOT NULL AND ${table.summary} IS NULL))
+      AND (${table.summary} IS NULL OR (CHAR_LENGTH(${table.summary}) <= 4000 AND OCTET_LENGTH(${table.summary}) <= 16000))`,
     ),
   ],
 );

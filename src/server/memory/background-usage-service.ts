@@ -17,6 +17,8 @@ import {
   backgroundModelReservation,
   memoryExtractionExecution,
   memoryExtractionRun,
+  relationshipSummaryExecution,
+  relationshipSummaryRun,
   chatSettings,
   quotaBucket,
   usageLedger,
@@ -357,6 +359,53 @@ export async function settleUserExtractionWorkBeforeDeletion(
     await settleBackgroundModelWorkInTransaction(transaction, {
       operationId: execution.id,
       memoryExtractionRunId: execution.runId,
+      outcome: "cancelled",
+      modelId: execution.modelId,
+      providerRequestIds: execution.providerIdentity,
+      inputTokens: execution.inputTokens ?? undefined,
+      outputTokens: execution.outputTokens ?? undefined,
+      estimatedInputTokens: execution.estimatedInputTokens,
+      estimatedOutputTokens: execution.responseAt
+        ? execution.estimatedOutputTokens
+        : Math.max(
+            0,
+            reservation.reservedTokens - execution.estimatedInputTokens,
+          ),
+      latencyMs: execution.latencyMs,
+      errorCategory: "account_deleted",
+      now: input.now,
+    });
+  }
+  const summaries = await transaction
+    .select({
+      execution: relationshipSummaryExecution,
+      reservation: backgroundModelReservation,
+    })
+    .from(relationshipSummaryExecution)
+    .innerJoin(
+      relationshipSummaryRun,
+      eq(relationshipSummaryRun.id, relationshipSummaryExecution.runId),
+    )
+    .innerJoin(
+      backgroundModelReservation,
+      eq(
+        backgroundModelReservation.operationId,
+        relationshipSummaryExecution.id,
+      ),
+    )
+    .where(
+      and(
+        eq(relationshipSummaryRun.userId, input.userId),
+        isNull(backgroundModelReservation.settledAt),
+      ),
+    )
+    .orderBy(
+      asc(backgroundModelReservation.periodStart),
+      asc(relationshipSummaryExecution.id),
+    );
+  for (const { execution, reservation } of summaries) {
+    await settleBackgroundModelWorkInTransaction(transaction, {
+      operationId: execution.id,
       outcome: "cancelled",
       modelId: execution.modelId,
       providerRequestIds: execution.providerIdentity,

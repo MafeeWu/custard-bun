@@ -26,6 +26,10 @@ import {
   lockExtractionRelationship,
   readExtractionSource,
 } from "./memory-extraction-service";
+import {
+  ensureAutomaticSummaryRefresh,
+  lockSummaryState,
+} from "./relationship-summary-service";
 
 const ambiguousConsentContext =
   /\b(?:not|never|no|don't|dont|without|if|unless|whether|when|provided|depending|maybe|perhaps|might|may|could|would|should|imagine|suppos(?:e|ing)|assum(?:e|ing)|hypothetical(?:ly)?|roleplay(?:ing)?|pretend|fiction(?:al)?|movie|film|book|story|novel|title|quote[ds]?|about|game|song|example|jok(?:e|ing)|friend|mother|father|he|she|they|his|her|their)\b|["“”„«»‹›]|\p{L}'s\b|不|没有|沒有/iu;
@@ -195,6 +199,7 @@ export async function mergeMemoryCandidates(
     return { applied: false, changedItems: 0 };
   }
   const candidates = allowedExtractionCandidates(input.candidates, source);
+  await lockSummaryState(transaction, preview);
   let changedItems = 0;
   for (const raw of candidates) {
     const candidate = normalizeMemoryCandidate(raw);
@@ -283,7 +288,7 @@ export async function mergeMemoryCandidates(
       .where(eq(memoryItem.id, item.id));
     changedItems++;
   }
-  if (changedItems)
+  if (changedItems) {
     await transaction
       .update(userCharacterMemorySetting)
       .set({
@@ -296,5 +301,7 @@ export async function mergeMemoryCandidates(
           eq(userCharacterMemorySetting.characterId, run.characterId),
         ),
       );
+    await ensureAutomaticSummaryRefresh(transaction, run);
+  }
   return { applied: true, changedItems };
 }
