@@ -5,11 +5,20 @@ import {
   type GatewayStreamEvent,
   type ModelGateway,
   type ModelGatewayStreamInput,
+  type StructuredCompletionInput,
+  type StructuredCompletionResult,
 } from "./model-contract";
 import { ModelGatewayError } from "./model-error";
 import { parseOpenAiStream } from "./stream-parser";
 
-type GatewayProviderConfig = Pick<ModelSecretConfig, "apiBaseUrl" | "apiKey">;
+type GatewayProviderConfig = Pick<
+  ModelSecretConfig,
+  "apiBaseUrl" | "apiKey" | "modelId"
+> & {
+  requestTimeoutMs?: number;
+};
+
+const DEFAULT_STRUCTURED_REQUEST_TIMEOUT_MS = 120_000;
 
 function scheduleAbort(
   controller: AbortController,
@@ -44,6 +53,17 @@ function providerRequestId(response: Response): string | undefined {
     undefined;
   const normalized = requestId?.trim().slice(0, 256);
   return normalized || undefined;
+}
+
+function providerHeaders(
+  config: GatewayProviderConfig,
+  accept: string,
+): HeadersInit {
+  return {
+    accept,
+    authorization: `Bearer ${config.apiKey}`,
+    "content-type": "application/json",
+  };
 }
 
 async function discardBody(response: Response): Promise<void> {
@@ -114,6 +134,7 @@ function normalizeError(input: {
       retryable: true,
     });
   }
+
   if (input.error instanceof ModelGatewayError) {
     return withRequestId(input.error, input.requestId);
   }
@@ -126,6 +147,93 @@ function normalizeError(input: {
     providerRequestId: input.requestId,
     retryable: true,
   });
+}
+
+function normalizeStructuredError(input: {
+  error: unknown;
+  callerSignal: AbortSignal;
+  totalSignal: AbortSignal;
+  requestId?: string;
+}): ModelGatewayError {
+  if (input.callerSignal.aborted) {
+    return new ModelGatewayError("cancelled", {
+      providerRequestId: input.requestId,
+    });
+  }
+  if (input.totalSignal.aborted) {
+    return new ModelGatewayError("total_timeout", {
+      providerRequestId: input.requestId,
+    });
+  }
+  if (input.error instanceof ModelGatewayError) {
+    return withRequestId(input.error, input.requestId);
+  }
+  return new ModelGatewayError("connection", {
+    providerRequestId: input.requestId,
+    retryable: true,
+  });
+}
+
+function parseStructuredResponse(
+  payload: unknown,
+  requestId: string | undefined,
+): Pick<
+  StructuredCompletionResult,
+  "content" | "inputTokens" | "outputTokens"
+> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ModelGatewayError("protocol", {
+      providerRequestId: requestId,
+    });
+  }
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    throw new ModelGatewayError("protocol", {
+      providerRequestId: requestId,
+    });
+  }
+  const firstChoice = choices[0];
+  const message =
+    firstChoice && typeof firstChoice === "object" && !Array.isArray(firstChoice)
+      ? (firstChoice as { message?: unknown }).message
+      : undefined;
+  const content =
+    message && typeof message === "object" && !Array.isArray(message)
+      ? (message as { content?: unknown }).content
+      : undefined;
+  if (typeof content !== "string" || content.length === 0) {
+    throw new ModelGatewayError("protocol", {
+      providerRequestId: requestId,
+    });
+  }
+
+  const usage = (payload as { usage?: unknown }).usage;
+  if (usage === undefined) {
+    return { content };
+  }
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+    throw new ModelGatewayError("protocol", {
+      providerRequestId: requestId,
+    });
+  }
+  const inputTokens = (usage as { prompt_tokens?: unknown }).prompt_tokens;
+  const outputTokens = (usage as { completion_tokens?: unknown })
+    .completion_tokens;
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    (inputTokens as number) < 0 ||
+    !Number.isSafeInteger(outputTokens) ||
+    (outputTokens as number) < 0
+  ) {
+    throw new ModelGatewayError("protocol", {
+      providerRequestId: requestId,
+    });
+  }
+  return {
+    content,
+    inputTokens: inputTokens as number,
+    outputTokens: outputTokens as number,
+  };
 }
 
 function shouldRetry(
@@ -199,6 +307,89 @@ export class OpenAiCompatibleGateway implements ModelGateway {
     );
   }
 
+  async completeStructured(
+    input: StructuredCompletionInput,
+  ): Promise<StructuredCompletionResult> {
+    const startedAt = Date.now();
+    const totalController = new AbortController();
+    const totalTimer = scheduleAbort(
+      totalController,
+      Math.max(
+        0,
+        this.config.requestTimeoutMs ??
+          DEFAULT_STRUCTURED_REQUEST_TIMEOUT_MS,
+      ),
+    );
+    const requestSignal = AbortSignal.any([
+      input.signal,
+      totalController.signal,
+    ]);
+    let requestId: string | undefined;
+
+    try {
+      const response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: providerHeaders(this.config, "application/json"),
+        body: JSON.stringify({
+          model: this.config.modelId,
+          messages: input.messages,
+          max_tokens: input.maxOutputTokens,
+          stream: false,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "background_response",
+              strict: true,
+              schema: input.jsonSchema,
+            },
+          },
+        }),
+        signal: requestSignal,
+      });
+      requestId = providerRequestId(response);
+      if (!response.ok) {
+        const responseError = errorForResponse(response);
+        await discardBody(response);
+        throw responseError;
+      }
+
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throwIfCancelledOrTimedOut(
+          input.signal,
+          totalController.signal,
+          requestId,
+        );
+        throw new ModelGatewayError("protocol", {
+          providerRequestId: requestId,
+        });
+      }
+      throwIfCancelledOrTimedOut(
+        input.signal,
+        totalController.signal,
+        requestId,
+      );
+      const parsed = parseStructuredResponse(payload, requestId);
+      return {
+        ...parsed,
+        modelId: this.config.modelId,
+        providerRequestIds: requestId ? [requestId] : [],
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      throw normalizeStructuredError({
+        error,
+        callerSignal: input.signal,
+        totalSignal: totalController.signal,
+        requestId,
+      });
+    } finally {
+      clearTimeout(totalTimer);
+    }
+  }
+
   async *stream(
     input: ModelGatewayStreamInput,
   ): AsyncGenerator<GatewayStreamEvent, void> {
@@ -245,11 +436,7 @@ export class OpenAiCompatibleGateway implements ModelGateway {
         try {
           const response = await fetch(this.endpoint, {
             method: "POST",
-            headers: {
-              accept: "text/event-stream",
-              authorization: `Bearer ${this.config.apiKey}`,
-              "content-type": "application/json",
-            },
+            headers: providerHeaders(this.config, "text/event-stream"),
             body: JSON.stringify({
               model: input.modelId,
               messages: input.messages,

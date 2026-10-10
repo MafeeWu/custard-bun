@@ -7,10 +7,12 @@ import { session, user } from "@/server/db/auth-schema";
 import {
   character,
   characterVersion,
+  chatSettings,
   conversation,
   conversationMessage,
   generationAttempt,
   generationLease,
+  memorySettings,
   quotaBucket,
   quotaReservation,
 } from "@/server/db/schema";
@@ -30,6 +32,30 @@ beforeEach(async () => {
     TRUNCATE TABLE admin_audit_events, session, account, "user"
     RESTART IDENTITY CASCADE
   `);
+  await database
+    .insert(chatSettings)
+    .values({
+      id: "global",
+      userDailyRequestLimit: 10,
+      userDailyTokenLimit: 10_000,
+      instanceMonthlyRequestLimit: 100,
+      instanceMonthlyTokenBudget: 100_000,
+      maxConcurrentGenerations: 2,
+      deploymentDefaultUserDailyRequestLimit: 10,
+      deploymentDefaultUserDailyTokenLimit: 10_000,
+      deploymentDefaultInstanceMonthlyRequestLimit: 100,
+      deploymentDefaultInstanceMonthlyTokenBudget: 100_000,
+      deploymentDefaultMaxConcurrentGenerations: 2,
+    })
+    .onConflictDoNothing();
+  await database
+    .insert(memorySettings)
+    .values({
+      id: "global",
+      enabled: true,
+      deploymentDefaultEnabled: true,
+    })
+    .onConflictDoNothing();
   await database.insert(user).values([
     {
       id: actor.userId,

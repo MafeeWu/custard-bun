@@ -6,6 +6,7 @@ import { characterContentDigest } from "@/server/characters/content-digest";
 import { ChatDomainError } from "@/server/chat/chat-errors";
 import { createDatabase, type Database } from "@/server/db/client";
 import {
+  backgroundModelReservation,
   character,
   characterVersion,
   chatSettings,
@@ -13,12 +14,17 @@ import {
   conversationMessage,
   generationAttempt,
   generationLease,
+  memorySettings,
   quotaBucket,
   quotaReservation,
   usageLedger,
   user,
   userChatQuotaOverride,
 } from "@/server/db/schema";
+import {
+  admitBackgroundModelWork,
+  settleBackgroundModelWork,
+} from "@/server/memory/background-usage-service";
 import { testDatabaseUrl } from "@/test/database-target";
 import { lockUserChatMutation } from "./chat-locks";
 import {
@@ -67,10 +73,12 @@ beforeEach(async () => {
     sql.raw(`
       TRUNCATE TABLE
         usage_ledger,
+        background_model_reservations,
         generation_leases,
         quota_reservations,
         quota_buckets,
         user_chat_quota_overrides,
+        memory_settings,
         chat_settings,
         generation_attempts,
         conversation_messages,
@@ -83,6 +91,11 @@ beforeEach(async () => {
     `),
   );
   await insertSettings();
+  await database.insert(memorySettings).values({
+    id: "global",
+    enabled: true,
+    deploymentDefaultEnabled: true,
+  });
 });
 
 afterAll(async () => {
@@ -316,6 +329,67 @@ describe("quota periods and effective limits", () => {
 });
 
 describe("transactional admission", () => {
+  test("background tokens leave user quota and instance chat request capacity untouched", async () => {
+    await replaceSettings({
+      instanceMonthlyRequestLimit: 1,
+      instanceMonthlyTokenBudget: 500,
+      userDailyRequestLimit: 1,
+      userDailyTokenLimit: 500,
+    });
+    const userId = await insertUser();
+    const operationId = randomUUID();
+    await database.transaction((transaction) =>
+      admitBackgroundModelWork(transaction, {
+        userId,
+        operationId,
+        workloadType: "memory_extraction",
+        estimatedTokens: 100,
+        now,
+      }),
+    );
+    await settleBackgroundModelWork(database, {
+      operationId,
+      outcome: "complete",
+      modelId: "background-model",
+      providerRequestIds: ["background-request"],
+      inputTokens: 30,
+      outputTokens: 10,
+      estimatedInputTokens: 36,
+      estimatedOutputTokens: 12,
+      latencyMs: 100,
+      now,
+    });
+    const attempt = await insertPendingAttempt({ userId });
+
+    await expect(
+      admit(database, {
+        userId,
+        ...attempt,
+        estimatedInputTokens: 100,
+        maxOutputTokens: 100,
+      }),
+    ).resolves.toMatchObject({ attemptId: attempt.attemptId });
+
+    const buckets = await bucketRows();
+    expect(
+      buckets.find((bucket) => bucket.scope === "instance"),
+    ).toMatchObject({
+      consumedRequests: 0,
+      reservedRequests: 1,
+      consumedTokens: 40,
+      reservedTokens: 200,
+    });
+    expect(buckets.find((bucket) => bucket.scope === "user")).toMatchObject({
+      consumedRequests: 0,
+      reservedRequests: 1,
+      consumedTokens: 0,
+      reservedTokens: 200,
+    });
+    expect(await database.select().from(backgroundModelReservation)).toHaveLength(
+      1,
+    );
+  });
+
   test.each(["update", "reset", "disable"] as const)(
     "admission versus admin %s waits on settings without a user-row deadlock",
     async (mutation) => {

@@ -17,6 +17,24 @@ export async function lockUserChatMutation(
   transaction: ChatTransaction,
   userId: string,
 ): Promise<void> {
+  await lockGlobalChatMutation(transaction);
+  const state = transactionLockState.get(transaction)!;
+
+  if (state.userIds.has(userId)) {
+    return;
+  }
+
+  await transaction.execute(sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${"chat-user:" + userId}, 0)
+    )
+  `);
+  state.userIds.add(userId);
+}
+
+export async function lockGlobalChatMutation(
+  transaction: ChatTransaction,
+): Promise<void> {
   let state = transactionLockState.get(transaction);
   if (!state) {
     state = { globalSettingsLocked: false, userIds: new Set() };
@@ -55,16 +73,7 @@ export async function lockUserChatMutation(
     state.globalSettingsLocked = true;
   }
 
-  if (state.userIds.has(userId)) {
-    return;
-  }
-
-  await transaction.execute(sql`
-    SELECT pg_advisory_xact_lock(
-      hashtextextended(${"chat-user:" + userId}, 0)
-    )
-  `);
-  state.userIds.add(userId);
+  return;
 }
 
 export async function lockUserCharacterChatMutation(

@@ -14,6 +14,7 @@ import {
   conversationMessage,
   generationAttempt,
   generationLease,
+  memorySettings,
   quotaBucket,
   usageLedger,
   user,
@@ -56,6 +57,7 @@ beforeEach(async () => {
         quota_reservations,
         quota_buckets,
         user_chat_quota_overrides,
+        memory_settings,
         chat_settings,
         generation_attempts,
         conversation_messages,
@@ -79,6 +81,11 @@ beforeEach(async () => {
     deploymentDefaultInstanceMonthlyRequestLimit: 100,
     deploymentDefaultInstanceMonthlyTokenBudget: 100_000,
     deploymentDefaultMaxConcurrentGenerations: 2,
+  });
+  await database.insert(memorySettings).values({
+    id: "global",
+    enabled: true,
+    deploymentDefaultEnabled: true,
   });
 });
 

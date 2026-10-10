@@ -22,8 +22,27 @@ export interface ModelGatewayStreamInput {
   signal: AbortSignal;
 }
 
+export interface StructuredCompletionInput {
+  messages: GatewayMessage[];
+  maxOutputTokens: number;
+  jsonSchema: Record<string, unknown>;
+  signal: AbortSignal;
+}
+
+export interface StructuredCompletionResult {
+  content: string;
+  modelId: string;
+  providerRequestIds: string[];
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs: number;
+}
+
 export interface ModelGateway {
   stream(
     input: ModelGatewayStreamInput,
   ): AsyncGenerator<GatewayStreamEvent, void>;
+  completeStructured(
+    input: StructuredCompletionInput,
+  ): Promise<StructuredCompletionResult>;
 }

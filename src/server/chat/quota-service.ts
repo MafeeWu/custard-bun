@@ -84,7 +84,7 @@ interface Period {
   end: Date;
 }
 
-interface LockedBucket {
+export interface LockedBucket {
   id: string;
   periodStart: Date;
   periodEnd: Date;
@@ -265,6 +265,23 @@ async function lockExistingBucket(
     .for("update")
     .limit(1);
   return bucket;
+}
+
+export async function lockInstanceQuotaBucket(
+  transaction: ChatTransaction,
+  now: Date,
+): Promise<LockedBucket> {
+  return lockBucket(transaction, {
+    scope: "instance",
+    period: instancePeriod(now),
+  });
+}
+
+export async function lockExistingQuotaBucket(
+  transaction: ChatTransaction,
+  id: string,
+): Promise<LockedBucket | undefined> {
+  return lockExistingBucket(transaction, id);
 }
 
 function requireCapacity(

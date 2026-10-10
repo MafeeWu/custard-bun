@@ -16,6 +16,7 @@ import {
   conversationMessage,
   generationAttempt,
   generationLease,
+  memorySettings,
   quotaReservation,
   quotaBucket,
   session,
@@ -26,6 +27,7 @@ import type {
   GatewayStreamEvent,
   ModelGateway,
   ModelGatewayStreamInput,
+  StructuredCompletionInput,
 } from "@/server/model-gateway/model-contract";
 import { ModelGatewayError } from "@/server/model-gateway/model-error";
 import { testDatabaseUrl } from "@/test/database-target";
@@ -84,6 +86,11 @@ class FakeGateway implements ModelGateway {
     this.inputs.push(input);
     return this.handler(input);
   }
+
+  completeStructured(_input: StructuredCompletionInput): Promise<never> {
+    void _input;
+    return Promise.reject(new Error("Structured completion is not configured."));
+  }
 }
 
 beforeEach(async () => {
@@ -96,6 +103,7 @@ beforeEach(async () => {
         quota_reservations,
         quota_buckets,
         user_chat_quota_overrides,
+        memory_settings,
         chat_settings,
         generation_attempts,
         conversation_messages,
@@ -121,6 +129,11 @@ beforeEach(async () => {
     deploymentDefaultInstanceMonthlyRequestLimit: 100,
     deploymentDefaultInstanceMonthlyTokenBudget: 1_000_000,
     deploymentDefaultMaxConcurrentGenerations: 4,
+  });
+  await database.insert(memorySettings).values({
+    id: "global",
+    enabled: true,
+    deploymentDefaultEnabled: true,
   });
 });
 

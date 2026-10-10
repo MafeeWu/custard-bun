@@ -77,6 +77,8 @@ describe("OpenAiCompatibleGateway", () => {
     const gateway = new OpenAiCompatibleGateway({
       apiBaseUrl: provider.baseUrl,
       apiKey,
+      modelId: "configured-model",
+      requestTimeoutMs: 500,
     });
     return gateway.stream({
       messages,
@@ -90,6 +92,158 @@ describe("OpenAiCompatibleGateway", () => {
       ...overrides,
     });
   }
+
+  function completeStructured(
+    overrides: Partial<
+      Parameters<OpenAiCompatibleGateway["completeStructured"]>[0]
+    > = {},
+    requestTimeoutMs = 500,
+  ) {
+    const gateway = new OpenAiCompatibleGateway({
+      apiBaseUrl: provider.baseUrl,
+      apiKey,
+      modelId: "configured-model",
+      requestTimeoutMs,
+    });
+    return gateway.completeStructured({
+      messages,
+      maxOutputTokens: 222,
+      jsonSchema: {
+        type: "object",
+        properties: {
+          items: { type: "array", items: { type: "string" } },
+        },
+        required: ["items"],
+        additionalProperties: false,
+      },
+      signal: new AbortController().signal,
+      ...overrides,
+    });
+  }
+
+  describe("structured completion", () => {
+    test("sends a strict non-streaming schema request and normalizes content, usage, request ID, and latency", async () => {
+      provider.enqueue("structured-standard");
+
+      const result = await completeStructured();
+
+      expect(result).toEqual({
+        content: '{"items":[]}',
+        modelId: "configured-model",
+        providerRequestIds: ["req-structured-standard"],
+        inputTokens: 11,
+        outputTokens: 3,
+        latencyMs: expect.any(Number),
+      });
+      expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests[0]).toMatchObject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        body: {
+          model: "configured-model",
+          messages,
+          max_tokens: 222,
+          stream: false,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  items: { type: "array", items: { type: "string" } },
+                },
+                required: ["items"],
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+      });
+      expect(provider.requests[0]?.headers.authorization).toBe(
+        `Bearer ${apiKey}`,
+      );
+    });
+
+    test("accepts a structured response without provider usage", async () => {
+      provider.enqueue("structured-missing-usage");
+
+      const result = await completeStructured();
+
+      expect(result).toMatchObject({
+        content: '{"summary":"ok"}',
+        providerRequestIds: ["req-structured-missing-usage"],
+      });
+      expect(result.inputTokens).toBeUndefined();
+      expect(result.outputTokens).toBeUndefined();
+    });
+
+    test.each([
+      ["authentication-error", "authentication", 401],
+      ["rate-limit-long", "rate_limit", 429],
+      ["server-error", "server", 500],
+    ] as const)(
+      "maps %s without exposing provider bodies or credentials",
+      async (scenario, category, status) => {
+        provider.enqueue(scenario);
+
+        let thrown: unknown;
+        try {
+          await completeStructured();
+        } catch (error) {
+          thrown = error;
+        }
+        const gatewayError = expectGatewayError(thrown, category);
+        expect(gatewayError.status).toBe(status);
+        const serialized = `${String(gatewayError)} ${JSON.stringify(gatewayError)}`;
+        expect(serialized).not.toContain(apiKey);
+        expect(serialized).not.toContain("raw provider body");
+        expect(serialized).not.toContain("private server body");
+        expect(serialized).not.toContain("private rate-limit body");
+        expect(provider.requests).toHaveLength(1);
+      },
+    );
+
+    test.each([
+      "structured-malformed-envelope",
+      "structured-empty-content",
+    ] as const)("rejects %s as a protocol failure", async (scenario) => {
+      provider.enqueue(scenario);
+
+      await expect(completeStructured()).rejects.toMatchObject({
+        category: "protocol",
+        providerRequestId: expect.stringContaining("req-structured-"),
+      });
+      expect(provider.requests).toHaveLength(1);
+    });
+
+    test("maps the configured request timeout without retrying", async () => {
+      provider.enqueue("structured-stall");
+
+      await expect(completeStructured({}, 20)).rejects.toMatchObject({
+        category: "total_timeout",
+        providerRequestId: "req-structured-stall",
+      });
+      expect(provider.requests).toHaveLength(1);
+    });
+
+    test("cancels the structured fetch when the caller aborts", async () => {
+      provider.enqueue("structured-wait-for-abort");
+      const controller = new AbortController();
+      const result = completeStructured({ signal: controller.signal });
+      await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+
+      controller.abort();
+
+      await expect(result).rejects.toMatchObject({
+        category: "cancelled",
+        providerRequestId: "req-structured-wait-for-abort",
+      });
+      await vi.waitFor(() => expect(provider.requests[0]?.aborted).toBe(true));
+      expect(provider.requests).toHaveLength(1);
+    });
+  });
 
   test("maps the request and streams provider calls, request ID, deltas, and usage", async () => {
     provider.enqueue("standard");

@@ -9,6 +9,12 @@ import type { AddressInfo } from "node:net";
 
 export type FakeModelScenario =
   | "standard"
+  | "structured-standard"
+  | "structured-missing-usage"
+  | "structured-malformed-envelope"
+  | "structured-empty-content"
+  | "structured-stall"
+  | "structured-wait-for-abort"
   | "done-open"
   | "buffered-events"
   | "missing-usage"
@@ -40,6 +46,12 @@ export interface FakeModelServer {
 
 const requestIds: Record<FakeModelScenario, string> = {
   standard: "req-standard",
+  "structured-standard": "req-structured-standard",
+  "structured-missing-usage": "req-structured-missing-usage",
+  "structured-malformed-envelope": "req-structured-malformed",
+  "structured-empty-content": "req-structured-empty",
+  "structured-stall": "req-structured-stall",
+  "structured-wait-for-abort": "req-structured-wait-for-abort",
   "done-open": "req-done-open",
   "buffered-events": "req-buffered-events",
   "missing-usage": "req-missing-usage",
@@ -88,6 +100,53 @@ async function runScenario(
   response: ServerResponse,
 ): Promise<void> {
   switch (scenario) {
+    case "structured-standard":
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.end(
+        JSON.stringify({
+          choices: [{ message: { content: '{"items":[]}' } }],
+          usage: { prompt_tokens: 11, completion_tokens: 3 },
+        }),
+      );
+      return;
+    case "structured-missing-usage":
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.end(
+        JSON.stringify({
+          choices: [{ message: { content: '{"summary":"ok"}' } }],
+        }),
+      );
+      return;
+    case "structured-malformed-envelope":
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.end('{"choices":[');
+      return;
+    case "structured-empty-content":
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.end(
+        JSON.stringify({ choices: [{ message: { content: "" } }] }),
+      );
+      return;
+    case "structured-stall":
+    case "structured-wait-for-abort":
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-request-id": requestIds[scenario],
+      });
+      response.flushHeaders();
+      return;
     case "done-open":
       startEventStream(response, scenario);
       response.write(
