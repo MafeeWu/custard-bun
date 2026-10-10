@@ -194,8 +194,9 @@ Validation rules:
 
 - both memory prompt sub-budgets must be positive;
 - their sum must not exceed `promptTokenBudget`;
-- `promptTokenBudget + maxOutputTokens` must fit inside the overall chat prompt
-  budget after mandatory platform and character content;
+- memory `promptTokenBudget` must be smaller than the overall chat prompt token
+  budget; request-time assembly still reserves output and mandatory platform,
+  character, and current-message content before optional memory;
 - retry limits and delays must be bounded;
 - export retention is fixed to 24 hours for the initial release;
 - the maximum archive size must be positive and capped to a safe operator
@@ -370,6 +371,41 @@ Constraints:
 - clearing the summary creates an explicit empty user-edited version;
 - forgetting physically deletes all summary versions.
 
+### 6.5.1 Summary refresh runs
+
+`relationship_summary_runs`
+
+- `id`
+- `user_id`
+- `character_id`
+- `memory_epoch`
+- `expected_summary_revision`
+- `based_on_memory_revision`
+- `status` (`pending`, `queued`, `running`, `retrying`, `complete`, `failed`,
+  `dead_letter`, `cancelled`)
+- `job_id`
+- `attempt_count`
+- `next_retry_at`
+- `error_category`
+- `provider_request_ids`
+- `estimated_input_tokens`
+- `input_tokens`
+- `output_tokens`
+- `usage_estimated`
+- `created_at`
+- `started_at`
+- `finished_at`
+- `updated_at`
+
+Constraints:
+
+- one run per user-character/epoch/memory-revision combination;
+- one active pg-boss job identity per run;
+- terminal runs cannot return to active states;
+- a run may apply only when epoch, expected summary revision, and memory
+  revision still match;
+- forgetting or account lockout cancels every nonterminal run.
+
 ### 6.6 Usage ledger extension
 
 Extend usage accounting with:
@@ -423,6 +459,9 @@ Constraints:
 
 - `id`
 - `user_id`, nullable only after the final purge stage
+- `verification_token_hash`, nullable after confirmation
+- `verification_expires_at`, nullable after confirmation
+- `verification_consumed_at`
 - `status` (`pending_confirmation`, `locked`, `purging`, `complete`,
   `dead_letter`)
 - `current_stage`
@@ -451,6 +490,10 @@ archive data after purge completes.
 The final purge stage sets `user_id` to null before deleting the authentication
 user, leaving only the content-free request identifier, stage, status, and
 timestamps.
+
+Only a hash of the deletion verification token is stored. Confirmation compares
+the presented token in constant time, requires an unexpired unused hash, then
+clears the hash and records `verification_consumed_at`.
 
 ## 7. Canonical Lock Order
 
