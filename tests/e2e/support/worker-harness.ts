@@ -37,7 +37,12 @@ async function main(): Promise<void> {
     spawnWorker() {
       return spawn(
         process.execPath,
-        ["--conditions=react-server", "--import", "tsx", "src/worker.ts"],
+        [
+          "--conditions=react-server",
+          "--import",
+          "tsx",
+          "tests/e2e/support/controlled-worker.ts",
+        ],
         {
           cwd: process.cwd(),
           env: process.env,

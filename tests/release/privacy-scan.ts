@@ -19,12 +19,16 @@ export async function filesRecursively(root: string): Promise<string[]> {
   return files.flat().sort();
 }
 
-export async function scanPrivacySurfaces(
-  root: string,
-): Promise<{ files: number; surfaces: Record<string, number> }> {
+export async function scanPrivacySurfaces(root: string): Promise<{
+  files: number;
+  surfaces: Record<string, number>;
+  responseEvidence: { success: number; error: number };
+}> {
   const counts: Record<string, number> = {};
+  const responseEvidence = { success: 0, error: 0 };
   for (const surface of [
     "responses",
+    "decoded-exports",
     "app-logs",
     "worker-logs",
     "admin-html",
@@ -34,7 +38,7 @@ export async function scanPrivacySurfaces(
     if (!files.length) throw new Error(`Missing privacy evidence: ${surface}`);
     counts[surface] = files.length;
     const forbidden =
-      surface === "responses"
+      surface === "responses" || surface === "decoded-exports"
         ? [
             privacySentinels.providerKey,
             privacySentinels.providerEndpoint,
@@ -46,11 +50,30 @@ export async function scanPrivacySurfaces(
       if (forbidden.some((sentinel) => bytes.includes(Buffer.from(sentinel)))) {
         throw new Error(`Privacy sentinel found in ${surface}: ${file}`);
       }
+      if (surface === "responses") {
+        // Every file is scanned; only actual captured HTTP metadata counts as
+        // response coverage, not filenames, decoded ZIPs, or arbitrary bytes.
+        let status: unknown;
+        try {
+          status = JSON.parse(bytes.toString("utf8").split("\n", 1)[0]).status;
+        } catch {
+          continue;
+        }
+        if (typeof status === "number" && Number.isInteger(status)) {
+          if (status >= 200 && status < 300) responseEvidence.success++;
+          if (status >= 400 && status < 600) responseEvidence.error++;
+        }
+      }
     }
+  }
+  for (const kind of ["success", "error"] as const) {
+    if (!responseEvidence[kind])
+      throw new Error(`Missing privacy evidence: ${kind} HTTP responses`);
   }
   return {
     files: Object.values(counts).reduce((sum, count) => sum + count, 0),
     surfaces: counts,
+    responseEvidence,
   };
 }
 

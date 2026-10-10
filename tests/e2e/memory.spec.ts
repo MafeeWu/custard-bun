@@ -3,7 +3,6 @@ import { expect, test } from "@playwright/test";
 import { createAdminTestDatabase } from "./support/admin";
 import { e2eEnvironment } from "./support/environment";
 import {
-  fakeModelRequests,
   registerAndSignIn,
   resetFakeModel,
   startCharacterConversation,
@@ -15,6 +14,8 @@ import {
   memoryUrl,
   restartConversation,
   waitForExtraction,
+  heldExtraction,
+  releaseExtraction,
 } from "./support/memory";
 
 test("recalls and deletes a preference without crossing users or characters", async ({
@@ -184,44 +185,13 @@ test("inference, sensitive policy, independent controls, conversation deletion a
     );
     await page.goto(`/app/conversations/${id}`);
     await completeChat(page, "[memory-stall] I prefer cancelled tea");
-    await expect
-      .poll(
-        async () =>
-          (await fakeModelRequests()).some(
-            (request) =>
-              request.body.stream === false &&
-              JSON.stringify(request.body).includes("[memory-stall]"),
-          ),
-        { timeout: 15_000 },
-      )
-      .toBe(true);
+    const held = await heldExtraction(database, id);
     await deleteConversation(page);
     await page.goto(url);
     await expect(
       page.getByRole("region", { name: "Saved memories" }),
     ).toContainText("evening walks");
-    const held = (await fakeModelRequests())
-      .reverse()
-      .find(
-        (request) =>
-          request.body.stream === false &&
-          JSON.stringify(request.body).includes("[memory-stall]"),
-      )!;
-    await fetch("http://127.0.0.1:3102/__e2e__/control", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ completeRequestId: held.id }),
-    });
-    await expect
-      .poll(
-        async () =>
-          (
-            await database.$client.query(
-              "SELECT count(*)::int AS n FROM memory_items WHERE content LIKE '%cancelled tea%'",
-            )
-          ).rows[0].n,
-      )
-      .toBe(0);
+    await releaseExtraction(database, id, held, "cancelled tea");
     id = await startCharacterConversation(page, "calm-listener");
     await completeChat(page, "Transcript survives forgetting");
     await waitForExtraction(database, id);
@@ -230,6 +200,9 @@ test("inference, sensitive policy, independent controls, conversation deletion a
     await page
       .getByRole("button", { name: "Forget character", exact: true })
       .click();
+    await expect(
+      page.getByLabel("I want this character to forget me."),
+    ).not.toBeChecked();
     await expect(
       page.getByText("No saved memories for this character."),
     ).toBeVisible();
@@ -244,3 +217,60 @@ test("inference, sensitive policy, independent controls, conversation deletion a
     await database.$client.end();
   }
 });
+
+for (const action of ["Forget", "disable recording"] as const) {
+  test(`${action} fences a held real extraction before checking current-epoch absence`, async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const database = createAdminTestDatabase(e2eEnvironment.DATABASE_URL!);
+    try {
+      await database.$client.query("DELETE FROM rate_limit");
+      await resetFakeModel();
+      await registerAndSignIn(page, {
+        email: `fenced-${randomUUID()}@example.com`,
+      });
+      const id = await startCharacterConversation(page, "calm-listener");
+      const url = await memoryUrl(page);
+      await completeChat(page, "[memory-stall] I prefer late fenced tea");
+      const held = await heldExtraction(database, id);
+      await page.goto(url);
+      if (action === "Forget") {
+        await page.getByLabel("I want this character to forget me.").check();
+        await page
+          .getByRole("button", { name: "Forget character", exact: true })
+          .click();
+        await expect(
+          page.getByLabel("I want this character to forget me."),
+        ).not.toBeChecked();
+        await expect(
+          page.getByText("No saved memories for this character."),
+        ).toBeVisible();
+      } else {
+        await page.getByLabel("Stop recording", { exact: true }).check();
+        await page
+          .getByRole("button", { name: "Save controls", exact: true })
+          .click();
+        await expect(page.getByText("Current settings:")).toContainText(
+          "Recording stopped",
+        );
+      }
+      const settings = (
+        await database.$client.query(
+          "SELECT memory_epoch, recording_enabled FROM user_character_memory_settings WHERE user_id=$1 AND character_id=$2",
+          [held.userId, held.characterId],
+        )
+      ).rows[0];
+      if (action === "Forget")
+        expect(settings.memory_epoch).toBe(held.memoryEpoch + 1);
+      else expect(settings.recording_enabled).toBe(false);
+      await releaseExtraction(database, id, held, "late fenced tea");
+      await page.reload();
+      await expect(
+        page.getByRole("region", { name: "Saved memories" }),
+      ).not.toContainText("late fenced tea");
+    } finally {
+      await database.$client.end();
+    }
+  });
+}

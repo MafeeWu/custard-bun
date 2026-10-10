@@ -23,6 +23,11 @@ export const EXPORT_LEASE_MS = 15 * 60_000;
 export interface DataExportPolicy {
   maxArchiveBytes: number;
   clock?: () => Date;
+  afterClaim?: (claim: {
+    exportId: string;
+    userId: string;
+    attemptCount: number;
+  }) => Promise<void>;
 }
 export interface DataExportView {
   id: string;
@@ -384,6 +389,9 @@ async function processDataExportInTransaction(
     return { userId: preview.userId, attemptCount };
   });
   if (!claim) return;
+  // Last yield point at which deletion can win: snapshot construction and
+  // publication below hold the canonical owner locks as one indivisible unit.
+  await policy.afterClaim?.({ exportId, ...claim });
   // The short claim commits before private work, so crashes consume a durable attempt and lease.
   const failed = await withReservedExportSnapshot(database, async (tx, snapshotDatabase) => {
     await lockUserChatMutation(tx, claim.userId);

@@ -2,17 +2,22 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 import { expect, test } from "@playwright/test";
 import { unzipSync, strFromU8 } from "fflate";
 import { bootstrapAdmin, createAdminTestDatabase } from "./support/admin";
 import { e2eEnvironment } from "./support/environment";
 import {
-  fakeModelRequests,
   registerAndSignIn,
   resetFakeModel,
   startCharacterConversation,
 } from "./support/chat";
-import { completeChat, memoryUrl, waitForExtraction } from "./support/memory";
+import {
+  completeChat,
+  heldExtraction,
+  memoryUrl,
+  waitForExtraction,
+} from "./support/memory";
 import { waitForActionUrl } from "./helpers/mailbox";
 import { privacySentinels, scanPrivacySurfaces } from "../release/privacy-scan";
 
@@ -31,12 +36,26 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
   const email = `privacy-${randomUUID()}@example.com`;
   const otherEmail = `privacy-other-${randomUUID()}@example.com`;
   let userId: string | undefined;
+  let pausedExportId: string | undefined;
+  const recordResponse = async (
+    name: string,
+    response: { status(): number; body(): Promise<Buffer> },
+  ) => {
+    await writeFile(
+      `${root}/responses/${name}`,
+      Buffer.concat([
+        Buffer.from(JSON.stringify({ status: response.status() }) + "\n"),
+        await response.body(),
+      ]),
+    );
+  };
   try {
     await database.$client.query("DELETE FROM rate_limit");
     await resetFakeModel();
     await rm(root, { recursive: true, force: true });
     for (const name of [
       "responses",
+      "decoded-exports",
       "admin-html",
       "app-logs",
       "worker-logs",
@@ -129,7 +148,18 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     const json = Object.values(archive)
       .map((value) => strFromU8(value))
       .join("\n");
-    await writeFile(`${root}/responses/owner-export-decoded-200`, json);
+    for (const [name, contents] of Object.entries(archive)) {
+      const exportRoot = resolve(`${root}/decoded-exports/owner`);
+      const destination = resolve(exportRoot, name);
+      if (!destination.startsWith(exportRoot + sep))
+        throw new Error("Export entry escapes decoded evidence directory");
+      if (name.endsWith("/")) {
+        await mkdir(destination, { recursive: true });
+      } else {
+        await mkdir(dirname(destination), { recursive: true });
+        await writeFile(destination, contents);
+      }
+    }
     expect(json).toContain(email);
     expect(json).toContain(privacySentinels.privateContent);
     expect(json).not.toContain(otherEmail);
@@ -142,7 +172,7 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     }
     const denied = await other.request.get(`http://127.0.0.1:3000${href}`);
     expect(denied.status()).toBe(404);
-    await writeFile(`${root}/responses/other-owner-404`, await denied.body());
+    await recordResponse("other-owner", denied);
     const exportId = href.split("/")[3];
     await promisify(execFile)(
       process.execPath,
@@ -157,7 +187,7 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     );
     const expired = await page.request.get(href);
     expect(expired.status()).toBe(404);
-    await writeFile(`${root}/responses/expired-404`, await expired.body());
+    await recordResponse("expired", expired);
     expect(
       (
         await database.$client.query(
@@ -195,52 +225,69 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.locator('li[data-status="failed"]').last()).toBeVisible();
     await page.goto("/account");
-    // A leased running job reproduces a crashed/stalled export without sleeping or altering worker code.
-    await database.$client
-      .query(`CREATE FUNCTION task12_hold_export() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN IF NEW.user_id = '${userId}' THEN NEW.status := 'running'; NEW.started_at := now(); NEW.attempt_count := 1; END IF;
-      RETURN NEW; END $$;
-      CREATE TRIGGER task12_hold_export BEFORE INSERT ON data_export_jobs FOR EACH ROW EXECUTE FUNCTION task12_hold_export();`);
+    const arm = await fetch("http://127.0.0.1:3103/arm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    expect(arm.status).toBe(204);
+    // Observe owning-service transitions even if the real purge worker removes
+    // rows before the browser returns. This trigger never mutates product rows.
+    await database.$client.query(`
+      CREATE TABLE task12_export_observation (
+        export_id text, status text, attempt_count integer, has_bytes boolean,
+        archive_size bigint, archive_sha256 text, deletion_pending boolean, epochs jsonb
+      );
+      CREATE FUNCTION task12_observe_export() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN INSERT INTO task12_export_observation VALUES (
+        NEW.id, NEW.status, NEW.attempt_count, NEW.archive_bytes IS NOT NULL,
+        NEW.archive_size, NEW.archive_sha256,
+        (SELECT deletion_pending_at IS NOT NULL FROM "user" WHERE id=NEW.user_id),
+        (SELECT jsonb_object_agg(character_id, memory_epoch) FROM user_character_memory_settings WHERE user_id=NEW.user_id)
+      ); RETURN NEW; END $$;
+      CREATE TRIGGER task12_observe_export AFTER UPDATE ON data_export_jobs FOR EACH ROW EXECUTE FUNCTION task12_observe_export();
+    `);
     await page
       .getByRole("button", { name: "Request data export", exact: true })
       .click();
     await expect
       .poll(
         async () =>
+          (await (await fetch("http://127.0.0.1:3103/state")).json()).state,
+        { timeout: 45_000 },
+      )
+      .toBe("paused");
+    const exporting = await (await fetch("http://127.0.0.1:3103/state")).json();
+    pausedExportId = exporting.exportId;
+    expect(exporting).toMatchObject({ userId, attemptCount: 1 });
+    await expect
+      .poll(
+        async () =>
           (
             await database.$client.query(
-              "SELECT count(*)::int AS n FROM data_export_jobs WHERE user_id=$1 AND status='running'",
-              [userId],
+              "SELECT job_id FROM data_export_jobs WHERE id=$1",
+              [pausedExportId],
             )
-          ).rows[0].n,
+          ).rows[0]?.job_id,
       )
-      .toBe(1);
-    await database.$client.query(
-      "DROP TRIGGER task12_hold_export ON data_export_jobs; DROP FUNCTION task12_hold_export()",
-    );
+      .toBeTruthy();
+    const runningExport = (
+      await database.$client.query(
+        "SELECT status, attempt_count, job_id, archive_bytes FROM data_export_jobs WHERE id=$1",
+        [pausedExportId],
+      )
+    ).rows[0];
+    expect(runningExport).toMatchObject({
+      status: "running",
+      attempt_count: 1,
+      archive_bytes: null,
+    });
     await page.goto(`/app/conversations/${conversationId}`);
     await completeChat(
       page,
       "[memory-stall] I prefer resurrected private data",
     );
-    await expect
-      .poll(
-        async () =>
-          (await fakeModelRequests()).some(
-            (request) =>
-              request.body.stream === false &&
-              JSON.stringify(request.body).includes("[memory-stall]"),
-          ),
-        { timeout: 15_000 },
-      )
-      .toBe(true);
-    const held = (await fakeModelRequests())
-      .reverse()
-      .find(
-        (request) =>
-          request.body.stream === false &&
-          JSON.stringify(request.body).includes("[memory-stall]"),
-      )!;
+    const held = await heldExtraction(database, conversationId);
     await page.goto("/account");
     await page.getByLabel("Confirm account email").fill(email);
     await page
@@ -276,19 +323,70 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
       "http://127.0.0.1:3000/api/auth/get-session",
     );
     expect(await deniedSession.json()).toBeNull();
-    await writeFile(
-      `${root}/responses/locked-session-200`,
-      await deniedSession.body(),
-    );
+    await recordResponse("locked-session", deniedSession);
     const retainedPage = await retained.newPage();
     await retainedPage.goto("http://127.0.0.1:3000/account");
     await expect(retainedPage).toHaveURL(/\/auth\/sign-in$/);
+    const cancelled = (
+      await database.$client.query(
+        "SELECT * FROM task12_export_observation WHERE export_id=$1 AND status='cancelled'",
+        [pausedExportId],
+      )
+    ).rows;
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({
+      attempt_count: 1,
+      has_bytes: false,
+      archive_size: null,
+      archive_sha256: null,
+      deletion_pending: true,
+    });
+    expect(cancelled[0].epochs[held.characterId]).toBe(held.memoryEpoch + 1);
+    const resumed = await fetch("http://127.0.0.1:3103/resume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exportId: pausedExportId }),
+    });
+    expect(resumed.status).toBe(204);
+    await expect
+      .poll(
+        async () =>
+          (await (await fetch("http://127.0.0.1:3103/state")).json()).state,
+      )
+      .toBe("resumed");
     const release = await fetch("http://127.0.0.1:3102/__e2e__/control", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ completeRequestId: held.id }),
+      body: JSON.stringify({ completeRequestId: held.requestId }),
     });
     expect(release.status).toBe(204);
+    for (const jobId of [runningExport.job_id, held.jobId]) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await database.$client.query(
+                "SELECT state FROM job.job WHERE id=$1::uuid",
+                [jobId],
+              )
+            ).rows[0]?.state,
+          { timeout: 20_000 },
+        )
+        .toBe("completed");
+    }
+    expect(
+      (
+        await database.$client.query(
+          "SELECT count(*)::int AS n FROM task12_export_observation WHERE export_id=$1 AND (status='complete' OR has_bytes)",
+          [pausedExportId],
+        )
+      ).rows[0].n,
+    ).toBe(0);
+    const lateDownload = await retained.request.get(
+      `http://127.0.0.1:3000/account/exports/${pausedExportId}/download`,
+    );
+    expect(lateDownload.status()).not.toBe(200);
+    await recordResponse("cancelled-export", lateDownload);
     await expect
       .poll(
         async () =>
@@ -397,11 +495,6 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     expect(tombstone.verification_token_hash).toBeNull();
     expect(JSON.stringify(tombstone)).not.toContain(email);
     await Promise.all(evidence);
-    const statuses = await import("node:fs/promises").then((fs) =>
-      fs.readdir(`${root}/responses`),
-    );
-    expect(statuses.some((name) => name.endsWith("-200"))).toBe(true);
-    expect(statuses.some((name) => name.includes("404"))).toBe(true);
     await cp("test-results/e2e-app.log", `${root}/app-logs/all.log`);
     await cp("test-results/e2e-worker.log", `${root}/worker-logs/all.log`);
     await cp(".next/static", `${root}/static-assets/next`, { recursive: true });
@@ -420,8 +513,15 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
       ),
     );
   } finally {
+    if (pausedExportId) {
+      await fetch("http://127.0.0.1:3103/resume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ exportId: pausedExportId }),
+      }).catch(() => undefined);
+    }
     await database.$client.query(
-      "DROP TRIGGER IF EXISTS task12_hold_export ON data_export_jobs; DROP FUNCTION IF EXISTS task12_hold_export()",
+      "DROP TRIGGER IF EXISTS task12_observe_export ON data_export_jobs; DROP FUNCTION IF EXISTS task12_observe_export(); DROP TABLE IF EXISTS task12_export_observation",
     );
     await Promise.all([
       otherContext.close(),

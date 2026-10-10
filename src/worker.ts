@@ -15,8 +15,12 @@ import { registerRelationshipSummaryWorker } from "@/server/memory/relationship-
 import { relationshipSummaryPolicyFromConfig } from "@/server/memory/relationship-summary-service";
 import { registerDataExportWorker } from "@/server/privacy/data-export-job";
 import { registerAccountPurgeWorker } from "@/server/privacy/account-purge-job";
+import type { DataExportPolicy } from "@/server/privacy/data-export-service";
+import { pathToFileURL } from "node:url";
 
-async function main(): Promise<void> {
+export async function main(
+  exportPolicy: Pick<DataExportPolicy, "afterClaim"> = {},
+): Promise<void> {
   const config = await loadRuntimeConfig();
   const database = createDatabase(config.secret.databaseUrl, {
     connectionTimeoutMillis: 10_000,
@@ -80,6 +84,7 @@ async function main(): Promise<void> {
         console,
         {
           maxArchiveBytes: config.public.memory.maxExportArchiveBytes,
+          ...exportPolicy,
         },
       );
       stopPurgeWorker = await registerAccountPurgeWorker(
@@ -94,7 +99,12 @@ async function main(): Promise<void> {
   });
 }
 
-void main().catch((error: unknown) => {
-  console.error("worker startup failed:", startupDiagnostic(error));
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  void main().catch((error: unknown) => {
+    console.error("worker startup failed:", startupDiagnostic(error));
+    process.exit(1);
+  });
+}

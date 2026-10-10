@@ -39,6 +39,7 @@ import {
   processDataExport,
   downloadDataExport,
 } from "./data-export-service";
+import { MAX_EXPORT_ARCHIVE_BYTES } from "./data-export-archive";
 import { processEmail } from "@/server/email/process-email";
 import { admitBackgroundModelWork } from "@/server/memory/background-usage-service";
 import { createConversationService } from "@/server/chat/conversation-service";
@@ -85,6 +86,66 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("the real exporter can yield after its durable claim, then resume the same cancelled execution without publishing", async () => {
+  const owner = await summaryFixture(database);
+  const { exportId } = await requestDataExport(database, {
+    userId: owner.userId,
+    now,
+  });
+  const requested = await request(owner.userId);
+  const afterClaim = vi.fn(
+    async (claim: { exportId: string; attemptCount: number }) => {
+      expect(claim).toMatchObject({ exportId, attemptCount: 1 });
+      const exporting = await database
+        .select()
+        .from(dataExportJob)
+        .where(eq(dataExportJob.id, exportId));
+      expect(exporting[0]).toMatchObject({
+        status: "running",
+        attemptCount: 1,
+        archiveBytes: null,
+      });
+      // A second normal execution must still decline the fresh lease.
+      await processDataExport(database, exportId, now);
+      expect(
+        (
+          await database
+            .select()
+            .from(dataExportJob)
+            .where(eq(dataExportJob.id, exportId))
+        )[0].attemptCount,
+      ).toBe(1);
+      await confirmAccountDeletion(database, {
+        token: requested.verificationToken,
+        now,
+      });
+    },
+  );
+  const policy = { maxArchiveBytes: MAX_EXPORT_ARCHIVE_BYTES, afterClaim };
+  await processDataExport(database, exportId, now, policy);
+  expect(afterClaim).toHaveBeenCalledOnce();
+  expect(
+    (
+      await database
+        .select()
+        .from(dataExportJob)
+        .where(eq(dataExportJob.id, exportId))
+    )[0],
+  ).toMatchObject({
+    status: "cancelled",
+    attemptCount: 1,
+    archiveBytes: null,
+    archiveSize: null,
+    archiveSha256: null,
+  });
+  expect(
+    (await database.select().from(userCharacterMemorySetting))[0].memoryEpoch,
+  ).toBe(1);
+  expect(
+    await downloadDataExport(database, { userId: owner.userId, exportId, now }),
+  ).toBeNull();
+});
 
 test("confirmation consumes a hashed token, locks out immediately, advances epochs, cancels all work and replays without another mutation", async () => {
   const owner = await summaryFixture(database);

@@ -652,7 +652,16 @@ Phase 4 additionally uses `[memory-direct]`, `[memory-repeat]`,
 Structured requests are recorded in full by the test-only provider, including
 the response schema and source message, for isolation/prompt assertions.
 Control endpoints require loopback peers. Held structured responses are released
-explicitly, not with sleeps. Put explicit-sensitive scenario markers **after**
+explicitly, not with sleeps. Race acceptance checks the release status and waits
+for the exact extraction receipt and pg-boss job to finish before checking
+owner/character/current-epoch absence after delete, Forget, or recording disable.
+The test-only controlled worker has a loopback export barrier on port 3103. It
+pauses the real exporter after its durable claim, at the last safe yield before
+canonical owner locks protect snapshot construction and publication together.
+Deletion cancels that claimed job before the same execution resumes; lease and
+publication invariants remain unchanged. Production starts the ordinary worker
+without this barrier or its control server.
+Put explicit-sensitive scenario markers **after**
 a complete remember sentence, e.g. `Please remember that I have diabetes.
 [memory-sensitive-explicit]`; the real policy requires sentence-scoped consent.
 Browser tests clear authentication rate-limit fixture rows only in their guarded,
@@ -727,7 +736,11 @@ so a canceled prefetch or an evicted Chromium response body cannot silently
 become empty scanner evidence.
 `test-results/privacy-release/scan-result.json` records counts; the standalone
 scanner recursively checks every captured path and fails if any required
-surface is absent. Owner-facing responses may legitimately show the owner's
+surface is absent. Decoded ZIP entries are a separate mandatory recursive
+`decoded-exports` surface, including unknown nested entries. Successful (2xx)
+and error (4xx/5xx) HTTP evidence are independently mandatory and counted from
+captured status metadata, never filenames or decoded archives.
+Owner-facing responses and exports may legitimately show the owner's
 memory, but never provider secrets/endpoints or the second user's phrase;
 logs/admin/static assets must contain none of the private sentinels.
 The commands above add the complete production Compose app/worker logs to the
