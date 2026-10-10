@@ -59,13 +59,19 @@ const personalSensitivePatterns = [
   /\b(?:mormon|agnostic|orthodox|evangelical|sunni|shia|taois[mt])\b/i,
   /\b(?:sexual(?:ity| orientation)?|gender(?: identity)?|transgender|transsexual|nonbinary|non-binary|bisexual|homosexual|heterosexual|gay|lesbian|queer|ethnicity|ethnic|racial|race|nationality|passport|social security|ssn|identity number)\b/i,
   /\b(?:precise|exact|home|residential|street|mailing)\s+address\b/i,
-  /\b(?:is|am|identifies as)\s+(?:black|white|asian|african|hispanic|latino|latina|indigenous|arab)\b/i,
+  /\b(?:asian|african|hispanic|latino|latina|indigenous|arab|caucasian|woman|women|man|men|male|female|cisgender|intersex)\b/i,
   /\b\d{1,6}\s+(?:[\p{L}\d.-]+\s+){1,5}(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|court|ct|boulevard|blvd|way|place|pl)\b/iu,
   /(?:诊断|診斷|糖尿病|艾滋|抑郁|抑鬱|宗教|信仰|性取向|性别认同|性別認同|身份证|身份證|住址)/,
 ] as const;
 
 export function isPersonalSensitiveMemory(content: string): boolean {
-  return personalSensitivePatterns.some((pattern) => pattern.test(content));
+  return (
+    personalSensitivePatterns.some((pattern) => pattern.test(content)) ||
+    (/\b(?:black|white)\b/i.test(content) &&
+      !/^(?:likes?|loves?|prefers?) (?:black (?:coffee|tea)|white tea)[.!?]?$/i.test(
+        content,
+      ))
+  );
 }
 
 function throwValidationError(message: string): never {

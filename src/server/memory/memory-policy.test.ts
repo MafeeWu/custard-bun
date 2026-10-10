@@ -26,6 +26,17 @@ describe("assertMemoryCandidateAllowed", () => {
     ).not.toThrow();
   });
 
+  test.each(["Likes black coffee.", "Likes white tea."])(
+    "color preferences are not misclassified as identity: %s",
+    (content) => {
+      expect(() =>
+        assertMemoryCandidateAllowed(
+          normalizeMemoryCandidate(createCandidate({ content })),
+        ),
+      ).not.toThrow();
+    },
+  );
+
   test.each([
     ["passwords", "please remember my password is hunter2"],
     ["passcodes", "remember my bank passcode is 123456"],
@@ -42,7 +53,10 @@ describe("assertMemoryCandidateAllowed", () => {
       "remember my authentication token is live_abcdef123456",
     ],
     ["bearer tokens", "remember my bearer token is live_abcdef123456"],
-    ["private keys", "remember my private key begins with -----BEGIN PRIVATE KEY-----"],
+    [
+      "private keys",
+      "remember my private key begins with -----BEGIN PRIVATE KEY-----",
+    ],
     ["card numbers", "remember my card number is 4111111111111111"],
     ["debit card PINs", "remember my debit card PIN is 1234"],
     ["credit card PINs", "remember my credit card pin is 1234"],
@@ -71,7 +85,8 @@ describe("assertMemoryCandidateAllowed", () => {
         normalizeMemoryCandidate(
           createCandidate({
             type: "personal_fact",
-            content: "Please remember that my precise address is 10 Main Street.",
+            content:
+              "Please remember that my precise address is 10 Main Street.",
             sensitivity: "personal_explicit",
             userExplicitlyAskedToRemember: true,
           }),
@@ -92,6 +107,29 @@ describe("assertMemoryCandidateAllowed", () => {
     expect(() => assertMemoryCandidateAllowed(candidate)).toThrow(
       /explicitly asked|personal/i,
     );
+  });
+
+  test.each([
+    "Is an Asian woman.",
+    "She is a Black woman.",
+    "He is a Hispanic man.",
+    "They are an Indigenous person.",
+    "Identifies as an Asian woman.",
+    "Identifies herself as White.",
+    "Describes himself as Black.",
+    "Calls herself Black.",
+    "Considers himself White.",
+    "An Asian woman.",
+    "Has Asian heritage.",
+    "Has Black heritage.",
+    "Is a woman.",
+    "Is a man.",
+  ])("locally rejects identity downgrades without consent: %s", (content) => {
+    expect(() =>
+      assertMemoryCandidateAllowed(
+        normalizeMemoryCandidate(createCandidate({ content })),
+      ),
+    ).toThrow(/explicitly asked|personal/i);
   });
 
   test("rejects repeated inference for personal-sensitive memory", () => {

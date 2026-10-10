@@ -319,9 +319,15 @@ locally policy-approved candidates
 until apply, together with accounting data and hashed provider identities.
 Provider sensitivity and intent flags are hints, not consent: known health,
 religion, identity and exact-address facts are classified locally and require an
-explicit remember request matching that candidate's fact in the request clause.
-Unrelated consent elsewhere in the message is insufficient. Unsupported phrasing
-is conservatively rejected. Credentials, keys/tokens, recovery/private-key and
+explicit remember request containing a complete first-person assertion of that
+candidate's fact. Matching preserves the predicate and entire fact value, not
+just overlapping topic words. Supported examples include “remember that I have
+type 1 diabetes,” “remember that I am an Asian woman,” and “remember that I live
+at 10 Main Street.” Known identity labels remain sensitive with articles or
+pronouns. Topic/media references, unrelated possessions, third-person statements,
+negation and hypothetical context cannot grant consent. Unrelated consent
+elsewhere in the message is insufficient; ambiguous or unsupported phrasing
+(including complex requests) is conservatively rejected. Credentials, keys/tokens, recovery/private-key and
 payment authentication data are discarded before any recovery receipt.
 They are not operational/admin metadata. Apply and settlement commit atomically;
 replaying a durable receipt does not call or charge the provider again. If a

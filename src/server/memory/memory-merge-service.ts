@@ -27,6 +27,9 @@ import {
   readExtractionSource,
 } from "./memory-extraction-service";
 
+const ambiguousConsentContext =
+  /\b(?:not|never|no|don't|dont|without|if|unless|whether|when|provided|depending|maybe|perhaps|might|may|could|would|should|imagine|suppos(?:e|ing)|assum(?:e|ing)|hypothetical(?:ly)?|roleplay(?:ing)?|pretend|fiction(?:al)?|movie|film|book|story|novel|title|quote[ds]?|about|game|song|example|jok(?:e|ing)|friend|mother|father|he|she|they|his|her|their)\b|["“”„«»‹›]|\p{L}'s\b|不|没有|沒有/iu;
+
 function hasRememberIntent(content: string): boolean {
   if (
     /\b(?:not|never|don't|dont|do not)\b.{0,40}\b(?:remember|memorize)\b|不要记住|別記住|别记住/i.test(
@@ -44,61 +47,93 @@ function hasCandidateRememberIntent(
   userContent: string,
   candidateContent: string,
 ): boolean {
-  const source = normalizeMemoryText(userContent).toLocaleLowerCase("en-US");
-  if (!hasRememberIntent(source)) return false;
-  const words =
-    candidateContent
-      .toLocaleLowerCase("en-US")
-      .replace(/\bdiagnosed\b/g, "diagnosis")
-      .match(/[\p{L}\p{N}]+/gu) ?? [];
-  const generic = new Set([
-    "i",
-    "me",
-    "my",
-    "the",
-    "a",
-    "an",
-    "that",
-    "user",
-    "users",
-    "is",
-    "am",
-    "are",
-    "has",
-    "have",
-    "had",
-    "with",
-    "of",
-    "at",
-    "in",
-    "on",
-    "for",
-    "to",
-    "medical",
-    "condition",
-    "lives",
-    "practices",
-    "takes",
-  ]);
-  const facts = words.filter((word) => !generic.has(word));
-  if (!facts.length) return false;
-  // Consent is scoped to the request clause, not other facts elsewhere in the turn.
-  return userContent
-    .split(/[.!?;。\n]|,\s*|\b(?:and|but|also)\b/i)
-    .some((clause) => {
-      const normalized = normalizeMemoryText(clause).toLocaleLowerCase("en-US");
-      if (!hasRememberIntent(normalized)) return false;
-      if (
-        /\b(?:not|never|no|don't|dont|without)\b|不|没有|沒有/.test(normalized)
-      )
-        return false;
-      const requested = new Set(
-        normalized
-          .replace(/\bdiagnosed\b/g, "diagnosis")
-          .match(/[\p{L}\p{N}]+/gu) ?? [],
+  const source = normalizeConsentText(userContent);
+  const context = source.replace(
+    /\b(?:could you|i would like you to)(?= (?:remember|memorize|keep (?:this|that) in mind)\b)/g,
+    "",
+  );
+  if (!hasRememberIntent(source) || ambiguousConsentContext.test(context))
+    return false;
+  const fact = canonicalSelfFact(normalizeConsentText(candidateContent), false);
+  if (!fact) return false;
+  // Match a complete first-person assertion, never a bag of overlapping topic words.
+  return source.split(/[.!?;。\n]/).some((clause) => {
+    const request = clause
+      .trim()
+      .match(
+        /^(?:(?:please|can you|could you|i want you to|i would like you to)\s+)?(?:remember|memorize|keep (?:this|that) in mind)\s+(?:that\s+)?(.+)$/,
       );
-      return facts.every((word) => requested.has(word));
-    });
+    return !!request && canonicalSelfFact(request[1], true) === fact;
+  });
+}
+
+function normalizeConsentText(content: string): string {
+  return normalizeMemoryText(content)
+    .toLocaleLowerCase("en-US")
+    .replace(/’/g, "'")
+    .replace(/\bi'm\b/g, "i am")
+    .replace(/[.!?。]+$/, "");
+}
+
+function canonicalSelfFact(
+  content: string,
+  firstPersonOnly: boolean,
+): string | null {
+  const text = firstPersonOnly
+    ? content
+    : content.replace(/^(?:the user|user|i)\s+/, "");
+  const rules: [string, RegExp][] = [
+    [
+      "has",
+      firstPersonOnly
+        ? /^i (?:have|was diagnosed with|have been diagnosed with) (.+)$/
+        : /^(?:has|have|(?:was |is |has been |have been )?diagnosed with) (.+)$/,
+    ],
+    [
+      "is",
+      firstPersonOnly
+        ? /^i (?:am|identify as) (.+)$/
+        : /^(?:is|am|identifies as|identify as) (.+)$/,
+    ],
+    ["lives at", firstPersonOnly ? /^i live at (.+)$/ : /^lives? at (.+)$/],
+    ["practices", firstPersonOnly ? /^i practice (.+)$/ : /^practices? (.+)$/],
+    ["takes", firstPersonOnly ? /^i take (.+)$/ : /^takes? (.+)$/],
+    ["has", /^my (?:medical |health )?(?:diagnosis|condition) is (.+)$/],
+    [
+      "is",
+      /^my (?:religion|faith) is (christian|christianity|catholic|protestant|jewish|judaism|muslim|islam|hindu|hinduism|buddhist|buddhism|sikh|atheist|atheism|mormon|agnostic|orthodox|evangelical|sunni|shia|taoist|taoism)$/,
+    ],
+    [
+      "is",
+      /^my ethnicity is (black|white|asian|african|hispanic|latino|latina|indigenous|arab|caucasian)$/,
+    ],
+    [
+      "is",
+      /^my gender(?: identity)? is ((?:transgender|transsexual|cisgender|intersex|nonbinary|non-binary|woman|man|male|female)(?: (?:woman|man|person))?)$/,
+    ],
+    [
+      "is",
+      /^my sexual orientation is (bisexual|homosexual|heterosexual|gay|lesbian|queer)$/,
+    ],
+    [
+      "lives at",
+      /^my (?:(?:precise|exact|home|residential|street|mailing) )?address is (.+)$/,
+    ],
+    ["has", /^my (medical diagnosis)$/],
+    ["has", /^my (diagnosis)$/],
+  ];
+  for (const [predicate, pattern] of rules) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const value = match[1].replace(/^(?:a|an)\s+/, "");
+    if (
+      ambiguousConsentContext.test(value) ||
+      /\b(?:i|me|my|we|our|us|you|your)\b|[,;:!?]/i.test(value)
+    )
+      return null;
+    return `${predicate}:${value === "diagnosis" ? "medical diagnosis" : value}`;
+  }
+  return null;
 }
 
 export function allowedExtractionCandidates(

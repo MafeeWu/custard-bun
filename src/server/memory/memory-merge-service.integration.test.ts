@@ -183,6 +183,33 @@ test("ordinary provider labels and unrelated remember consent cannot bypass loca
   expect(await database.select().from(memoryItem)).toEqual([]);
 });
 
+test.each([
+  ["I prefer green tea.", "Is an Asian woman."],
+  [
+    "Please remember my favorite movie about type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+])(
+  "fix round 2: merge independently rejects the receipt consent bypass: %s",
+  async (userContent, content) => {
+    const input = await source();
+    const { conversationMessage } = await import("@/server/db/schema");
+    await database
+      .update(conversationMessage)
+      .set({ content: userContent })
+      .where(eq(conversationMessage.id, input.sourceMessageId));
+    await merge(input, [
+      extractionCandidate(input.sourceMessageId, {
+        content,
+        sensitivity: "ordinary",
+        userExplicitlyAskedToRemember: true,
+      }),
+    ]);
+    expect(await database.select().from(memoryItem)).toEqual([]);
+    expect(await database.select().from(memoryEvidence)).toEqual([]);
+  },
+);
+
 test("strict raw JSON rejects extra provider keys before persistence", async () => {
   const input = await source();
   await expect(

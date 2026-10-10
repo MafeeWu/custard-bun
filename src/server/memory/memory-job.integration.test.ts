@@ -229,6 +229,278 @@ test("candidate-specific consent upgrades provider downgrades and ignores its fa
 });
 
 test.each([
+  "Is an Asian woman.",
+  "Is a Black man.",
+  "I am an Asian woman.",
+  "She is an Asian woman.",
+  "He is a Hispanic man.",
+  "They are an Indigenous person.",
+  "Identifies as an Asian woman.",
+  "Identifies herself as White.",
+  "Describes himself as Black.",
+  "Calls herself Black.",
+  "Considers himself White.",
+  "User is an Asian woman.",
+  "An Asian woman.",
+  "Has Asian heritage.",
+  "Has Black heritage.",
+  "Is a woman.",
+  "Is a man.",
+])(
+  "fix round 2: identity articles and pronouns cannot downgrade receipt sensitivity: %s",
+  async (content) => {
+    const input = await source();
+    expect(
+      await recoveryReceipt(
+        [
+          extractionCandidate(input.sourceMessageId, {
+            content,
+            sensitivity: "ordinary",
+            userExplicitlyAskedToRemember: true,
+          }),
+        ],
+        input,
+      ),
+    ).toEqual([]);
+  },
+);
+
+test.each([
+  [
+    "Please remember my favorite movie about type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  ["Please remember my type 1 diabetes book.", "Has type 1 diabetes."],
+  [
+    "Please remember that I have a book about type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I like a movie about type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    'Please remember my favorite movie titled "I have type 1 diabetes".',
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that my friend has type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that my mother was diagnosed with type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that if I had type 1 diabetes I would take insulin.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I might have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I do not have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I have type 1 diabetes symptoms.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I have type 1 diabetes in a video game.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "If I were roleplaying, please remember that I have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Imagine I have type 1 diabetes. Please remember that I have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I have type 1 diabetes if the diagnosis is confirmed.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    'Please remember the quote "I have type 1 diabetes".',
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember my favorite movie about an Asian woman.",
+    "Is an Asian woman.",
+  ],
+  ["Please remember my Asian woman friend.", "Is an Asian woman."],
+  ["Please remember that she is an Asian woman.", "Is an Asian woman."],
+  [
+    "Please remember that I play an Asian woman in a movie.",
+    "Is an Asian woman.",
+  ],
+  ["Please remember that I am not an Asian woman.", "Is an Asian woman."],
+  ["Please remember my Christian book.", "Is Christian."],
+  ["Please remember that I am a Christian movie fan.", "Is Christian."],
+  ["Please remember that my friend practices Islam.", "Practices Islam."],
+  ["Please remember that I have a book about Islam.", "Practices Islam."],
+  ["Please remember my map of 10 Main Street.", "Lives at 10 Main Street."],
+  [
+    "Please remember that I have a letter from 10 Main Street.",
+    "Lives at 10 Main Street.",
+  ],
+  [
+    "Please remember that my friend's address is 10 Main Street.",
+    "Lives at 10 Main Street.",
+  ],
+  [
+    "Please remember that I visited 10 Main Street.",
+    "Lives at 10 Main Street.",
+  ],
+  [
+    "Please remember that I have type 1 diabetes.",
+    "Has type 1 diabetes and HIV.",
+  ],
+  [
+    "Please remember that I have a movie about type 1 diabetes.",
+    "Has a movie about type 1 diabetes.",
+  ],
+  [
+    "Please remember that I do not have type 1 diabetes.",
+    "Has no type 1 diabetes.",
+  ],
+  [
+    "Assume I have type 1 diabetes. Please remember that I have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "In my favorite movie. Please remember that I have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I have type 1 diabetes; I am only joking.",
+    "Has type 1 diabetes.",
+  ],
+  ["Remember that my religion is Asian.", "Is Asian."],
+  ["Remember that my ethnicity is Christian.", "Is Christian."],
+  ["Remember that my gender identity is Christian.", "Is Christian."],
+  ["Remember that my sexual orientation is female.", "Is female."],
+  ["Remember that my sexual orientation is transgender.", "Is transgender."],
+  ["Remember that my gender identity is gay.", "Is gay."],
+])(
+  "fix round 2: contextual topics are not consent to a sensitive self fact: %s",
+  async (userContent, content) => {
+    const input = await source();
+    const { conversationMessage } = await import("@/server/db/schema");
+    await database
+      .update(conversationMessage)
+      .set({ content: userContent })
+      .where(eq(conversationMessage.id, input.sourceMessageId));
+    expect(
+      await recoveryReceipt(
+        [
+          extractionCandidate(input.sourceMessageId, {
+            type: "personal_fact",
+            content,
+            sensitivity: "ordinary",
+            userExplicitlyAskedToRemember: true,
+          }),
+        ],
+        input,
+      ),
+    ).toEqual([]);
+    await processMemoryExtractionRun(
+      database,
+      extractionGateway(async () => {
+        throw new Error("Receipt replay must not call provider.");
+      }),
+      extractionCounter,
+      input.runId,
+      signal,
+    );
+    expect(await database.select().from(memoryItem)).toEqual([]);
+    expect(await database.select().from(usageLedger)).toHaveLength(1);
+  },
+);
+
+test.each([
+  ["Please remember that I have type 1 diabetes.", "Has type 1 diabetes."],
+  ["Could you remember that I have type 1 diabetes?", "Has type 1 diabetes."],
+  [
+    "I would like you to remember that I have type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  [
+    "Please remember that I was diagnosed with type 1 diabetes.",
+    "Has type 1 diabetes.",
+  ],
+  ["Remember that my diagnosis is type 1 diabetes.", "Has type 1 diabetes."],
+  ["Please remember my diagnosis.", "Has a medical diagnosis."],
+  ["Please remember that I am an Asian woman.", "Is an Asian woman."],
+  ["Please remember that I'm a Black man.", "User is a Black man."],
+  [
+    "Remember that I identify as an Asian woman.",
+    "Identifies as an Asian woman.",
+  ],
+  ["Remember that I am transgender.", "Is transgender."],
+  ["Remember that my gender identity is transgender.", "Is transgender."],
+  ["Remember that my sexual orientation is gay.", "Is gay."],
+  ["Remember that my ethnicity is Asian.", "Is Asian."],
+  ["Please remember that I am Christian.", "Is Christian."],
+  ["Remember that my religion is Christian.", "Is Christian."],
+  ["Please remember that I practice Islam.", "Practices Islam."],
+  ["Remember that I take insulin for diabetes.", "Takes insulin for diabetes."],
+  [
+    "Please remember that I live at 10 Main Street.",
+    "Lives at 10 Main Street.",
+  ],
+  [
+    "Remember that my home address is 10 Main Street.",
+    "Lives at 10 Main Street.",
+  ],
+])(
+  "fix round 2: explicit self facts retain locally derived consent through receipt replay: %s",
+  async (userContent, content) => {
+    const input = await source();
+    const { conversationMessage } = await import("@/server/db/schema");
+    await database
+      .update(conversationMessage)
+      .set({ content: userContent })
+      .where(eq(conversationMessage.id, input.sourceMessageId));
+    expect(
+      await recoveryReceipt(
+        [
+          extractionCandidate(input.sourceMessageId, {
+            type: "personal_fact",
+            content,
+            sensitivity: "ordinary",
+            userExplicitlyAskedToRemember: false,
+          }),
+        ],
+        input,
+      ),
+    ).toMatchObject([
+      {
+        content,
+        sensitivity: "personal_explicit",
+        userExplicitlyAskedToRemember: true,
+      },
+    ]);
+    await processMemoryExtractionRun(
+      database,
+      extractionGateway(async () => {
+        throw new Error("Receipt replay must not call provider.");
+      }),
+      extractionCounter,
+      input.runId,
+      signal,
+    );
+    expect(await database.select().from(memoryItem)).toMatchObject([
+      { content, sensitivity: "personal_explicit" },
+    ]);
+    expect(await database.select().from(usageLedger)).toHaveLength(1);
+  },
+);
+
+test.each([
   "Please remember that I do not have type 1 diabetes.",
   "Please remember my tea preference; I have type 1 diabetes.",
   "Please remember my tea preference, but I have type 1 diabetes.",
