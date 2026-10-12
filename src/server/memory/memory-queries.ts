@@ -179,7 +179,7 @@ export async function getRelationshipMemoryScreenView(
         },
         items: view.items,
         summary: view.summary,
-        summaryRevision: view.summary?.revision ?? 0,
+        summaryRevision: view.summaryRevision,
         summaryEpoch: view.settings.memoryEpoch,
         extractions,
         summaryStatus: summaryRun ? syncStatus(summaryRun.status) : "synced",
@@ -205,6 +205,7 @@ export interface CharacterMemoryView {
     revision: number;
     updatedAt: Date;
   } | null;
+  summaryRevision: number;
   items: Array<{
     id: string;
     type: MemoryType;
@@ -293,7 +294,7 @@ export async function getCharacterMemoryView(
       updatedAt: relationshipSummary.updatedAt,
     })
     .from(relationshipSummary)
-    .innerJoin(
+    .leftJoin(
       relationshipSummaryVersion,
       and(
         eq(relationshipSummaryVersion.id, relationshipSummary.currentVersionId),
@@ -320,7 +321,16 @@ export async function getCharacterMemoryView(
   return {
     characterId: input.characterId,
     settings,
-    summary: summary ?? null,
+    summary:
+      summary && summary.content !== null && summary.origin !== null
+        ? {
+            content: summary.content,
+            origin: summary.origin,
+            revision: summary.revision,
+            updatedAt: summary.updatedAt,
+          }
+        : null,
+    summaryRevision: summary?.revision ?? 0,
     items,
   };
 }

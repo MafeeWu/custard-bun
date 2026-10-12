@@ -66,6 +66,7 @@ describe("getCharacterMemoryView", () => {
         revision: 1,
       },
       summary: null,
+      summaryRevision: 0,
       items: [],
     });
   });
@@ -177,6 +178,7 @@ describe("getCharacterMemoryView", () => {
       revision: 5,
       updatedAt: now,
     });
+    expect(view?.summaryRevision).toBe(5);
     expect(view?.items).toEqual([
       {
         id: memoryId,

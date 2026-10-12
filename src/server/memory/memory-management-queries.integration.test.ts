@@ -6,6 +6,8 @@ import { createDatabase } from "@/server/db/client";
 import {
   conversation,
   memoryExtractionRun,
+  relationshipSummary,
+  relationshipSummaryRun,
   user,
   userCharacterMemorySetting,
 } from "@/server/db/schema";
@@ -21,12 +23,132 @@ import {
   getRelationshipMemoryScreenView,
   listMemoryRelationships,
 } from "./memory-queries";
-import { editRelationshipSummary } from "./relationship-summary-service";
-import { forgetCharacter } from "./memory-service";
+import {
+  editRelationshipSummary,
+  getRelationshipSummary,
+  requestSummaryRegeneration,
+} from "./relationship-summary-service";
+import {
+  deleteMemoryItem,
+  forgetCharacter,
+  updateMemoryControls,
+} from "./memory-service";
+import { summaryFixture } from "@/test/memory-summary-fixture";
 
 const database = createDatabase(testDatabaseUrl());
 beforeEach(() => resetExtractionDatabase(database));
 afterAll(() => database.$client.end());
+
+test.each([
+  { action: "save", recordingEnabled: true },
+  { action: "clear", recordingEnabled: true },
+  { action: "regenerate", recordingEnabled: true },
+  { action: "save", recordingEnabled: false },
+  { action: "clear", recordingEnabled: false },
+  { action: "regenerate", recordingEnabled: false },
+] as const)(
+  "reload after deleting the last item permits $action with recordingEnabled=$recordingEnabled without resurrecting summary recall",
+  async ({ action, recordingEnabled }) => {
+    const input = await summaryFixture(database);
+    const policy = { maxSummaryCharacters: 4000, secretValues: [] };
+    await editRelationshipSummary(
+      database,
+      {
+        ...input,
+        expectedRevision: 0,
+        expectedMemoryEpoch: 0,
+        content: "Enjoys green tea.",
+        userExplicitlyAskedToRemember: true,
+      },
+      policy,
+    );
+    if (!recordingEnabled)
+      await updateMemoryControls(database, {
+        ...input,
+        expectedRevision: 1,
+        recordingEnabled: false,
+        usageEnabled: true,
+      });
+    const stale = (await getRelationshipMemoryScreenView(database, input))!;
+    expect(stale.summaryRevision).toBe(1);
+    await deleteMemoryItem(database, {
+      ...input,
+      memoryId: stale.items[0].id,
+      expectedRevision: stale.items[0].revision,
+    });
+
+    const reloaded = (await getRelationshipMemoryScreenView(database, input))!;
+    expect(reloaded.items).toEqual([]);
+    expect(reloaded.summary).toBeNull();
+    expect(await getRelationshipSummary(database, input)).toBeNull();
+    expect(reloaded.settings.recordingEnabled).toBe(recordingEnabled);
+    const [stored] = await database
+      .select()
+      .from(relationshipSummary)
+      .where(eq(relationshipSummary.userId, input.userId));
+    expect(stored).toMatchObject({ currentVersionId: null, revision: 2 });
+
+    const perform = (view: typeof reloaded) => {
+      const revision = {
+        ...input,
+        expectedRevision: view.summaryRevision,
+        expectedMemoryEpoch: view.summaryEpoch,
+      };
+      return action === "regenerate"
+        ? requestSummaryRegeneration(database, revision)
+        : editRelationshipSummary(
+            database,
+            {
+              ...revision,
+              content: action === "save" ? "A new beginning." : "",
+              userExplicitlyAskedToRemember: action === "save",
+            },
+            policy,
+          );
+    };
+    await expect(perform(stale)).rejects.toMatchObject({
+      code: "MEMORY_REVISION_CONFLICT",
+      metadata: { expectedRevision: 1, actualRevision: 2 },
+    });
+    if (action === "regenerate" && !recordingEnabled) {
+      await expect(perform(reloaded)).rejects.toMatchObject({
+        code: "MEMORY_VALIDATION",
+        message: "Summary recording is disabled.",
+      });
+    } else {
+      await expect(perform(reloaded)).resolves.toMatchObject(
+        action === "regenerate"
+          ? { operationId: expect.any(String) }
+          : { revision: 3 },
+      );
+    }
+    expect(reloaded.summaryRevision).toBe(2);
+    if (action === "regenerate") {
+      const runs = await database
+        .select()
+        .from(relationshipSummaryRun)
+        .where(eq(relationshipSummaryRun.userId, input.userId));
+      expect(runs.filter((run) => run.status === "pending")).toMatchObject(
+        recordingEnabled ? [{ expectedSummaryRevision: 2 }] : [],
+      );
+      expect(
+        (await getRelationshipMemoryScreenView(database, input))!.summary,
+      ).toBeNull();
+      expect(await getRelationshipSummary(database, input)).toBeNull();
+    } else {
+      expect(
+        await getRelationshipMemoryScreenView(database, input),
+      ).toMatchObject({
+        summaryRevision: 3,
+        summary: {
+          content: action === "save" ? "A new beginning." : "",
+          origin: "user_edited",
+          revision: 3,
+        },
+      });
+    }
+  },
+);
 
 test("screen DTO scopes even absent and recreated summary revisions to the relationship epoch", async () => {
   const input = await extractionFixture(database);

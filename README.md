@@ -315,7 +315,10 @@ have been deleted.
   removing retained items. It detaches the current summary from recall (even
   a user-edited summary, and even when recording is stopped); immutable
   history is preserved, never reused as prior-summary input. A new summary
-  is generated only from remaining current memories.
+  is generated only from remaining current memories. Reloading exposes the
+  authoritative summary revision even while its content is absent, so fresh
+  edits and clears work while pre-deletion submissions still conflict.
+  Regeneration continues to require recording to be enabled.
 - Deployment `maxActiveItemsPerCharacter` is enforced under relationship
   locks without silent eviction. At capacity, new direct candidates are
   discarded; inferred items retain evidence but cannot activate until a
