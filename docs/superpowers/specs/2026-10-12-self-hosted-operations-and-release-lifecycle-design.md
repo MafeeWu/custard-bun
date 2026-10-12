@@ -1,7 +1,7 @@
 # Self-Hosted Operations and Release Lifecycle Design
 
 **Date:** 2026-10-12  
-**Status:** Proposed design, pending written-spec approval  
+**Status:** Approved design, implementation plan ready for approval
 **Roadmap phase:** Phase 5  
 **Depends on:** Phase 4 long-term memory, privacy, export, purge, and operational administration
 
@@ -389,8 +389,10 @@ Normal logs must not include:
 
 ### 6.2 Metrics
 
-App and worker expose OpenMetrics-compatible endpoints on their existing health
-listeners when metrics are enabled.
+The app exposes OpenMetrics-compatible output through its existing HTTP
+listener. The current worker has a database heartbeat but no HTTP listener, so
+Phase 5 adds one worker-local observability listener for live, ready, and
+metrics responses.
 
 Metrics are disabled by default. A non-loopback metrics listener requires a
 dedicated bearer secret. The bearer value is never logged.

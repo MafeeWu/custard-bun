@@ -108,7 +108,7 @@ contain it; cross-user and cross-character isolation tests pass.
 
 ## Phase 5: Self-Hosted Operations and Release Lifecycle
 
-**Status:** Proposed design pending written-spec approval.
+**Status:** Implementation plan ready for approval.
 
 **Design:** `docs/superpowers/specs/2026-10-12-self-hosted-operations-and-release-lifecycle-design.md`
 
