@@ -3,8 +3,8 @@
 **Spec:** `docs/superpowers/specs/2026-09-23-ai-companion-web-app-design.md`
 
 The approved specification spans several independently reviewable subsystems.
-Implement it as four plans. Each phase must leave the repository deployable
-and must pass its own acceptance tests before the next phase begins.
+Implement it as separate phase plans. Each phase must leave the repository
+deployable and must pass its own acceptance tests before the next phase begins.
 
 ## Phase 1: Deployable Foundation and Accounts
 
@@ -82,12 +82,10 @@ conversation storage and chat exist.
 
 ## Phase 4: Long-Term Memory, Privacy, and Operational Completion
 
-**Status:** Implementation and automated acceptance complete. The Node 24
+**Status:** Complete. Implementation, independent whole-branch review, Node 24
 release gate, real Phase 3 fixture upgrade, production Compose app/worker
-readiness and processing, and deterministic all-surface privacy scan pass.
-Independent whole-branch review remains pending (reviewers were explicitly
-prohibited for Task 12). Phase 4 is not fully accepted until that final
-specification release gate passes.
+readiness and processing, deterministic all-surface privacy scan, and
+post-review fixes are delivered.
 
 The separate implementation plan and approved specification are under
 `docs/superpowers/plans/2026-10-10-long-term-memory-privacy-and-operations.md`
@@ -107,6 +105,30 @@ Deliver:
 Independent acceptance test: a character recalls a durable preference in a
 new conversation, the user deletes that memory, and later prompts no longer
 contain it; cross-user and cross-character isolation tests pass.
+
+## Phase 5: Self-Hosted Operations and Release Lifecycle
+
+**Status:** Proposed design pending written-spec approval.
+
+**Design:** `docs/superpowers/specs/2026-10-12-self-hosted-operations-and-release-lifecycle-design.md`
+
+Deliver:
+
+- immutable release manifests and supported upgrade ranges;
+- doctor and upgrade-check commands;
+- portable age-encrypted backup, verification, and empty-target restore;
+- privacy-safe structured logs and aggregate metrics;
+- SBOMs, image digests, checksums, and supply-chain scans;
+- installation, upgrade, backup, restore, and disaster-recovery runbooks;
+- real Phase 4 backup, upgrade, restore, Compose, worker, and privacy release
+  gates.
+
+Independent acceptance test: create and verify an encrypted backup of a
+populated Phase 4 deployment, upgrade the original deployment, restore the
+backup into a separate empty database, and prove that app and worker recover
+authentication, chat, memory, privacy, accounting, exports, queue processing,
+and deletion behavior without exposing private data in logs, metrics, or
+release artifacts.
 
 ## Cross-Phase Rules
 
