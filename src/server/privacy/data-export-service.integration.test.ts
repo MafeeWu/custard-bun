@@ -387,8 +387,8 @@ test("download and cleanup use exactly 24 hours from publication, not dispatch o
   const { userId } = await summaryFixture(database);
   const { exportId } = await request(userId);
   let clockNow = now;
-  const publishedAt = new Date("2026-10-10T14:37:00.000Z");
-  const expiry = new Date("2026-10-11T14:37:00.000Z");
+  const publishedAt = new Date(Date.now() + 60 * 60 * 1000);
+  const expiry = new Date(publishedAt.getTime() + 24 * 60 * 60 * 1000);
   const readSnapshot = snapshotService.readDataExportSnapshot;
   vi.spyOn(snapshotService, "readDataExportSnapshot").mockImplementation(
     async (...args) => {

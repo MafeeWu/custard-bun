@@ -35,6 +35,8 @@ test.each(["owner download", "scheduled cleanup"])(
   async (cleanup) => {
     const owner = await summaryFixture(database);
     const other = await summaryFixture(database);
+    const publication = new Date(Date.now() + 60 * 60 * 1000);
+    const expiry = new Date(publication.getTime() + 24 * 60 * 60 * 1000);
     let sessionUserId = owner.userId;
     vi.mocked(getAuth).mockResolvedValue({
       api: { getSession: async () => ({ user: { id: sessionUserId } }) },
@@ -45,8 +47,6 @@ test.each(["owner download", "scheduled cleanup"])(
       userId: owner.userId,
       now: new Date(),
     });
-    const publication = new Date("2026-10-10T14:37:00.000Z");
-    const expiry = new Date("2026-10-11T14:37:00.000Z");
     const readSnapshot = snapshotService.readDataExportSnapshot;
     vi.spyOn(snapshotService, "readDataExportSnapshot").mockImplementation(
       async (...args) => {
