@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Brain, Chats, ChartBar, ShieldCheck, UserCircle, Users } from "@phosphor-icons/react";
-import { render, screen } from "@testing-library/react";
+import {
+  Brain,
+  Chats,
+  ChartBar,
+  ShieldCheck,
+  UserCircle,
+  Users,
+} from "@phosphor-icons/react";
+import { render, screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { AdminShell } from "./admin-shell";
 import { AppShell } from "./app-shell";
@@ -34,7 +41,9 @@ test("public shell exposes named primary navigation, a mobile nav trigger, and o
     <PublicShell
       actions={<a href="/auth/sign-in">Sign in</a>}
       brand={<span>Custard Bun</span>}
-      navigationItems={[{ href: "/characters", icon: Chats, label: "Characters" }]}
+      navigationItems={[
+        { href: "/characters", icon: Chats, label: "Characters" },
+      ]}
     >
       <p>Public content</p>
     </PublicShell>,
@@ -76,25 +85,26 @@ test("auth shell keeps the form landmark before decorative content in DOM order"
   expect(screen.getByRole("form", { name: "Sign in form" })).toBeVisible();
 });
 
-test("app shell exposes conversations, memories, and account links", () => {
+test("app shell renders a permanent application sidebar with conversations, memories, and account links", () => {
   render(
     <AppShell brand={<span>Custard Bun</span>} navigationItems={appItems}>
       <p>App content</p>
     </AppShell>,
   );
 
-  expect(screen.getByRole("link", { name: "Conversations" })).toHaveAttribute(
-    "href",
-    "/app",
-  );
-  expect(screen.getByRole("link", { name: "Memories" })).toHaveAttribute(
-    "href",
-    "/app/memories",
-  );
-  expect(screen.getByRole("link", { name: "Account" })).toHaveAttribute(
-    "href",
-    "/account",
-  );
+  const sidebar = screen.getByRole("complementary", {
+    name: "Application navigation",
+  });
+
+  expect(
+    within(sidebar).getByRole("link", { name: "Conversations" }),
+  ).toHaveAttribute("href", "/app");
+  expect(
+    within(sidebar).getByRole("link", { name: "Memories" }),
+  ).toHaveAttribute("href", "/app/memories");
+  expect(
+    within(sidebar).getByRole("link", { name: "Account" }),
+  ).toHaveAttribute("href", "/account");
 });
 
 test("admin shell preserves the current administration labels and hrefs", () => {
@@ -114,15 +124,44 @@ test("admin shell preserves the current administration labels and hrefs", () => 
 
 test("focused chat shell omits the permanent application sidebar", () => {
   render(
-    <FocusedChatShell brand={<span>Custard Bun</span>} navigationItems={appItems}>
+    <FocusedChatShell
+      brand={<span>Custard Bun</span>}
+      navigationItems={appItems}
+    >
       <p>Focused chat</p>
     </FocusedChatShell>,
   );
 
-  expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("complementary", { name: "Application navigation" }),
+  ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Conversations" })).toHaveAttribute(
     "href",
     "/app",
+  );
+});
+
+test("mobile drawer navigation explicitly allows long labels to wrap", () => {
+  render(
+    <PublicShell
+      actions={<a href="/auth/sign-in">Sign in</a>}
+      brand={<span>Custard Bun</span>}
+      navigationItems={[
+        {
+          href: "/characters",
+          icon: Chats,
+          label:
+            "Characters with exceptionally detailed private conversation presets",
+        },
+      ]}
+    >
+      <p>Public content</p>
+    </PublicShell>,
+  );
+
+  expect(screen.getByRole("button", { name: "Open navigation" })).toBeVisible();
+  expect(globalsCss).toMatch(
+    /\.shell-mobile-navigation__content\s+\.shell-nav__link-label\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s,
   );
 });
 
@@ -134,7 +173,9 @@ test("long brand names wrap as text without hiding the mobile navigation trigger
     <PublicShell
       actions={<a href="/auth/sign-in">Sign in</a>}
       brand={<span>{longBrandName}</span>}
-      navigationItems={[{ href: "/characters", icon: Chats, label: "Characters" }]}
+      navigationItems={[
+        { href: "/characters", icon: Chats, label: "Characters" },
+      ]}
     >
       <p>Public content</p>
     </PublicShell>,

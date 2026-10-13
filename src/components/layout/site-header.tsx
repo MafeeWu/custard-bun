@@ -43,6 +43,7 @@ export function SiteHeader({
   mobileNavigationTitle,
   navigationItems,
   primaryNavigationLabel,
+  showDesktopNavigation = true,
 }: {
   actions?: ReactNode;
   brand: ReactNode;
@@ -51,6 +52,7 @@ export function SiteHeader({
   mobileNavigationTitle?: string;
   navigationItems: ShellNavigationItem[];
   primaryNavigationLabel: string;
+  showDesktopNavigation?: boolean;
 }) {
   const navigation = (
     <ShellNavigation items={navigationItems} label={primaryNavigationLabel} />
@@ -62,10 +64,16 @@ export function SiteHeader({
         <Link className="shell-brand" href={brandHref}>
           <span className="shell-brand__name">{brand}</span>
         </Link>
-        <div className="shell-header__desktop-nav">{navigation}</div>
-        {actions ? <div className="shell-header__actions">{actions}</div> : null}
+        {showDesktopNavigation ? (
+          <div className="shell-header__desktop-nav">{navigation}</div>
+        ) : null}
+        {actions ? (
+          <div className="shell-header__actions">{actions}</div>
+        ) : null}
         <div className="shell-header__mobile-trigger">
-          <MobileNavigation title={mobileNavigationTitle ?? primaryNavigationLabel}>
+          <MobileNavigation
+            title={mobileNavigationTitle ?? primaryNavigationLabel}
+          >
             {navigation}
             {actions ? (
               <div className="shell-mobile-navigation__actions">{actions}</div>

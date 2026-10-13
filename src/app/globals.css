@@ -1008,8 +1008,7 @@ a {
 .shell-admin__header-inner {
   width: min(100% - 2rem, 80rem);
   margin: 0 auto;
-  padding: calc(var(--space-4) + env(safe-area-inset-top, 0px)) 0
-    var(--space-4);
+  padding: calc(var(--space-4) + env(safe-area-inset-top, 0px)) 0 var(--space-4);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-3);
@@ -1043,6 +1042,7 @@ a {
 
 .shell-header__desktop-nav,
 .shell-header__actions,
+.shell-app__sidebar,
 .shell-admin__sidebar {
   display: none;
 }
@@ -1058,6 +1058,7 @@ a {
   width: min(100% - 2rem, 54rem);
 }
 
+.shell-app__layout,
 .shell-admin__layout {
   width: min(100% - 2rem, 84rem);
   margin: 0 auto;
@@ -1068,6 +1069,12 @@ a {
 }
 
 .shell-main--admin {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.shell-main--app {
   width: auto;
   margin: 0;
   padding: 0;
@@ -1145,6 +1152,12 @@ a {
 
 .shell-mobile-navigation__content .shell-nav__link {
   width: 100%;
+  align-items: flex-start;
+}
+
+.shell-mobile-navigation__content .shell-nav__link-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .auth-shell {
@@ -1191,6 +1204,7 @@ a {
   }
 
   .shell-header__desktop-nav,
+  .shell-app__sidebar,
   .shell-admin__sidebar {
     display: block;
   }
@@ -1207,10 +1221,12 @@ a {
     display: none;
   }
 
+  .shell-app__layout,
   .shell-admin__layout {
     grid-template-columns: 15rem minmax(0, 1fr);
   }
 
+  .shell-app__sidebar,
   .shell-admin__sidebar {
     position: sticky;
     top: var(--space-6);

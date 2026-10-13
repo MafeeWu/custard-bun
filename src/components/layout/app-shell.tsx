@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
-import { SiteHeader, type ShellNavigationItem } from "./site-header";
+import {
+  ShellNavigation,
+  SiteHeader,
+  type ShellNavigationItem,
+} from "./site-header";
 
 export function AppShell({
   actions,
@@ -21,8 +25,21 @@ export function AppShell({
         mobileNavigationTitle="Application navigation"
         navigationItems={navigationItems}
         primaryNavigationLabel="Application navigation"
+        showDesktopNavigation={false}
       />
-      <main className="shell-main shell-main--app">{children}</main>
+      <div className="shell-app__layout">
+        <aside
+          aria-label="Application navigation"
+          className="shell-app__sidebar"
+        >
+          <ShellNavigation
+            className="shell-nav--stacked"
+            items={navigationItems}
+            label="Application navigation"
+          />
+        </aside>
+        <main className="shell-main shell-main--app">{children}</main>
+      </div>
     </div>
   );
 }
