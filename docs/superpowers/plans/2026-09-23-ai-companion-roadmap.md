@@ -130,6 +130,32 @@ authentication, chat, memory, privacy, accounting, exports, queue processing,
 and deletion behavior without exposing private data in logs, metrics, or
 release artifacts.
 
+## Phase 6: Clear Daylight Interface Redesign
+
+**Status:** Proposed design pending written-spec approval.
+
+**Design:** `docs/superpowers/specs/2026-10-13-clear-daylight-interface-redesign.md`
+
+Deliver:
+
+- a white-label semantic token system with coordinated light and dark themes;
+- self-hosted typography, one icon family, and purposeful reduced-motion-safe
+  animation;
+- shared public, authentication, application, focused-chat, and administration
+  shells;
+- redesigned homepage, character, authentication, conversation, memory,
+  account, and administration surfaces;
+- complete loading, empty, error, pending, disabled, success, and destructive
+  states;
+- desktop/mobile visual, keyboard, contrast, reduced-motion, privacy, and
+  release acceptance coverage.
+
+Independent acceptance test: a new user can understand the product, browse a
+character, create and verify an account, hold a streamed conversation, manage
+memory and account privacy, and an administrator can perform representative
+operations on desktop and mobile in light, dark, keyboard-only, and
+reduced-motion environments without behavior, privacy, or layout regressions.
+
 ## Cross-Phase Rules
 
 - Do not add voice, image generation, public characters, billing, RAG,
