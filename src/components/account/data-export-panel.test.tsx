@@ -78,6 +78,38 @@ test("queued/running disable duplicate requests while only ready exports expose 
   ).not.toBeInTheDocument();
 });
 
+test("cancelled exports render the failed unavailable treatment without exposing a cancelled state", () => {
+  const { container } = render(
+    <DataExportPanel
+      exports={[
+        {
+          id: "private-cancelled-export-id",
+          status: "cancelled",
+          createdAt: "2026-10-10T08:00:00Z",
+          completedAt: null,
+          expiresAt: null,
+        },
+      ]}
+    />,
+  );
+
+  expect(screen.getByText("Failed")).toBeVisible();
+  expect(screen.getByText("Data export is unavailable.")).toBeVisible();
+  expect(screen.queryByText("Cancelled")).not.toBeInTheDocument();
+  expect(
+    container.querySelector(".account-export-status--cancelled"),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("link", { name: "Download ZIP" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("private-cancelled-export-id"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("/account/exports/private-cancelled-export-id/download"),
+  ).not.toBeInTheDocument();
+});
+
 test.each<{
   expectedLabel: string;
   expectedRole: "status" | "alert";

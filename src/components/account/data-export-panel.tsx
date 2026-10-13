@@ -43,7 +43,7 @@ function RetryExport({ id, disabled }: { id: string; disabled: boolean }) {
   );
 }
 
-function visualStateForJob(job: DataExportView): ExportVisualState | null {
+function visualStateForJob(job: DataExportView): ExportVisualState {
   switch (job.status) {
     case "pending":
       return { kind: "queued" };
@@ -58,9 +58,12 @@ function visualStateForJob(job: DataExportView): ExportVisualState | null {
     case "expired":
       return { kind: "expired" };
     case "failed":
+    case "cancelled":
       return { kind: "failed", message: "Data export is unavailable." };
-    default:
-      return null;
+    default: {
+      const unhandledStatus: never = job.status;
+      throw new Error(`Unhandled data export status: ${unhandledStatus}`);
+    }
   }
 }
 
@@ -152,39 +155,17 @@ export function DataExportPanel({ exports }: { exports: DataExportView[] }) {
           exports.map((job) => {
             const visualState = visualStateForJob(job);
 
-            if (visualState) {
-              return (
-                <ExportStatus
-                  action={
-                    job.status === "failed" ? (
-                      <RetryExport id={job.id} disabled={active.length > 0} />
-                    ) : undefined
-                  }
-                  key={job.id}
-                  requestedAt={job.createdAt}
-                  state={visualState}
-                />
-              );
-            }
-
             return (
-              <li
-                className="account-export-status account-export-status--cancelled"
+              <ExportStatus
+                action={
+                  job.status === "failed" ? (
+                    <RetryExport id={job.id} disabled={active.length > 0} />
+                  ) : undefined
+                }
                 key={job.id}
-              >
-                <StatusNotice
-                  className="account-export-status__notice"
-                  title="Cancelled"
-                  tone="warning"
-                >
-                  <div className="account-export-status__copy">
-                    <p className="account-export-status__meta">
-                      Requested{" "}
-                      <time dateTime={job.createdAt}>{job.createdAt}</time>
-                    </p>
-                  </div>
-                </StatusNotice>
-              </li>
+                requestedAt={job.createdAt}
+                state={visualState}
+              />
             );
           })
         ) : (
