@@ -32,17 +32,21 @@ export function SignOutButton() {
   }
 
   return (
-    <div className="auth-form auth-form--compact">
+    <div className="sign-out-button auth-form auth-form--compact">
       <Button
-        className="auth-form__submit"
+        className="auth-form__submit sign-out-button__submit"
         onClick={handleClick}
         pending={pending}
+        tone="secondary"
         type="button"
       >
         Sign out
       </Button>
       {errorMessage ? (
-        <StatusNotice className="auth-form__notice" tone="danger">
+        <StatusNotice
+          className="auth-form__notice sign-out-button__notice"
+          tone="danger"
+        >
           {errorMessage}
         </StatusNotice>
       ) : null}
