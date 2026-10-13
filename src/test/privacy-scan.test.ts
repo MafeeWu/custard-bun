@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { afterEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
+import { chromium, type Browser, type Page } from "@playwright/test";
 import {
   scanPrivacySurfaces,
   privacySentinels,
@@ -12,6 +13,27 @@ import {
 
 const root = "test-results/privacy-scanner-unit";
 const visualRoot = "test-results/visual-privacy-unit";
+let browser: Browser;
+let page: Page;
+let safeImage: Buffer;
+beforeAll(async () => {
+  browser = await chromium.launch();
+  page = await browser.newPage({ viewport: { width: 1400, height: 180 } });
+  await page.setContent(
+    "<body style='background:white;color:black;font:24px monospace'>Public fixture</body>",
+  );
+  safeImage = await page.screenshot();
+});
+afterAll(async () => {
+  await browser.close();
+});
+
+async function writeSentinelImage(path: string, sentinel: string) {
+  await page.locator("body").evaluate((element, text) => {
+    element.textContent = text;
+  }, sentinel);
+  await writeFile(path, await page.screenshot());
+}
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
   await rm(visualRoot, { recursive: true, force: true });
@@ -32,19 +54,19 @@ async function surfaces() {
   await mkdir(`${root}/ui-snapshots/unexpected/nested`, { recursive: true });
   await writeFile(
     `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
-    "safe light",
+    safeImage,
   );
   await writeFile(
     `${root}/ui-snapshots/unexpected/nested/home-desktop-dark.png`,
-    "safe dark",
+    safeImage,
   );
   await writeFile(
     `${root}/ui-snapshots/unexpected/nested/home-mobile-light-reduced.png`,
-    "safe mobile",
+    safeImage,
   );
   await writeFile(
     `${root}/ui-snapshots/unexpected/nested/account-error-state.png`,
-    "safe error",
+    safeImage,
   );
   await writeFile(
     `${root}/responses/unexpected/nested/success`,
@@ -99,13 +121,10 @@ async function visualEvidence() {
   const resultRoot = `${visualRoot}/test-results/ui-evidence/nested`;
   await mkdir(snapshotRoot, { recursive: true });
   await mkdir(resultRoot, { recursive: true });
-  await writeFile(`${snapshotRoot}/home-desktop-light.png`, "safe light");
-  await writeFile(`${snapshotRoot}/home-desktop-dark.png`, "safe dark");
-  await writeFile(
-    `${snapshotRoot}/home-mobile-light-reduced.png`,
-    "safe mobile",
-  );
-  await writeFile(`${resultRoot}/error-state.png`, "safe error");
+  await writeFile(`${snapshotRoot}/home-desktop-light.png`, safeImage);
+  await writeFile(`${snapshotRoot}/home-desktop-dark.png`, safeImage);
+  await writeFile(`${snapshotRoot}/home-mobile-light-reduced.png`, safeImage);
+  await writeFile(`${resultRoot}/error-state.png`, safeImage);
 }
 
 test("recursively scans visual snapshots and runtime evidence", async () => {
@@ -119,7 +138,21 @@ test.each(visualPrivacySentinels)(
   "release scanning rejects a visual privacy sentinel in copied UI evidence: %s",
   async (sentinel) => {
     await surfaces();
-    await writeFile(
+    await writeSentinelImage(
+      `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
+      sentinel,
+    );
+    await expect(scanPrivacySurfaces(root)).rejects.toThrow(
+      "Visual privacy sentinel found in ui-snapshots",
+    );
+  },
+);
+
+test.each(Object.values(privacySentinels))(
+  "rejects rasterized release privacy sentinel in UI evidence: %s",
+  async (sentinel) => {
+    await surfaces();
+    await writeSentinelImage(
       `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
       sentinel,
     );
@@ -150,7 +183,7 @@ test.each(visualPrivacySentinels)(
   "rejects a visual privacy sentinel at any nested path: %s",
   async (sentinel) => {
     await visualEvidence();
-    await writeFile(
+    await writeSentinelImage(
       `${visualRoot}/test-results/ui-evidence/nested/error-state.png`,
       sentinel,
     );

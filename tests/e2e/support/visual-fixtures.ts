@@ -265,6 +265,20 @@ export async function injectOwnerExportError(
   });
 }
 
+export async function prepareVisualAdministration(
+  page: Page,
+  database: Database,
+  input: { email: string; password: string },
+) {
+  await resetVisualDatabaseState(database);
+  await replaceLongCharacter(database);
+  await injectPrivateDecoy(database);
+  await page.context().clearCookies();
+  await registerVisualUser(page, input);
+  await injectOwnerExportError(database, input.email);
+  await promoteVisualUser(page, database, input);
+}
+
 export async function expectNoHorizontalOverflow(page: Page) {
   const result = await page.evaluate(() => ({
     fits: document.documentElement.scrollWidth <= window.innerWidth,
@@ -295,6 +309,36 @@ export async function expectVisibleBox(locator: ReturnType<Page["locator"]>) {
   expect(box!.height).toBeGreaterThan(0);
 }
 
+export async function assertCaptureValuesArePrivate(page: Page) {
+  const values = await page.evaluate(() => [
+    document.body.innerText,
+    ...[
+      ...document.querySelectorAll<
+        HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+      >("input, textarea, select"),
+    ]
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => element.value),
+    ...[
+      ...document.querySelectorAll<HTMLElement>(
+        "[contenteditable], [aria-label], [title], img",
+      ),
+    ].flatMap((element) => [
+      element.innerText ?? "",
+      element.getAttribute("aria-label") ?? "",
+      element.getAttribute("title") ?? "",
+      element.getAttribute("alt") ?? "",
+    ]),
+  ]);
+  if (
+    visualPrivacySentinels.some((sentinel) =>
+      values.some((value) => value.includes(sentinel)),
+    )
+  ) {
+    throw new Error("Visual privacy sentinel found in capture values");
+  }
+}
+
 export async function captureMain(
   page: Page,
   testInfo: TestInfo,
@@ -303,18 +347,38 @@ export async function captureMain(
 ) {
   const main = page.locator("main");
   await expect(main).toBeVisible();
-  for (const sentinel of visualPrivacySentinels) {
-    await expect(page.locator("body")).not.toContainText(sentinel);
-  }
+  await assertCaptureValuesArePrivate(page);
   await expectNoHorizontalOverflow(page);
   if (primaryAction) await expectVisibleBox(primaryAction);
-  await expect(main).toHaveScreenshot(`${name}.png`, {
+  const isFocusedChat = (await page.locator(".chat-page").count()) > 0;
+  if (isFocusedChat) {
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: "instant",
+      });
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const scrollingElement = document.scrollingElement!;
+          return (
+            Math.ceil(scrollingElement.scrollTop + window.innerHeight) >=
+            scrollingElement.scrollHeight
+          );
+        }),
+      )
+      .toBe(true);
+  }
+  const capture = isFocusedChat ? page : main;
+  await expect(capture).toHaveScreenshot(`${name}.png`, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.015,
     scale: "css",
   });
-  await main.screenshot({
+  await capture.screenshot({
     animations: "disabled",
     caret: "hide",
     path: testInfo.outputPath(`${name}-${testInfo.project.name}.png`),

@@ -24,9 +24,9 @@ export function ChatTimeline({
       : undefined;
 
   useEffect(() => {
-    const timelineEnd = timelineEndRef.current;
-    if (!timelineEnd) return;
     const updateAutoFollow = () => {
+      const timelineEnd = timelineEndRef.current;
+      if (!timelineEnd) return;
       const composer = timelineEnd
         .closest(".chat-conversation")
         ?.querySelector<HTMLElement>(".chat-composer-shell");

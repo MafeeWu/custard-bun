@@ -45,9 +45,6 @@ export async function scanPrivacySurfaces(root: string): Promise<{
     const files = await filesRecursively(join(root, surface));
     if (!files.length) throw new Error(`Missing privacy evidence: ${surface}`);
     counts[surface] = files.length;
-    if (surface === "ui-snapshots") {
-      await assertVisualEvidenceFilesArePrivate(files, surface);
-    }
     const forbidden =
       surface === "responses" || surface === "decoded-exports"
         ? [
@@ -61,7 +58,14 @@ export async function scanPrivacySurfaces(root: string): Promise<{
     for (const file of files) {
       const bytes = await readFile(file);
       if (forbidden.some((sentinel) => bytes.includes(Buffer.from(sentinel)))) {
-        throw new Error(`Privacy sentinel found in ${surface}: ${file}`);
+        const kind =
+          surface === "ui-snapshots" &&
+          visualPrivacySentinels.some((sentinel) =>
+            bytes.includes(Buffer.from(sentinel)),
+          )
+            ? "Visual privacy"
+            : "Privacy";
+        throw new Error(`${kind} sentinel found in ${surface}: ${file}`);
       }
       if (surface === "responses") {
         // Every file is scanned; only actual captured HTTP metadata counts as
@@ -77,6 +81,12 @@ export async function scanPrivacySurfaces(root: string): Promise<{
           if (status >= 400 && status < 600) responseEvidence.error++;
         }
       }
+    }
+    if (surface === "ui-snapshots") {
+      await assertVisualEvidenceFilesArePrivate(files, surface, [
+        ...visualPrivacySentinels,
+        ...Object.values(privacySentinels),
+      ]);
     }
   }
   for (const kind of ["success", "error"] as const) {

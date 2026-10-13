@@ -349,6 +349,65 @@ test("streaming does not override deliberate upward scrolling and resumes near b
   expect(scrollIntoView).toHaveBeenCalledTimes(2);
 });
 
+test.each([false, true])(
+  "follows a live marker after appending (initially empty: %s), without overriding reading position",
+  (initiallyEmpty) => {
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    const original: ChatClientMessage = {
+      id: "first",
+      role: "assistant",
+      kind: "opening",
+      content: "First",
+    };
+    const appended: ChatClientMessage = {
+      id: "new-attempt",
+      role: "assistant",
+      kind: "generated",
+      attemptId: "new-attempt",
+      status: "streaming",
+      content: "New reply",
+      errorCode: null,
+      retryable: false,
+    };
+    const { rerender } = render(
+      <ChatTimeline messages={initiallyEmpty ? [] : [original]} />,
+    );
+    const oldMarker = document.querySelector(".chat-timeline__end");
+    if (oldMarker)
+      vi.spyOn(oldMarker, "getBoundingClientRect").mockReturnValue({
+        bottom: 0,
+      } as DOMRect);
+    rerender(<ChatTimeline messages={[original, appended]} />);
+    const beforeReading = scrollIntoView.mock.calls.length;
+    const marker = document.querySelector(".chat-timeline__end")!;
+    const box = vi.spyOn(marker, "getBoundingClientRect");
+    box.mockReturnValue({ bottom: 2000 } as DOMRect);
+    fireEvent.scroll(document);
+    rerender(
+      <ChatTimeline
+        messages={[
+          original,
+          { ...appended, content: "Reply grows while reading" },
+        ]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(beforeReading);
+    box.mockReturnValue({ bottom: window.innerHeight - 20 } as DOMRect);
+    fireEvent.scroll(document);
+    rerender(
+      <ChatTimeline
+        messages={[
+          original,
+          { ...appended, content: "Reply grows near bottom" },
+        ]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(beforeReading + 1);
+  },
+);
+
 test("authoritative server transcripts do not enter even with optimistic-looking ids", () => {
   render(
     <ChatScreen

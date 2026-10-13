@@ -125,6 +125,67 @@ function NavigationDrawerHarness({
   );
 }
 
+test("typing and streaming rerenders preserve the native lifecycle and focus, while dismissal reads the latest callback", async () => {
+  const user = userEvent.setup();
+  const first = vi.fn();
+  const latest = vi.fn();
+  const show = vi.spyOn(HTMLDialogElement.prototype, "showModal");
+  const close = vi.spyOn(HTMLDialogElement.prototype, "close");
+  const renderDialog = (
+    onOpenChange: (open: boolean) => void,
+    content: string,
+  ) => (
+    <Dialog open onOpenChange={onOpenChange} title="Stable dialog">
+      <button type="button">Close</button>
+      <label>
+        Draft
+        <input defaultValue="kept draft" />
+      </label>
+      <p>{content}</p>
+    </Dialog>
+  );
+  const { rerender } = render(renderDialog(first, "Partial response"));
+  const draft = screen.getByRole("textbox", { name: "Draft" });
+  await user.click(draft);
+  await user.type(draft, " typed");
+  rerender(renderDialog(latest, "A streamed response grows"));
+  expect(draft).toHaveFocus();
+  expect(draft).toHaveValue("kept draft typed");
+  expect(show).toHaveBeenCalledTimes(1);
+  expect(close).not.toHaveBeenCalled();
+  await user.keyboard("{Escape}");
+  expect(first).not.toHaveBeenCalled();
+  expect(latest).toHaveBeenCalledWith(false);
+});
+
+test("overlay bounds track visual viewport resize and offset without reopening the dialog", () => {
+  const viewport = Object.assign(new EventTarget(), {
+    width: 320,
+    height: 450,
+    offsetLeft: 0,
+    offsetTop: 80,
+  });
+  vi.stubGlobal("visualViewport", viewport);
+  const show = vi.spyOn(HTMLDialogElement.prototype, "showModal");
+  render(
+    <Dialog open onOpenChange={() => {}} title="Keyboard viewport">
+      <button>Cancel</button>
+    </Dialog>,
+  );
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.style.getPropertyValue("--overlay-viewport-height")).toBe(
+    "450px",
+  );
+  viewport.height = 280;
+  viewport.offsetTop = 160;
+  viewport.dispatchEvent(new Event("resize"));
+  expect(dialog.style.getPropertyValue("--overlay-viewport-height")).toBe(
+    "280px",
+  );
+  expect(dialog.style.getPropertyValue("--overlay-viewport-top")).toBe("160px");
+  expect(show).toHaveBeenCalledTimes(1);
+});
+
 test("dialog opens with an accessible name, traps focus, closes on Escape, and restores the trigger focus", async () => {
   const user = userEvent.setup();
 
@@ -195,7 +256,9 @@ test("open overlays release scroll lock when they unmount", async () => {
   render(<UnmountableDialogHarness />);
 
   await user.click(screen.getByRole("button", { name: "Open history" }));
-  expect(screen.getByRole("dialog", { name: "Conversation history" })).toBeVisible();
+  expect(
+    screen.getByRole("dialog", { name: "Conversation history" }),
+  ).toBeVisible();
   expect(document.body.style.overflow).toBe("hidden");
 
   await user.click(screen.getByRole("button", { name: "Remove overlay" }));
@@ -205,12 +268,15 @@ test("open overlays release scroll lock when they unmount", async () => {
 });
 
 test("drawers expose mobile placement and reduced-motion state", () => {
-  vi.stubGlobal("matchMedia", vi.fn(() => ({
-    addEventListener: vi.fn(),
-    matches: true,
-    media: "(prefers-reduced-motion: reduce)",
-    removeEventListener: vi.fn(),
-  })));
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      addEventListener: vi.fn(),
+      matches: true,
+      media: "(prefers-reduced-motion: reduce)",
+      removeEventListener: vi.fn(),
+    })),
+  );
 
   const initialFocusRef = { current: null } as RefObject<HTMLElement | null>;
 

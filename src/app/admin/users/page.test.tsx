@@ -96,10 +96,17 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
       within(table).getByRole("columnheader", { name: header }),
     ).toBeVisible();
   }
-  expect(
-    screen.getByRole("list", { name: "Ordinary users mobile cards" }),
-  ).toBeInTheDocument();
-  const rows = screen.getAllByRole("row");
+  const rows = within(table).getAllByRole("row");
+  expect(rows).toHaveLength(3);
+  for (const row of rows.slice(1)) {
+    expect(within(row).getAllByRole("cell")).toHaveLength(7);
+    for (const label of ["Name", "Email", "Quota override", "Access"]) {
+      expect(within(row).getByText(label, { exact: true })).toHaveAttribute(
+        "aria-hidden",
+        "true",
+      );
+    }
+  }
   expect(within(rows[1]!).getByText("Ordinary One")).toBeVisible();
   expect(within(rows[1]!).getByText("Active")).toBeVisible();
   expect(within(rows[2]!).getByText("Disabled")).toBeVisible();
@@ -112,6 +119,7 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
     }),
     undefined,
   );
+  expect(usersPageMocks.UserStatusForm).toHaveBeenCalledTimes(2);
   expect(within(rows[1]!).getByText("3 requests / 400 tokens")).toBeVisible();
   expect(usersPageMocks.UserQuotaForm).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -123,6 +131,7 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
     }),
     undefined,
   );
+  expect(usersPageMocks.UserQuotaForm).toHaveBeenCalledTimes(2);
   expect(
     screen.queryByText(/conversation|transcript|message content/i),
   ).not.toBeInTheDocument();

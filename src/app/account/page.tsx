@@ -11,6 +11,7 @@ import { listMemoryRelationships } from "@/server/memory/memory-queries";
 import { MemoryRelationshipOverview } from "@/components/memory/memory-relationship-overview";
 import { DataExportPanel } from "@/components/account/data-export-panel";
 import { listDataExportsForUser } from "@/server/privacy/data-export-service";
+import { renderApplicationRouteShell } from "@/app/app/route-shell";
 
 export default async function AccountPage() {
   const requestHeaders = await headers();
@@ -28,8 +29,8 @@ export default async function AccountPage() {
     now: new Date(),
   });
 
-  return (
-    <main className="page-shell page-stack account-page">
+  return renderApplicationRouteShell(
+    <div className="page-stack account-page">
       <PageHeader
         className="account-page__header"
         description="Review profile details, privacy controls, export history, and support links for this account."
@@ -108,6 +109,7 @@ export default async function AccountPage() {
           </AccountSection>
         </div>
       </div>
-    </main>
+    </div>,
+    config.branding,
   );
 }

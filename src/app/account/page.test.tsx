@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { requireSession } from "@/server/auth/require-session";
 import { getPublicConfig } from "@/server/config/public-config";
@@ -108,6 +108,19 @@ test("shows grouped account, privacy, export, deletion, and legal surfaces witho
   const element = await AccountPage();
   render(element);
 
+  expect(screen.getAllByRole("main")).toHaveLength(1);
+  const navigation = screen.getByRole("navigation", {
+    name: "Application navigation",
+  });
+  expect(
+    within(navigation).getByRole("link", { name: "Conversations" }),
+  ).toHaveAttribute("href", "/app");
+  expect(
+    within(navigation).getByRole("link", { name: "Memories" }),
+  ).toHaveAttribute("href", "/app/memories");
+  expect(
+    screen.getByRole("button", { name: "Open navigation" }),
+  ).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { level: 1, name: "Account" }),
   ).toBeVisible();

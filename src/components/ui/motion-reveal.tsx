@@ -1,8 +1,9 @@
 "use client";
 
-import { motion, useReducedMotion } from "motion/react";
-import { type ReactNode } from "react";
+import { motion, useAnimationControls, useReducedMotion } from "motion/react";
+import { type ReactNode, useEffect } from "react";
 import { motionPresets, reducedMotionPresets } from "./motion-presets";
+import { cx } from "./cx";
 
 export interface MotionRevealProps {
   preset: "riseIn" | "staggerChildren" | "messageEnter" | "statusTransition";
@@ -28,12 +29,22 @@ export function MotionReveal({
     preset
   ];
   const Component = motionElements[as];
+  const controls = useAnimationControls();
+
+  useEffect(() => {
+    if (shouldReduceMotion) {
+      controls.set("visible");
+      return;
+    }
+    controls.set("hidden");
+    void controls.start("visible");
+  }, [controls, preset, shouldReduceMotion]);
 
   return (
     <Component
-      animate="visible"
-      className={className}
-      initial="hidden"
+      animate={controls}
+      className={cx("ui-motion-reveal", className)}
+      initial={false}
       variants={variants}
     >
       {children}

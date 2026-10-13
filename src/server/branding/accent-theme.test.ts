@@ -7,10 +7,55 @@ import {
 
 const LIGHT_SURFACE = "#F8FAFC";
 const DARK_SURFACE = "#0F172A";
-const LIGHT_TEXT_SURFACES = ["#FFFFFF", LIGHT_SURFACE, "#F1F5F9"];
-const DARK_TEXT_SURFACES = [DARK_SURFACE, "#111C2E", "#162338"];
+const LIGHT_TEXT_SURFACES = [
+  "#FFFFFF",
+  "#F8FAFC",
+  "#EFF4FA",
+  "#FDFEFF",
+  "#E8F0FE",
+  "#F1F5F9",
+];
+const DARK_TEXT_SURFACES = [
+  "#0B1220",
+  "#111B2E",
+  "#142033",
+  "#1A2940",
+  "#203C5E",
+  DARK_SURFACE,
+];
 
 describe("createBrandThemeVariables", () => {
+  test.each([
+    "#FFFFFF",
+    "#000000",
+    "#F59E0B",
+    "#1757D5",
+    "#7F8C8D",
+    "#777777",
+    "#00FF00",
+    "#FF00FF",
+  ])(
+    "keeps the same button foreground readable in every interaction state for %s",
+    (accent) => {
+      const theme = createBrandThemeVariables(accent);
+      for (const state of [
+        "--color-accent",
+        "--color-accent-hover",
+        "--color-accent-active",
+      ] as const) {
+        expect(
+          contrastRatio(theme["--color-accent-contrast"], theme[state]),
+          state,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const surface of [...LIGHT_TEXT_SURFACES, ...DARK_TEXT_SURFACES]) {
+        expect(
+          contrastRatio(theme["--color-focus"], surface),
+          `focus on ${surface}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+    },
+  );
   test.each(["#FFFFFF", "#000000", "#F59E0B", "#1757D5", "#7F8C8D"])(
     "derives readable accent variables from %s",
     (accent) => {

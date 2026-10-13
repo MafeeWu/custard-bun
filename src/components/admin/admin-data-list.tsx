@@ -36,11 +36,6 @@ export function AdminDataList<Row>({
     );
   }
 
-  const mobileColumns = [...columns].sort((left, right) => {
-    const weights = { primary: 0, secondary: 1, detail: 2 };
-    return weights[left.priority] - weights[right.priority];
-  });
-
   return (
     <div className={cx("admin-data-list", className)}>
       <div className="admin-data-list__table-wrap">
@@ -63,6 +58,12 @@ export function AdminDataList<Row>({
                     data-priority={column.priority}
                     key={column.key}
                   >
+                    <span
+                      aria-hidden="true"
+                      className="admin-data-list__cell-label"
+                    >
+                      {column.header}
+                    </span>
                     {column.cell(row)}
                   </td>
                 ))}
@@ -71,27 +72,6 @@ export function AdminDataList<Row>({
           </tbody>
         </table>
       </div>
-      <ul
-        aria-label={`${ariaLabel} mobile cards`}
-        className="admin-data-list__cards"
-      >
-        {rows.map((row) => (
-          <li className="admin-data-list__card" key={getRowKey(row)}>
-            <dl className="admin-data-list__definition">
-              {mobileColumns.map((column) => (
-                <div
-                  className="admin-data-list__definition-row"
-                  data-priority={column.priority}
-                  key={column.key}
-                >
-                  <dt>{column.header}</dt>
-                  <dd>{column.cell(row)}</dd>
-                </div>
-              ))}
-            </dl>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

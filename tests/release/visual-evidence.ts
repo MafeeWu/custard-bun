@@ -1,5 +1,16 @@
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { basename, resolve } from "node:path";
+import { createWorker, OEM, type Worker } from "tesseract.js";
+
+const require = createRequire(resolve("package.json"));
+const english = require("@tesseract.js-data/eng") as {
+  langPath: string;
+  gzip: boolean;
+};
+const recognizedImages = new Map<string, string>();
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 export const visualFixtureValues = {
   providerKey: "task12_visual_provider_key_19b4df2d9a4d4ff0",
@@ -16,9 +27,26 @@ export const visualPrivacySentinels = Object.freeze(
   Object.values(visualFixtureValues),
 ) as readonly string[];
 
+function normalizedText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/[il]/g, "1")
+    .replace(/o/g, "0");
+}
+
+function containsRasterSentinel(text: string, sentinels: readonly string[]) {
+  const normalized = normalizedText(text);
+  return sentinels.some((sentinel) => {
+    const stem = sentinel.replace(/[_-][a-f0-9]{8,}$/i, "");
+    return normalized.includes(normalizedText(stem));
+  });
+}
+
 export async function assertVisualEvidenceFilesArePrivate(
   files: readonly string[],
   surface = "visual evidence",
+  sentinels: readonly string[] = visualPrivacySentinels,
 ): Promise<void> {
   const evidence = {
     light: files.some((file) => basename(file).includes("desktop-light")),
@@ -31,14 +59,33 @@ export async function assertVisualEvidenceFilesArePrivate(
     if (!present) throw new Error(`Missing visual privacy evidence: ${kind}`);
   }
 
-  for (const file of files) {
-    const bytes = await readFile(file);
-    if (
-      visualPrivacySentinels.some((sentinel) =>
-        bytes.includes(Buffer.from(sentinel)),
-      )
-    ) {
-      throw new Error(`Visual privacy sentinel found in ${surface}: ${file}`);
+  let worker: Worker | undefined;
+  try {
+    for (const file of files) {
+      const bytes = await readFile(file);
+      if (sentinels.some((sentinel) => bytes.includes(Buffer.from(sentinel)))) {
+        throw new Error(`Visual privacy sentinel found in ${surface}: ${file}`);
+      }
+      if (!file.toLowerCase().endsWith(".png")) continue;
+      if (!bytes.subarray(0, pngSignature.length).equals(pngSignature)) {
+        throw new Error(`Invalid PNG visual evidence in ${surface}: ${file}`);
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      let text = recognizedImages.get(digest);
+      if (text === undefined) {
+        worker ??= await createWorker("eng", OEM.LSTM_ONLY, {
+          langPath: english.langPath,
+          gzip: english.gzip,
+          cacheMethod: "none",
+        });
+        text = (await worker.recognize(bytes)).data.text;
+        recognizedImages.set(digest, text);
+      }
+      if (containsRasterSentinel(text, sentinels)) {
+        throw new Error(`Visual privacy sentinel found in ${surface}: ${file}`);
+      }
     }
+  } finally {
+    await worker?.terminate();
   }
 }

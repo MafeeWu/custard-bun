@@ -77,6 +77,9 @@ single Phosphor icon family is bundled with the application. The production UI
 does not fetch remote fonts or image assets. Motion follows
 `prefers-reduced-motion`; reduced-motion users receive non-spatial transitions,
 and essential dialog and drawer focus behavior remains available.
+Public headings, calls to action, and character content remain visible without
+JavaScript; entrance animation is applied only after hydration. Reduced-motion
+CSS removes spatial entry and hover effects before hydration as well.
 
 `POSTGRES_PASSWORD` may contain URI delimiters such as `/`, `?`, `#`, `@`,
 literal `%2F`, `$`, and spaces. Use **single quotes** in `.env`, for example
@@ -687,7 +690,11 @@ The visual gate compares desktop light, desktop dark, mobile reduced-motion,
 surfaces. The accessibility gate runs Axe with contrast enabled and disabled in
 separate passes and verifies keyboard navigation, Escape handling, and focus
 restoration. Committed baselines and runtime evidence use synthetic fixtures
-and are scanned recursively for privacy sentinels. Treat all screenshot and
+and are scanned recursively for privacy sentinels, including input and other
+capture values before screenshots and rasterized text afterward. The pinned
+Tesseract worker and English recognition data run locally without network
+downloads. Privacy finalization also runs when screenshot assertions fail;
+malformed PNGs and missing evidence categories fail closed. Treat all screenshot and
 browser evidence as private test artifacts; do not publish or attach it outside
 the controlled review process.
 

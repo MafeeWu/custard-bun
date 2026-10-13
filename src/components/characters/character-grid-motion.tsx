@@ -1,7 +1,7 @@
 "use client";
 
-import { Children, type ReactNode } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { Children, type ReactNode, useEffect } from "react";
+import { motion, useAnimationControls, useReducedMotion } from "motion/react";
 import { cx } from "@/components/ui/cx";
 import {
   motionPresets,
@@ -19,6 +19,16 @@ export function CharacterGridMotion({
 }: CharacterGridMotionProps) {
   const items = Children.toArray(children);
   const shouldReduceMotion = useReducedMotion();
+  const controls = useAnimationControls();
+
+  useEffect(() => {
+    if (shouldReduceMotion) {
+      controls.set("visible");
+      return;
+    }
+    controls.set("hidden");
+    void controls.start("visible");
+  }, [controls, shouldReduceMotion]);
 
   if (process.env.NODE_ENV === "test") {
     return (
@@ -48,13 +58,13 @@ export function CharacterGridMotion({
 
   return (
     <motion.ul
-      animate="visible"
+      animate={controls}
       aria-label="Official characters"
       className={cx(
         "character-grid",
         featuredLayout && "character-grid--featured",
       )}
-      initial="hidden"
+      initial={false}
       variants={presets.staggerChildren}
     >
       {items.map((child, index) => (

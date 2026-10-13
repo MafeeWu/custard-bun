@@ -5,6 +5,7 @@ import {
   type RefObject,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -114,6 +115,11 @@ export function DialogFrame({
   const titleId = useId();
   const descriptionId = useId();
   const reducedMotion = useReducedMotionPreference();
+  const latestProps = useRef({ initialFocusRef, onOpenChange });
+
+  useLayoutEffect(() => {
+    latestProps.current = { initialFocusRef, onOpenChange };
+  }, [initialFocusRef, onOpenChange]);
 
   useEffect(() => {
     if (!open) {
@@ -146,9 +152,33 @@ export function DialogFrame({
       }
     }
 
-    focusFirstElement(dialog, initialFocusRef);
+    focusFirstElement(dialog, latestProps.current.initialFocusRef);
 
-    const requestClose = () => onOpenChange(false);
+    const requestClose = () => latestProps.current.onOpenChange(false);
+
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      dialog.style.setProperty(
+        "--overlay-viewport-height",
+        `${viewport?.height ?? window.innerHeight}px`,
+      );
+      dialog.style.setProperty(
+        "--overlay-viewport-width",
+        `${viewport?.width ?? window.innerWidth}px`,
+      );
+      dialog.style.setProperty(
+        "--overlay-viewport-top",
+        `${viewport?.offsetTop ?? 0}px`,
+      );
+      dialog.style.setProperty(
+        "--overlay-viewport-left",
+        `${viewport?.offsetLeft ?? 0}px`,
+      );
+    };
+    updateViewport();
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    window.addEventListener("resize", updateViewport);
 
     const handleCancel = (event: Event) => {
       event.preventDefault();
@@ -181,6 +211,9 @@ export function DialogFrame({
       dialog.removeEventListener("cancel", handleCancel);
       dialog.removeEventListener("keydown", handleKeyDown);
       dialog.removeEventListener("click", handleClick);
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("resize", updateViewport);
 
       if (dialog.open) {
         if (typeof dialog.close === "function") {
@@ -198,7 +231,7 @@ export function DialogFrame({
         previouslyFocusedRef.current.focus();
       }
     };
-  }, [initialFocusRef, onOpenChange, open]);
+  }, [open]);
 
   if (!open) {
     return null;
@@ -209,7 +242,10 @@ export function DialogFrame({
       aria-describedby={description ? descriptionId : undefined}
       aria-labelledby={titleId}
       aria-modal="true"
-      className={cx("ui-overlay", variant === "drawer" ? "ui-drawer" : "ui-dialog")}
+      className={cx(
+        "ui-overlay",
+        variant === "drawer" ? "ui-drawer" : "ui-dialog",
+      )}
       data-motion={reducedMotion ? "reduced" : "standard"}
       data-side={variant === "drawer" ? side : undefined}
       ref={dialogRef}

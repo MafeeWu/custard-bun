@@ -24,6 +24,7 @@ export default defineConfig({
   testMatch: ["visual-redesign.spec.ts", "accessibility.spec.ts"],
   testIgnore: [],
   outputDir: "test-results/ui-evidence",
+  globalTeardown: "./tests/e2e/support/visual-privacy-teardown.ts",
   snapshotPathTemplate:
     "{snapshotDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
   use: {

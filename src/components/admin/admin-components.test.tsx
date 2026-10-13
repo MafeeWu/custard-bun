@@ -1,4 +1,5 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { expect, test } from "vitest";
 import { AdminDataList } from "./admin-data-list";
 import { AdminPageHeader } from "./admin-page-header";
@@ -43,7 +44,7 @@ test("admin page foundations render compact headers and sections", () => {
   );
 });
 
-test("admin data list renders table columns and mobile definition labels", () => {
+test("admin data list renders a single table with responsive cell labels", () => {
   render(
     <AdminDataList
       ariaLabel="Official characters"
@@ -92,12 +93,61 @@ test("admin data list renders table columns and mobile definition labels", () =>
     ),
   ).toBeVisible();
 
-  const mobileCards = screen.getByRole("list", {
-    name: "Official characters mobile cards",
-  });
-  expect(within(mobileCards).getByText("Name")).toBeVisible();
-  expect(within(mobileCards).getByText("Status")).toBeVisible();
-  expect(within(mobileCards).getByText("active")).toBeVisible();
+  expect(within(table).getByText("active").closest("td")).toHaveAttribute(
+    "data-label",
+    "Status",
+  );
+  expect(screen.getAllByText("active")).toHaveLength(1);
+});
+
+test("responsive cells create one stateful form, preserving draft and pending feedback on rerender", () => {
+  function EditCell() {
+    const [draft, setDraft] = useState("12");
+    const [pending, setPending] = useState(false);
+    return (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setPending(true);
+        }}
+      >
+        <label>
+          Quota
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </label>
+        <button disabled={pending}>{pending ? "Saving" : "Save"}</button>
+        {pending && <p role="status">Saving quota {draft}</p>}
+      </form>
+    );
+  }
+  const list = () => (
+    <AdminDataList
+      ariaLabel="Quotas"
+      rows={[{ id: "one" }]}
+      getRowKey={(row) => row.id}
+      columns={[
+        {
+          key: "edit",
+          header: "Quota",
+          priority: "primary",
+          cell: () => <EditCell />,
+        },
+      ]}
+    />
+  );
+  const { rerender } = render(list());
+  expect(screen.getAllByRole("textbox", { name: "Quota" })).toHaveLength(1);
+  const input = screen.getByRole("textbox", { name: "Quota" });
+  fireEvent.change(input, { target: { value: "37" } });
+  fireEvent.submit(input.closest("form")!);
+  rerender(list());
+  expect(screen.getByRole("textbox", { name: "Quota" })).toBe(input);
+  expect(input).toHaveValue("37");
+  expect(screen.getByRole("button", { name: "Saving" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Saving quota 37");
 });
 
 test("admin data list renders an empty state without table scaffolding", () => {

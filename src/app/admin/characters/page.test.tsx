@@ -104,9 +104,10 @@ test("renders character administration list state badges and links", async () =>
   expect(
     screen.getByRole("link", { name: "Create character" }),
   ).toHaveAttribute("href", "/admin/characters/new");
-  expect(
-    screen.getAllByRole("link", { name: "Calm Guide" })[0],
-  ).toHaveAttribute("href", "/admin/characters/char-1");
+  expect(screen.getByRole("link", { name: "Calm Guide" })).toHaveAttribute(
+    "href",
+    "/admin/characters/char-1",
+  );
   const table = screen.getByRole("table", { name: "Official characters" });
   expect(
     within(table).getByRole("columnheader", { name: "Character" }),
@@ -120,13 +121,21 @@ test("renders character administration list state badges and links", async () =>
   expect(
     within(table).getByRole("columnheader", { name: "Versions" }),
   ).toBeVisible();
+  const rows = within(table).getAllByRole("row");
+  expect(rows).toHaveLength(3);
+  for (const row of rows.slice(1)) {
+    expect(within(row).getAllByRole("cell")).toHaveLength(4);
+    for (const label of ["Character", "Slug", "Lifecycle", "Versions"]) {
+      expect(within(row).getByText(label, { exact: true })).toHaveAttribute(
+        "aria-hidden",
+        "true",
+      );
+    }
+  }
+  expect(screen.getByText("active", { exact: true })).toBeVisible();
+  expect(screen.getByText("archived", { exact: true })).toBeVisible();
   expect(
-    screen.getByRole("list", { name: "Official characters mobile cards" }),
-  ).toBeInTheDocument();
-  expect(screen.getAllByText("active")[0]).toBeVisible();
-  expect(screen.getAllByText("archived")[0]).toBeVisible();
-  expect(
-    screen.getAllByText("Draft r3 · base v2 · default v1 · latest v2")[0],
+    screen.getByText("Draft r3 · base v2 · default v1 · latest v2"),
   ).toBeVisible();
 });
 

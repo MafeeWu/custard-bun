@@ -17,15 +17,10 @@ export type BrandThemeVariables = Record<BrandThemeVariable, string>;
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const LIGHT_TEXT = "#FFFFFF";
 const DARK_TEXT = "#0B1220";
-const LIGHT_FOCUS_SURFACE = "#F8FAFC";
-const DARK_FOCUS_SURFACE = "#0F172A";
-const LIGHT_TEXT_SURFACE = "#F1F5F9";
-const DARK_TEXT_SURFACE = "#162338";
+const LIGHT_TEXT_SURFACE = "#E8F0FE";
+const DARK_TEXT_SURFACE = "#203C5E";
 const MINIMUM_FOCUS_CONTRAST = 3;
 const MINIMUM_TEXT_CONTRAST = 4.5;
-const FOCUS_MIX_STEPS = [
-  0, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32, 0.36, 0.44, 0.52, 0.6, 0.68, 0.76,
-] as const;
 
 export function createBrandThemeVariables(
   primaryColor: string,
@@ -36,23 +31,16 @@ export function createBrandThemeVariables(
 
   const accent = primaryColor.toUpperCase();
   const accentSoft = mixHex(accent, LIGHT_TEXT, 0.86);
+  const foreground = deriveReadableTextColor(accent);
 
   return {
     "--color-accent": accent,
-    "--color-accent-hover": mixHex(
-      accent,
-      deriveReadableTextColor(accent),
-      0.12,
-    ),
-    "--color-accent-active": mixHex(
-      accent,
-      deriveReadableTextColor(accent),
-      0.2,
-    ),
+    "--color-accent-hover": deriveInteractionColor(accent, foreground, 0.12),
+    "--color-accent-active": deriveInteractionColor(accent, foreground, 0.2),
     "--color-accent-soft": accentSoft,
     "--color-accent-soft-contrast": deriveReadableTextColor(accentSoft),
     "--color-accent-border": mixHex(accent, LIGHT_TEXT, 0.62),
-    "--color-accent-contrast": deriveReadableTextColor(accent),
+    "--color-accent-contrast": foreground,
     "--color-accent-text-light": deriveSurfaceTextColor(
       accent,
       LIGHT_TEXT_SURFACE,
@@ -79,16 +67,17 @@ export function contrastRatio(foreground: string, background: string): number {
 function deriveFocusColor(accent: string): string {
   const candidates = Array.from(
     new Set(
-      FOCUS_MIX_STEPS.flatMap((amount) => [
+      Array.from({ length: 256 }, (_, step) => step / 255).flatMap((amount) => [
         mixHex(accent, DARK_TEXT, amount),
         mixHex(accent, LIGHT_TEXT, amount),
+        mixHex("#000000", LIGHT_TEXT, amount),
       ]),
     ),
   );
 
   const scored = candidates.map((color) => {
-    const lightContrast = contrastRatio(color, LIGHT_FOCUS_SURFACE);
-    const darkContrast = contrastRatio(color, DARK_FOCUS_SURFACE);
+    const lightContrast = contrastRatio(color, LIGHT_TEXT_SURFACE);
+    const darkContrast = contrastRatio(color, DARK_TEXT_SURFACE);
 
     return {
       color,
@@ -115,18 +104,35 @@ function deriveFocusColor(accent: string): string {
     return visibleCandidate.color;
   }
 
-  return scored.sort(
-    (left, right) =>
-      right.minimumContrast - left.minimumContrast ||
-      left.distance - right.distance,
-  )[0]!.color;
+  throw new Error("No readable focus color for the semantic surfaces");
 }
 
 function deriveReadableTextColor(background: string): string {
-  return contrastRatio(DARK_TEXT, background) >=
+  const preferred =
+    contrastRatio(DARK_TEXT, background) >=
     contrastRatio(LIGHT_TEXT, background)
-    ? DARK_TEXT
-    : LIGHT_TEXT;
+      ? DARK_TEXT
+      : LIGHT_TEXT;
+  return contrastRatio(preferred, background) >= MINIMUM_TEXT_CONTRAST
+    ? preferred
+    : "#000000";
+}
+
+function deriveInteractionColor(
+  accent: string,
+  foreground: string,
+  amount: number,
+): string {
+  for (
+    let percentage = Math.round(amount * 100);
+    percentage >= 0;
+    percentage--
+  ) {
+    const candidate = mixHex(accent, foreground, percentage / 100);
+    if (contrastRatio(foreground, candidate) >= MINIMUM_TEXT_CONTRAST)
+      return candidate;
+  }
+  return accent;
 }
 
 function deriveSurfaceTextColor(
