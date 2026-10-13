@@ -3,7 +3,6 @@ import { BrandMark } from "@/components/brand/brand-mark";
 import { CharacterCard } from "@/components/characters/character-card";
 import { CharacterGridMotion } from "@/components/characters/character-grid-motion";
 import { PublicShell } from "@/components/layout/public-shell";
-import { LinkButton } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { listPublicCharacters } from "@/server/characters/character-queries";
@@ -26,11 +25,6 @@ export default async function CharactersCatalogPage() {
 
   return (
     <PublicShell
-      actions={
-        <LinkButton href="/auth/sign-in" size="sm" tone="quiet">
-          Sign in
-        </LinkButton>
-      }
       brand={<BrandMark branding={config.branding} />}
       navigationItems={[...navigationItems]}
       navigationLabel="Primary"

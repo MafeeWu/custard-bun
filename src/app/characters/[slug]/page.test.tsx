@@ -97,7 +97,7 @@ const character = {
   openingMessage: "What feels most important right now?",
 };
 
-test("is force-dynamic and gives anonymous visitors a safe sign-in return link", async () => {
+test("is force-dynamic and keeps anonymous sign-in actions on the same encoded return path", async () => {
   vi.mocked(getPublicConfig).mockResolvedValue(createPublicConfig());
   vi.mocked(getDatabase).mockResolvedValue({} as never);
   vi.mocked(getPublicCharacterBySlug).mockResolvedValue(character);
@@ -111,12 +111,15 @@ test("is force-dynamic and gives anonymous visitors a safe sign-in return link",
   expect(
     screen.getByRole("heading", { level: 1, name: "Calm Companion" }),
   ).toBeVisible();
+  const expectedHref = "/auth/sign-in?returnTo=%2Fcharacters%2Fcalm-companion";
+
+  expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    "href",
+    expectedHref,
+  );
   expect(
     screen.getByRole("link", { name: "Sign in to start a conversation" }),
-  ).toHaveAttribute(
-    "href",
-    "/auth/sign-in?returnTo=%2Fcharacters%2Fcalm-companion",
-  );
+  ).toHaveAttribute("href", expectedHref);
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 });
 

@@ -3,7 +3,6 @@ import { BrandMark } from "@/components/brand/brand-mark";
 import { HomeHero } from "@/components/home/home-hero";
 import { HomeSections } from "@/components/home/home-sections";
 import { PublicShell } from "@/components/layout/public-shell";
-import { LinkButton } from "@/components/ui/button";
 import { listPublicCharacters } from "@/server/characters/character-queries";
 import { getPublicConfig } from "@/server/config/public-config";
 import { getDatabase } from "@/server/db/database";
@@ -23,11 +22,6 @@ export default async function HomePage() {
 
   return (
     <PublicShell
-      actions={
-        <LinkButton href="/auth/sign-in" size="sm" tone="quiet">
-          Sign in
-        </LinkButton>
-      }
       brand={<BrandMark branding={config.branding} />}
       navigationItems={[...navigationItems]}
       navigationLabel="Primary"

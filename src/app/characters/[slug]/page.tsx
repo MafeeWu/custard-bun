@@ -50,6 +50,7 @@ export default async function CharacterDetailPage({
       )
     : undefined;
   const returnTo = `/characters/${character.slug}`;
+  const signInHref = `/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
   const primaryAction = signedIn ? (
     <StartConversationForm
       action={startConversationAction.bind(null, character.id, character.slug)}
@@ -60,7 +61,7 @@ export default async function CharacterDetailPage({
   ) : (
     <LinkButton
       className="character-profile__primary-action"
-      href={`/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`}
+      href={signInHref}
       size="lg"
     >
       Sign in to start a conversation
@@ -74,15 +75,12 @@ export default async function CharacterDetailPage({
           <LinkButton href="/app" size="sm" tone="quiet">
             Conversations
           </LinkButton>
-        ) : (
-          <LinkButton href="/auth/sign-in" size="sm" tone="quiet">
-            Sign in
-          </LinkButton>
-        )
+        ) : undefined
       }
       brand={<BrandMark branding={config.branding} />}
       navigationItems={[...navigationItems]}
       navigationLabel="Primary"
+      signInHref={signedIn ? undefined : signInHref}
     >
       <div className="character-detail-page">
         <CharacterProfile action={primaryAction} character={character} />

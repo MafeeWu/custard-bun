@@ -62,6 +62,24 @@ test("public shell exposes named primary navigation, a mobile nav trigger, and o
   );
 });
 
+test("public shell defaults the header sign-in action to the base sign-in route", () => {
+  render(
+    <PublicShell
+      brand={<span>Custard Bun</span>}
+      navigationItems={[
+        { href: "/characters", icon: Chats, label: "Characters" },
+      ]}
+    >
+      <p>Public content</p>
+    </PublicShell>,
+  );
+
+  expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    "href",
+    "/auth/sign-in",
+  );
+});
+
 test("auth shell keeps the form landmark before decorative content in DOM order", () => {
   render(
     <AuthShell
