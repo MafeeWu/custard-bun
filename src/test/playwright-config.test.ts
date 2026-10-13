@@ -226,13 +226,21 @@ test("lets the deterministic provider bind the visual harness port", async () =>
   expect(source).toContain('process.env.E2E_FAKE_MODEL_PORT ?? "3102"');
 });
 
-test("the visual gate exercises real 200% layout and text scaling", async () => {
+test("the visual gate models 200% browser zoom on the same physical desktop", async () => {
   const source = await readFile("tests/e2e/visual-redesign.spec.ts", "utf8");
 
-  expect(source).toContain("reflows layout and text at 200% zoom");
-  expect(source).toContain('root.style.fontSize = "200%"');
-  expect(source).toContain("scaledFontSize");
-  expect(source).toContain("effectiveViewportWidth");
+  expect(source).toContain(
+    "reflows the same physical desktop viewport at 200% browser zoom",
+  );
+  expect(source).toContain("deviceScaleFactor: 2");
+  expect(source).toContain("viewport: { width: 640, height: 450 }");
+  expect(source).toContain(
+    "await baselinePage.setViewportSize({ width: 1280, height: 900 })",
+  );
+  expect(source).toContain(
+    "expect(zoomed.physicalWidth).toBe(baseline.physicalWidth)",
+  );
+  expect(source).toContain("expect(zoomed.visualScale).toBe(1)");
   expect(source).toContain("expectLatestMessageAboveComposer(page)");
   expect(source).toContain("expectDialogInsideViewport(page)");
 });

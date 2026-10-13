@@ -53,3 +53,17 @@ test("production gate extends real Compose and starts both app and worker behind
     script.indexOf("await cp(visualSnapshotSource"),
   );
 });
+
+test("production job commands receive complete SMTP runtime configuration without ambient environment", async () => {
+  const script = await readFile("tests/release/compose-gate.ts", "utf8");
+
+  for (const entry of [
+    'SMTP_HOST: "127.0.0.1"',
+    'SMTP_PORT: "1025"',
+    'SMTP_SECURE: "false"',
+    'SMTP_USER: "test"',
+    'SMTP_PASSWORD: "test"',
+    'SMTP_FROM: "Release Gate <noreply@example.com>"',
+  ])
+    expect(script).toContain(entry);
+});

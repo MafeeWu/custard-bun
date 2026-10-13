@@ -24,6 +24,12 @@ const env = {
   MODEL_API_KEY: privacySentinels.providerKey,
   MODEL_API_BASE_URL: `http://fake-model:3102/${privacySentinels.providerEndpoint}/v1`,
   MODEL_ID: "e2e-chat-model",
+  SMTP_HOST: "127.0.0.1",
+  SMTP_PORT: "1025",
+  SMTP_SECURE: "false",
+  SMTP_USER: "test",
+  SMTP_PASSWORD: "test",
+  SMTP_FROM: "Release Gate <noreply@example.com>",
   APP_PORT: "3300",
   RELEASE_IMAGE: image,
 };
