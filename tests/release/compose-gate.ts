@@ -8,8 +8,12 @@ import {
   migrationHashes,
   verifyPhase3Upgrade,
 } from "./database-gate";
-import { filesRecursively, privacySentinels } from "./privacy-scan";
+import { filesRecursively } from "./privacy-scan";
 import { assertVisualEvidenceFilesArePrivate } from "./visual-evidence";
+import {
+  buildProductionJobEnvironment,
+  buildReleaseEnvironment,
+} from "./environment";
 
 const root = ".superpowers/release-compose";
 const project = `task12-release-${process.pid}`;
@@ -18,21 +22,7 @@ const initialImages = new Set<string>();
 const buildImages = new Set<string>();
 let failedBuildContainer: string | undefined;
 let buildOutput = "";
-const env = {
-  ...process.env,
-  POSTGRES_PASSWORD: "release-test-password",
-  MODEL_API_KEY: privacySentinels.providerKey,
-  MODEL_API_BASE_URL: `http://fake-model:3102/${privacySentinels.providerEndpoint}/v1`,
-  MODEL_ID: "e2e-chat-model",
-  SMTP_HOST: "127.0.0.1",
-  SMTP_PORT: "1025",
-  SMTP_SECURE: "false",
-  SMTP_USER: "test",
-  SMTP_PASSWORD: "test",
-  SMTP_FROM: "Release Gate <noreply@example.com>",
-  APP_PORT: "3300",
-  RELEASE_IMAGE: image,
-};
+const env = buildReleaseEnvironment(image);
 
 function compose(args: string[], capture = false) {
   const result = spawnSync(
@@ -89,13 +79,7 @@ function job(operation: string, databaseUrl: string) {
       operation,
     ],
     {
-      env: {
-        ...env,
-        DATABASE_URL: databaseUrl,
-        TEST_DATABASE_URL: databaseUrl,
-        BETTER_AUTH_SECRET: "release-test-secret-at-least-32-characters",
-        BETTER_AUTH_URL: "http://localhost:3300",
-      },
+      env: buildProductionJobEnvironment(databaseUrl, env),
       encoding: "utf8",
     },
   );

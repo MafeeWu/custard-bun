@@ -2,6 +2,10 @@ import { expect, test, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { privacySentinels } from "../../tests/release/privacy-scan";
 import { visualFixtureValues } from "../../tests/release/visual-evidence";
+import {
+  assertBrowserZoomGeometry,
+  createBrowserZoomGeometry,
+} from "../../tests/e2e/support/browser-zoom";
 
 async function loadPlaywrightConfig(
   ciValue: string | undefined,
@@ -226,21 +230,93 @@ test("lets the deterministic provider bind the visual harness port", async () =>
   expect(source).toContain('process.env.E2E_FAKE_MODEL_PORT ?? "3102"');
 });
 
-test("the visual gate models 200% browser zoom on the same physical desktop", async () => {
-  const source = await readFile("tests/e2e/visual-redesign.spec.ts", "utf8");
+const desktopMetrics = {
+  devicePixelRatio: 1,
+  layoutHeight: 900,
+  layoutWidth: 1280,
+  physicalHeight: 900,
+  physicalWidth: 1280,
+  visualHeight: 900,
+  visualScale: 1,
+  visualWidth: 1280,
+};
+const zoomMetrics = {
+  devicePixelRatio: 2,
+  layoutHeight: 450,
+  layoutWidth: 640,
+  physicalHeight: 900,
+  physicalWidth: 1280,
+  visualHeight: 450,
+  visualScale: 1,
+  visualWidth: 640,
+};
 
-  expect(source).toContain(
-    "reflows the same physical desktop viewport at 200% browser zoom",
-  );
-  expect(source).toContain("deviceScaleFactor: 2");
-  expect(source).toContain("viewport: { width: 640, height: 450 }");
-  expect(source).toContain(
-    "await baselinePage.setViewportSize({ width: 1280, height: 900 })",
-  );
-  expect(source).toContain(
-    "expect(zoomed.physicalWidth).toBe(baseline.physicalWidth)",
-  );
-  expect(source).toContain("expect(zoomed.visualScale).toBe(1)");
-  expect(source).toContain("expectLatestMessageAboveComposer(page)");
-  expect(source).toContain("expectDialogInsideViewport(page)");
+test.each([
+  [{ width: 1280, height: 900 }, 2, { width: 640, height: 450 }],
+  [{ width: 1200, height: 900 }, 1.5, { width: 800, height: 600 }],
+])(
+  "calculates CSS geometry at fixed physical size %j and zoom %s",
+  (physical, factor, viewport) => {
+    expect(createBrowserZoomGeometry(physical, factor)).toEqual({
+      baseline: { viewport: physical, deviceScaleFactor: 1 },
+      zoomed: { viewport, deviceScaleFactor: factor },
+    });
+  },
+);
+
+test("accepts measured 200% desktop zoom with the same physical viewport", () => {
+  const geometry = createBrowserZoomGeometry({ width: 1280, height: 900 }, 2);
+  expect(() =>
+    assertBrowserZoomGeometry(geometry, desktopMetrics, zoomMetrics),
+  ).not.toThrow();
+});
+
+test.each([
+  [
+    "root-font-only scaling",
+    { devicePixelRatio: 1, physicalWidth: 640, physicalHeight: 450 },
+  ],
+  [
+    "DPR-only scaling",
+    {
+      layoutWidth: 1280,
+      layoutHeight: 900,
+      visualWidth: 1280,
+      visualHeight: 900,
+      physicalWidth: 2560,
+      physicalHeight: 1800,
+    },
+  ],
+  [
+    "width-only reflow",
+    { layoutHeight: 900, visualHeight: 900, physicalHeight: 1800 },
+  ],
+  ["wrong physical width", { physicalWidth: 640 }],
+  ["wrong physical height", { physicalHeight: 450 }],
+  ["wrong visual width", { visualWidth: 1280 }],
+  ["wrong visual height", { visualHeight: 900 }],
+  ["pinch zoom", { visualScale: 2 }],
+  [
+    "missing visual viewport",
+    { visualWidth: undefined, visualHeight: undefined, visualScale: undefined },
+  ],
+])("rejects %s instead of faithful desktop zoom", (_label, overrides) => {
+  const geometry = createBrowserZoomGeometry({ width: 1280, height: 900 }, 2);
+  expect(() =>
+    assertBrowserZoomGeometry(geometry, desktopMetrics, {
+      ...zoomMetrics,
+      ...overrides,
+    }),
+  ).toThrow();
+});
+
+test("rejects an already-scaled baseline instead of normal desktop geometry", () => {
+  const geometry = createBrowserZoomGeometry({ width: 1280, height: 900 }, 2);
+  expect(() =>
+    assertBrowserZoomGeometry(
+      geometry,
+      { ...desktopMetrics, devicePixelRatio: 2 },
+      zoomMetrics,
+    ),
+  ).toThrow();
 });

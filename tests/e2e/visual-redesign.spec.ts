@@ -21,6 +21,10 @@ import {
 } from "./support/visual-fixtures";
 import { assertVisualEvidenceIsPrivate } from "./support/visual-privacy";
 import { startCharacterConversation } from "./support/chat";
+import {
+  assertBrowserZoomGeometry,
+  createBrowserZoomGeometry,
+} from "./support/browser-zoom";
 
 test.describe.configure({ mode: "serial" });
 
@@ -319,39 +323,21 @@ test("reflows the same physical desktop viewport at 200% browser zoom", async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-light");
   const fixture = await resetVisualFixtures(`${testInfo.project.name}-zoom`);
+  const geometry = createBrowserZoomGeometry({ width: 1280, height: 900 }, 2);
   const zoomContext = await browser.newContext({
     baseURL: "http://127.0.0.1:3000",
     colorScheme: "light",
-    deviceScaleFactor: 2,
+    ...geometry.zoomed,
     reducedMotion: "no-preference",
-    viewport: { width: 640, height: 450 },
   });
   const page = await zoomContext.newPage();
   try {
-    await baselinePage.setViewportSize({ width: 1280, height: 900 });
+    await baselinePage.setViewportSize(geometry.baseline.viewport);
     await baselinePage.goto("/characters/visual-long-name");
     const baseline = await readViewportMetrics(baselinePage);
-    expect(baseline).toMatchObject({
-      devicePixelRatio: 1,
-      layoutHeight: 900,
-      layoutWidth: 1280,
-      physicalHeight: 900,
-      physicalWidth: 1280,
-      visualHeight: 900,
-      visualScale: 1,
-      visualWidth: 1280,
-    });
-
     await page.goto("/characters/visual-long-name");
     const zoomed = await readViewportMetrics(page);
-    expect(zoomed.devicePixelRatio).toBe(baseline.devicePixelRatio * 2);
-    expect(zoomed.layoutWidth).toBe(baseline.layoutWidth / 2);
-    expect(zoomed.layoutHeight).toBe(baseline.layoutHeight / 2);
-    expect(zoomed.visualWidth).toBe(baseline.visualWidth! / 2);
-    expect(zoomed.visualHeight).toBe(baseline.visualHeight! / 2);
-    expect(zoomed.physicalWidth).toBe(baseline.physicalWidth);
-    expect(zoomed.physicalHeight).toBe(baseline.physicalHeight);
-    expect(zoomed.visualScale).toBe(1);
+    assertBrowserZoomGeometry(geometry, baseline, zoomed);
     await expectNoHorizontalOverflow(page);
     await expectVisibleBox(
       page.getByRole("button", { name: "Open navigation", exact: true }),
