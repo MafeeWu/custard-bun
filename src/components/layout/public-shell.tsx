@@ -5,11 +5,13 @@ export function PublicShell({
   actions,
   brand,
   children,
+  navigationLabel,
   navigationItems,
 }: {
   actions?: ReactNode;
   brand: ReactNode;
   children: ReactNode;
+  navigationLabel?: string;
   navigationItems: ShellNavigationItem[];
 }) {
   return (
@@ -18,7 +20,7 @@ export function PublicShell({
         actions={actions}
         brand={brand}
         navigationItems={navigationItems}
-        primaryNavigationLabel="Primary navigation"
+        primaryNavigationLabel={navigationLabel ?? "Primary navigation"}
       />
       <main className="shell-main shell-main--public">{children}</main>
     </div>

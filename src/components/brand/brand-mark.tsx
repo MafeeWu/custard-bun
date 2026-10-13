@@ -8,7 +8,13 @@ export function BrandMark({
 }) {
   return (
     <span className="inline-flex items-center gap-3">
-      <Image src={branding.logoPath} alt="" width={40} height={40} priority />
+      <Image
+        src={branding.logoPath}
+        alt={`${branding.name} logo`}
+        width={40}
+        height={40}
+        priority
+      />
       <span>{branding.name}</span>
     </span>
   );

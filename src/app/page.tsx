@@ -1,28 +1,51 @@
-import Link from "next/link";
+import { Chats } from "@phosphor-icons/react";
 import { BrandMark } from "@/components/brand/brand-mark";
+import { HomeHero } from "@/components/home/home-hero";
+import { HomeSections } from "@/components/home/home-sections";
+import { PublicShell } from "@/components/layout/public-shell";
+import { LinkButton } from "@/components/ui/button";
+import { listPublicCharacters } from "@/server/characters/character-queries";
 import { getPublicConfig } from "@/server/config/public-config";
+import { getDatabase } from "@/server/db/database";
 
 export const dynamic = "force-dynamic";
 
-const config = await getPublicConfig();
+const navigationItems = [
+  { href: "/characters", icon: Chats, label: "Characters" },
+] as const;
 
-export default function HomePage() {
+export default async function HomePage() {
+  const [config, database] = await Promise.all([
+    getPublicConfig(),
+    getDatabase(),
+  ]);
+  const characters = (await listPublicCharacters(database)).slice(0, 3);
+
   return (
-    <main className="page-shell">
-      <BrandMark branding={config.branding} />
-      <h1>{config.branding.name}</h1>
-      <p>{config.branding.description}</p>
-      <div className="page-actions">
-        <Link
-          className="brand-primary"
-          href={config.registration.open ? "/auth/sign-up" : "/auth/sign-in"}
-        >
-          Get started
-        </Link>
-        <Link className="brand-link" href="/characters">
-          Browse characters
-        </Link>
+    <PublicShell
+      actions={
+        <LinkButton href="/auth/sign-in" size="sm" tone="quiet">
+          Sign in
+        </LinkButton>
+      }
+      brand={<BrandMark branding={config.branding} />}
+      navigationItems={[...navigationItems]}
+      navigationLabel="Primary"
+    >
+      <div className="home-page">
+        <HomeHero
+          branding={config.branding}
+          characters={characters}
+          registrationOpen={config.registration.open}
+        />
+        <HomeSections
+          branding={config.branding}
+          characters={characters}
+          finalCtaHref={config.links.privacyUrl}
+          finalCtaLabel="Review privacy details"
+          supportHref={config.links.supportUrl}
+        />
       </div>
-    </main>
+    </PublicShell>
   );
 }
