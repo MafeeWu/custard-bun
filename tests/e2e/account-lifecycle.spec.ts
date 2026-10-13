@@ -96,7 +96,9 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await page.getByLabel("Password").fill(secondPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: /invalid|sign-in is unavailable/i }),
+    page
+      .getByRole("alert")
+      .filter({ hasText: /invalid|sign-in is unavailable/i }),
   ).toContainText(/invalid|sign-in is unavailable/i);
   await expect(page).toHaveURL(/\/auth\/sign-in$/);
 });

@@ -511,10 +511,10 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   await page
     .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
-  await page
-    .getByLabel(/Permanently delete this conversation\./)
-    .check();
-  await expect(page.getByText(/Existing long-term memory is retained/)).toBeVisible();
+  await page.getByLabel(/Permanently delete this conversation\./).check();
+  await expect(
+    page.getByText(/Existing long-term memory is retained/),
+  ).toBeVisible();
   await page
     .getByRole("button", { name: "Delete conversation", exact: true })
     .click();
@@ -523,9 +523,7 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   await page
     .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
-  await page
-    .getByLabel(/Permanently delete this conversation\./)
-    .check();
+  await page.getByLabel(/Permanently delete this conversation\./).check();
   await page
     .getByRole("button", { name: "Delete conversation", exact: true })
     .click();

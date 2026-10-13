@@ -28,7 +28,9 @@ export function AdminShell({
             <span className="shell-brand__name">{brand}</span>
           </Link>
           <div className="shell-admin__mobile-trigger">
-            <MobileNavigation title="Administration">{navigation}</MobileNavigation>
+            <MobileNavigation title="Administration">
+              {navigation}
+            </MobileNavigation>
           </div>
         </div>
       </header>

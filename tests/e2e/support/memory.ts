@@ -1,10 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import type { Database } from "../../../src/server/db/client";
-import {
-  fakeModelBaseUrl,
-  fakeModelRequests,
-  sendChatMessage,
-} from "./chat";
+import { fakeModelBaseUrl, fakeModelRequests, sendChatMessage } from "./chat";
 
 export async function completeChat(page: Page, content: string) {
   await sendChatMessage(page, content);

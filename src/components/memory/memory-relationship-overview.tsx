@@ -1,8 +1,4 @@
-import {
-  BookOpenText,
-  Brain,
-  ChatCircleText,
-} from "@phosphor-icons/react/ssr";
+import { BookOpenText, Brain, ChatCircleText } from "@phosphor-icons/react/ssr";
 import Link from "next/link";
 import type { MemoryRelationshipOverview } from "@/server/memory/memory-queries";
 import { LinkButton } from "@/components/ui/button";

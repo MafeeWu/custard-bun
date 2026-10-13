@@ -64,9 +64,7 @@ export function CharacterCard({
         <div className="character-card__copy">
           <p
             aria-hidden={
-              emphasis === "standard" && index !== undefined
-                ? true
-                : undefined
+              emphasis === "standard" && index !== undefined ? true : undefined
             }
             className="character-card__eyebrow"
           >

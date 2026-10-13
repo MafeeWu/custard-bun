@@ -334,7 +334,10 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     ).toHaveCount(0);
 
     await userPage.reload();
-    await sendChatMessage(userPage, "Archived character remains usable [stream]");
+    await sendChatMessage(
+      userPage,
+      "Archived character remains usable [stream]",
+    );
     await expect(
       userPage.locator('li[data-status="complete"]').last(),
     ).toContainText("Hello there");
