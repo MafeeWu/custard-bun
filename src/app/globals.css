@@ -147,6 +147,212 @@ a {
   overflow-wrap: anywhere;
 }
 
+.account-page,
+.account-page__primary,
+.account-page__secondary,
+.account-section,
+.account-section__copy,
+.account-section__body,
+.account-delete,
+.account-delete__dialog,
+.account-export-status__copy,
+.goodbye-page__surface {
+  display: grid;
+}
+
+.account-page {
+  gap: var(--space-8);
+}
+
+.account-page__header {
+  align-items: start;
+}
+
+.account-page__grid {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.account-page__primary,
+.account-page__secondary {
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.account-section {
+  gap: var(--space-5);
+}
+
+.account-section--danger {
+  border-color: color-mix(
+    in srgb,
+    var(--color-danger) 40%,
+    var(--color-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--color-danger-surface) 78%,
+    var(--color-surface) 22%
+  );
+}
+
+.account-section__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: start;
+  justify-content: space-between;
+}
+
+.account-section__copy {
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.account-section__copy h2,
+.account-section__description,
+.account-delete__email,
+.account-delete__hint,
+.account-export-status__meta,
+.account-export-status__message,
+.goodbye-page__privacy-note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.account-section__description,
+.account-delete__hint,
+.account-export-status__meta,
+.goodbye-page__privacy-note {
+  color: var(--color-text-muted);
+}
+
+.account-section__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.account-section__body {
+  gap: var(--space-4);
+}
+
+.account-profile-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.account-profile-list__row {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.account-profile-list__row dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-label);
+  font-weight: 700;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.account-profile-list__row dd {
+  margin: 0;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.account-privacy,
+.account-export-panel__request,
+.account-export-status-list,
+.account-export-status,
+.account-delete__dialog-actions,
+.account-link-list {
+  display: grid;
+}
+
+.account-privacy,
+.account-export-panel__request {
+  gap: var(--space-4);
+}
+
+.account-export-status-list,
+.account-link-list {
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+}
+
+.account-export-status-list {
+  list-style: none;
+}
+
+.account-link-list {
+  list-style-position: inside;
+}
+
+.account-export-status {
+  gap: var(--space-3);
+}
+
+.account-export-status__notice {
+  height: 100%;
+}
+
+.account-export-status__copy {
+  gap: var(--space-2);
+}
+
+.account-export-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.account-export-status__download {
+  max-width: 100%;
+}
+
+.account-export-status__feedback,
+.account-export-status__retry {
+  width: 100%;
+}
+
+.account-export-status__retry {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.account-delete {
+  gap: var(--space-4);
+}
+
+.account-delete__email {
+  font-weight: 600;
+}
+
+.account-delete__dialog {
+  gap: var(--space-4);
+}
+
+.account-delete__dialog-actions {
+  gap: var(--space-3);
+}
+
+.goodbye-page {
+  align-content: center;
+  min-height: calc(100dvh - var(--space-8));
+}
+
+.goodbye-page__surface {
+  gap: var(--space-5);
+}
+
 .application-empty-state {
   min-height: 100%;
 }
@@ -1959,6 +2165,11 @@ a {
     inline-size: auto;
   }
 
+  .account-delete__dialog-actions {
+    grid-template-columns: repeat(2, minmax(0, max-content));
+    justify-content: end;
+  }
+
   .auth-brand-panel__portraits {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2020,6 +2231,16 @@ a {
 
   .home-hero__headline {
     max-width: none;
+  }
+
+  .account-section__actions,
+  .account-delete__dialog-actions {
+    width: 100%;
+  }
+
+  .account-section__actions > *,
+  .account-delete__dialog-actions > * {
+    width: 100%;
   }
 }
 
@@ -2199,6 +2420,11 @@ a {
 
   .application-home__layout {
     grid-template-columns: minmax(0, 1.6fr) minmax(16rem, 0.9fr);
+    align-items: start;
+  }
+
+  .account-page__grid {
+    grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.9fr);
     align-items: start;
   }
 

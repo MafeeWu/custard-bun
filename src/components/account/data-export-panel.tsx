@@ -7,34 +7,63 @@ import {
   retryDataExportAction,
   type DataExportActionState,
 } from "@/app/account/exports/actions";
+import { Button } from "@/components/ui/button";
+import { StatusNotice } from "@/components/ui/status-notice";
 import type { DataExportView } from "@/server/privacy/data-export-service";
+import { AccountSection } from "./account-section";
+import { ExportStatus, type ExportVisualState } from "./export-status";
 
 const initial: DataExportActionState = { status: "idle" };
-const labels: Record<DataExportView["status"], string> = {
-  pending: "Pending",
-  running: "Preparing",
-  complete: "Ready",
-  failed: "Failed",
-  expired: "Expired",
-  cancelled: "Cancelled",
-};
 function RetryExport({ id, disabled }: { id: string; disabled: boolean }) {
   const [state, action, pending] = useActionState(
     retryDataExportAction,
     initial,
   );
+
   return (
-    <form action={action}>
+    <form action={action} className="account-export-status__retry">
       <input type="hidden" name="exportId" value={id} />
-      <button disabled={disabled || pending}>Retry export</button>
+      <Button
+        disabled={disabled}
+        pending={pending}
+        tone="secondary"
+        type="submit"
+      >
+        Retry export
+      </Button>
       {state.message && (
-        <p role={state.status === "error" ? "alert" : "status"}>
+        <StatusNotice
+          className="account-export-status__feedback"
+          tone={state.status === "error" ? "danger" : "success"}
+        >
           {state.message}
-        </p>
+        </StatusNotice>
       )}
     </form>
   );
 }
+
+function visualStateForJob(job: DataExportView): ExportVisualState | null {
+  switch (job.status) {
+    case "pending":
+      return { kind: "queued" };
+    case "running":
+      return { kind: "processing" };
+    case "complete":
+      return {
+        kind: "ready",
+        downloadHref: `/account/exports/${job.id}/download`,
+        expiresAt: new Date(job.expiresAt ?? job.completedAt ?? job.createdAt),
+      };
+    case "expired":
+      return { kind: "expired" };
+    case "failed":
+      return { kind: "failed", message: "Data export is unavailable." };
+    default:
+      return null;
+  }
+}
+
 export function DataExportPanel({ exports }: { exports: DataExportView[] }) {
   const [state, action, pending] = useActionState(
     requestDataExportAction,
@@ -91,44 +120,77 @@ export function DataExportPanel({ exports }: { exports: DataExportView[] }) {
       clearInterval(timer);
     };
   }, [activeKey, requestedId, router]);
+
   return (
-    <section aria-labelledby="data-export-heading">
-      <h2 id="data-export-heading">Export your data</h2>
-      <p>
-        Request a private ZIP containing JSON copies of your account,
-        conversations, memories, summaries, settings, and usage. Only you can
-        download it. Downloads expire 24 hours after completion.
-      </p>
-      <form action={action}>
-        <button disabled={pending || active.length > 0}>
+    <AccountSection
+      description={
+        <>
+          Request a private ZIP containing JSON copies of your account,
+          conversations, memories, summaries, settings, and usage. Only you can
+          download it. Downloads expire 24 hours after completion.
+        </>
+      }
+      headingId="data-export-heading"
+      title="Export your data"
+    >
+      <form action={action} className="account-export-panel__request">
+        <Button disabled={active.length > 0} pending={pending} type="submit">
           Request data export
-        </button>
+        </Button>
         {state.message && (
-          <p role={state.status === "error" ? "alert" : "status"}>
+          <StatusNotice
+            className="account-export-status__feedback"
+            tone={state.status === "error" ? "danger" : "success"}
+          >
             {state.message}
-          </p>
+          </StatusNotice>
         )}
       </form>
-      <ul>
-        {exports.map((job) => (
-          <li key={job.id}>
-            <span>{labels[job.status]}</span>{" "}
-            <time dateTime={job.createdAt}>{job.createdAt}</time>
-            {job.status === "complete" && job.expiresAt && (
-              <>
-                {" "}
-                <a href={`/account/exports/${job.id}/download`}>
-                  Download ZIP
-                </a>{" "}
-                Expires <time dateTime={job.expiresAt}>{job.expiresAt}</time>
-              </>
-            )}
-            {job.status === "failed" && (
-              <RetryExport id={job.id} disabled={active.length > 0} />
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
+
+      <ol className="account-export-status-list">
+        {exports.length ? (
+          exports.map((job) => {
+            const visualState = visualStateForJob(job);
+
+            if (visualState) {
+              return (
+                <ExportStatus
+                  action={
+                    job.status === "failed" ? (
+                      <RetryExport id={job.id} disabled={active.length > 0} />
+                    ) : undefined
+                  }
+                  key={job.id}
+                  requestedAt={job.createdAt}
+                  state={visualState}
+                />
+              );
+            }
+
+            return (
+              <li
+                className="account-export-status account-export-status--cancelled"
+                key={job.id}
+              >
+                <StatusNotice
+                  className="account-export-status__notice"
+                  title="Cancelled"
+                  tone="warning"
+                >
+                  <div className="account-export-status__copy">
+                    <p className="account-export-status__meta">
+                      Requested{" "}
+                      <time dateTime={job.createdAt}>{job.createdAt}</time>
+                    </p>
+                  </div>
+                </StatusNotice>
+              </li>
+            );
+          })
+        ) : (
+          <ExportStatus state={{ kind: "idle" }} />
+        )}
+      </ol>
+    </AccountSection>
   );
 }

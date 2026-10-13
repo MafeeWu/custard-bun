@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { ForgotPasswordForm } from "./forgot-password-form";
@@ -22,7 +22,11 @@ vi.mock("@/server/auth/auth-client", () => {
   };
 });
 vi.mock("@/app/account/delete/actions", () => ({
-  requestAccountDeletionAction: async () => ({ status: "error", code: "rate_limited", message: "private details" }),
+  requestAccountDeletionAction: async () => ({
+    status: "error",
+    code: "rate_limited",
+    message: "private details",
+  }),
 }));
 
 test.each([
@@ -30,11 +34,13 @@ test.each([
     <ForgotPasswordForm key="forgot" />,
     "Send reset link",
     { Email: "test@example.com" },
+    false,
   ],
   [
     <ResetPasswordForm key="reset" />,
     "Reset password",
     { "New password": "correct horse battery staple" },
+    false,
   ],
   [
     <SignUpForm key="signup" registrationOpen />,
@@ -44,20 +50,35 @@ test.each([
       Email: "test@example.com",
       Password: "correct horse battery staple",
     },
+    false,
   ],
   [
     <DeleteAccountForm key="delete" email="test@example.com" />,
     "Delete account",
     { "Confirm account email": "test@example.com" },
+    true,
   ],
-] as const)("rate limit guidance for %s", async (component, button, values) => {
-  const user = userEvent.setup();
-  render(component);
-  for (const [label, value] of Object.entries(values)) {
-    await user.type(screen.getByLabelText(label), value);
-  }
-  await user.click(screen.getByRole("button", { name: button }));
-  expect(screen.getByRole("alert")).toHaveTextContent(/too many attempts/i);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  expect(screen.getByRole("alert")).not.toHaveTextContent("private");
-});
+] as const)(
+  "rate limit guidance for %s",
+  async (component, button, values, openFirst) => {
+    const user = userEvent.setup();
+    render(component);
+    if (openFirst) {
+      await user.click(screen.getByRole("button", { name: button }));
+    }
+    for (const [label, value] of Object.entries(values)) {
+      await user.type(screen.getByLabelText(label), value);
+    }
+    await user.click(
+      openFirst
+        ? within(screen.getByRole("dialog", { name: button })).getByRole(
+            "button",
+            { name: button },
+          )
+        : screen.getByRole("button", { name: button }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/too many attempts/i);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).not.toHaveTextContent("private");
+  },
+);
