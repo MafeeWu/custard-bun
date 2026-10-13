@@ -55,6 +55,10 @@ test("owned character page composes real management forms", async () => {
   expect(
     screen.getByRole("heading", { level: 1, name: "Mira’s memory" }),
   ).toBeVisible();
+  expect(
+    screen.getByRole("heading", { level: 2, name: "Memory overview" }),
+  ).toBeVisible();
+  expect(screen.getByText("Summary available")).toBeVisible();
   expect(screen.getByLabelText("Memory content")).toHaveValue(
     "Likes green tea.",
   );

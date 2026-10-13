@@ -1,7 +1,10 @@
 "use client";
 
+import { ArrowsClockwise, Sparkle } from "@phosphor-icons/react";
 import { useActionState, useId, useState } from "react";
 import type { RelationshipMemoryScreenView } from "@/server/memory/memory-queries";
+import { Button } from "@/components/ui/button";
+import { CheckboxField, Field, Textarea } from "@/components/ui/field";
 import {
   idleMemoryState,
   MemoryFormStatus,
@@ -68,22 +71,38 @@ export function RelationshipSummaryForm({
   const busy = pending || regenerating;
   return (
     <section aria-label="Summary management" className="memory-card">
-      <h2>Relationship summary</h2>
+      <div className="memory-section-heading">
+        <div>
+          <h2>Relationship summary</h2>
+          <p>
+            {view.summary
+              ? "Review, edit, clear, or regenerate the high-level relationship summary."
+              : "No relationship summary yet. Add one manually or wait for future memory updates."}
+          </p>
+        </div>
+      </div>
       <p className="memory-content">
         {view.summary?.content || "No relationship summary yet."}
       </p>
       {view.summary ? (
-        <p>
-          {view.summary.origin === "user_edited"
-            ? "Edited by you"
-            : "Automatic"}{" "}
-          · Updated{" "}
-          <time dateTime={view.summary.updatedAt.toISOString()}>
-            {view.summary.updatedAt.toISOString().slice(0, 10)}
-          </time>
+        <p className="memory-summary__meta">
+          <Sparkle aria-hidden="true" size={18} weight="bold" />
+          <span>
+            {view.summary.origin === "user_edited"
+              ? "Edited by you"
+              : "Automatic"}{" "}
+            · Updated{" "}
+            <time dateTime={view.summary.updatedAt.toISOString()}>
+              {view.summary.updatedAt.toISOString().slice(0, 10)}
+            </time>
+          </span>
         </p>
       ) : null}
-      <form action={action} onSubmit={baseRevision.beginSubmission}>
+      <form
+        action={action}
+        className="memory-form"
+        onSubmit={baseRevision.beginSubmission}
+      >
         <input
           name="expectedRevision"
           type="hidden"
@@ -95,48 +114,54 @@ export function RelationshipSummaryForm({
           value={baseRevision.revision.memoryEpoch}
         />
         <fieldset disabled={busy}>
-          <label htmlFor={id}>Relationship summary</label>
-          <textarea
-            id={id}
-            name="content"
-            maxLength={4000}
-            value={draft ?? view.summary?.content ?? ""}
-            onChange={(event) => {
-              if (draft === null) baseRevision.capture();
-              setDraft(event.target.value);
-            }}
+          <Field
+            hint="Credentials cannot be saved. Edited or cleared summaries remain authoritative until you explicitly regenerate."
+            htmlFor={id}
+            label="Relationship summary"
+          >
+            <Textarea
+              id={id}
+              maxLength={4000}
+              name="content"
+              value={draft ?? view.summary?.content ?? ""}
+              onChange={(event) => {
+                if (draft === null) baseRevision.capture();
+                setDraft(event.target.value);
+              }}
+            />
+          </Field>
+          <CheckboxField
+            checked={explicit}
+            label="I explicitly want to remember this summary, including any sensitive personal details."
+            name="explicitIntent"
+            onChange={(event) => setExplicit(event.target.checked)}
           />
-          <label>
-            <input
-              type="checkbox"
-              name="explicitIntent"
-              checked={explicit}
-              onChange={(event) => setExplicit(event.target.checked)}
-            />{" "}
-            I explicitly want to remember this summary, including any sensitive
-            personal details.
-          </label>
-          <p>
-            Credentials cannot be saved. Edited or cleared summaries remain
-            authoritative until you explicitly regenerate.
-          </p>
-          <div className="memory-buttons">
-            <button
-              type="submit"
-              name="operation"
-              value="edit"
+          <div className="memory-form__actions">
+            <Button
               disabled={!explicit}
+              type="submit"
+              value="edit"
+              name="operation"
             >
               {pending ? "Saving…" : "Save summary"}
-            </button>
-            <button type="submit" name="operation" value="clear">
+            </Button>
+            <Button
+              name="operation"
+              tone="secondary"
+              type="submit"
+              value="clear"
+            >
               Clear summary
-            </button>
+            </Button>
           </div>
         </fieldset>
         <MemoryFormStatus state={state} />
       </form>
-      <form action={regenerate} onSubmit={regenRevision.beginSubmission}>
+      <form
+        action={regenerate}
+        className="memory-form memory-form--subtle"
+        onSubmit={regenRevision.beginSubmission}
+      >
         <input
           name="expectedRevision"
           type="hidden"
@@ -151,17 +176,21 @@ export function RelationshipSummaryForm({
           Regenerate replaces your summary with a new automatic summary based on
           current memory.
         </p>
-        <button
-          type="submit"
-          disabled={
-            busy ||
-            !view.settings.recordingEnabled ||
-            view.summaryStatus === "processing" ||
-            view.summaryStatus === "retrying"
-          }
-        >
-          {regenerating ? "Requesting…" : "Regenerate summary"}
-        </button>
+        <div className="memory-form__actions">
+          <Button
+            disabled={
+              busy ||
+              !view.settings.recordingEnabled ||
+              view.summaryStatus === "processing" ||
+              view.summaryStatus === "retrying"
+            }
+            tone="secondary"
+            type="submit"
+          >
+            <ArrowsClockwise aria-hidden="true" size={18} weight="bold" />
+            {regenerating ? "Requesting…" : "Regenerate summary"}
+          </Button>
+        </div>
         <MemoryFormStatus state={regenState} />
       </form>
     </section>

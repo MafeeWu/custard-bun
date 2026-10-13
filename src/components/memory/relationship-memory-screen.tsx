@@ -1,21 +1,25 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect } from "react";
 import type {
   MemorySyncStatus,
   RelationshipMemoryScreenView,
 } from "@/server/memory/memory-queries";
+import { Button, LinkButton } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
+import { StatusNotice } from "@/components/ui/status-notice";
+import { Surface } from "@/components/ui/surface";
 import { MemoryControlsForm } from "./memory-controls-form";
-import { MemoryItemForm } from "./memory-item-form";
-import { RelationshipSummaryForm } from "./relationship-summary-form";
 import { ForgetCharacterForm } from "./forget-character-form";
+import { MemoryItemList } from "./memory-item-list";
 import {
   idleMemoryState,
   MemoryFormStatus,
   type MemoryAction,
 } from "./memory-form-state";
+import { MemoryStatus } from "./memory-status";
+import { RelationshipSummaryForm } from "./relationship-summary-form";
 
 export interface MemoryScreenActions {
   editMemory: MemoryAction;
@@ -42,17 +46,24 @@ function ExtractionStatus({
 }) {
   const [state, action, pending] = useActionState(retry, idleMemoryState);
   return (
-    <li>
-      <span>{statusCopy[extraction.status]}</span>
-      {extraction.status === "needs_retry" && extraction.canRetry ? (
-        <form action={action}>
-          <input name="runId" type="hidden" value={extraction.id} />
-          <button type="submit" disabled={pending}>
-            {pending ? "Requesting…" : "Retry extraction"}
-          </button>
-          <MemoryFormStatus state={state} />
-        </form>
-      ) : null}
+    <li className="memory-sync-item">
+      <div className="memory-sync-item__row">
+        <div>
+          <p className="memory-sync-item__label">Automatic memory extraction</p>
+          <p className="memory-sync-item__value">
+            {statusCopy[extraction.status]}
+          </p>
+        </div>
+        {extraction.status === "needs_retry" && extraction.canRetry ? (
+          <form action={action} className="memory-sync-item__actions">
+            <input name="runId" type="hidden" value={extraction.id} />
+            <Button type="submit" disabled={pending}>
+              {pending ? "Requesting…" : "Retry extraction"}
+            </Button>
+            <MemoryFormStatus state={state} />
+          </form>
+        ) : null}
+      </div>
     </li>
   );
 }
@@ -76,75 +87,161 @@ export function RelationshipMemoryScreen({
     const timer = setInterval(() => router.refresh(), 5000);
     return () => clearInterval(timer);
   }, [processing, router]);
+  const summaryPresent = Boolean(view.summary?.content);
+  const allSynced = !view.extractions.length && view.summaryStatus === "synced";
+
   return (
     <div className="memory-page">
-      <header>
-        <p className="character-eyebrow">Privacy & memory</p>
-        <h1>{view.character.displayName}’s memory</h1>
-        <nav aria-label="Memory navigation" className="memory-buttons">
-          <Link href="/app/memories">All character memories</Link>
-          {view.conversationId ? (
-            <Link href={`/app/conversations/${view.conversationId}`}>
-              Back to chat
-            </Link>
-          ) : (
-            <Link href="/app">Back to conversations</Link>
-          )}
-        </nav>
-      </header>
-      <p>
-        Automatic memories are active immediately. You can edit or remove them
-        at any time.
-      </p>
-      <div className="memory-card">
-        <MemoryControlsForm
-          settings={view.settings}
-          action={actions.controls}
-        />
-      </div>
-      <section aria-label="Memory synchronization" className="memory-card">
-        <h2>Memory status</h2>
-        <div role="status" aria-live="polite">
-          {view.extractions.length ? (
-            <ul>
-              {view.extractions.map((row) => (
-                <ExtractionStatus
-                  key={row.id}
-                  extraction={row}
-                  retry={actions.retry}
-                />
-              ))}
-            </ul>
-          ) : (
-            <p>Synced</p>
-          )}
-          <p>
-            Summary: <span>{statusCopy[view.summaryStatus]}</span>
-          </p>
-        </div>
-      </section>
-      <section aria-label="Saved memories">
-        <h2>Saved memories</h2>
-        {view.items.length ? (
-          <div className="memory-grid">
-            {view.items.map((item) => (
-              <MemoryItemForm
-                key={item.id}
-                item={item}
-                editAction={actions.editMemory}
-                deleteAction={actions.deleteMemory}
-              />
-            ))}
+      <PageHeader
+        actions={
+          <div className="memory-buttons memory-page__header-actions">
+            <LinkButton href="/app/memories" size="sm" tone="secondary">
+              All character memories
+            </LinkButton>
+            <LinkButton
+              href={
+                view.conversationId
+                  ? `/app/conversations/${view.conversationId}`
+                  : "/app"
+              }
+              size="sm"
+              tone="quiet"
+            >
+              {view.conversationId ? "Back to chat" : "Back to conversations"}
+            </LinkButton>
           </div>
-        ) : (
-          <p>No saved memories for this character.</p>
-        )}
-      </section>
-      <RelationshipSummaryForm
-        view={view}
-        editAction={actions.summary}
-        regenerateAction={actions.regenerate}
+        }
+        description="Automatic memories are active immediately. You can edit or remove them at any time."
+        eyebrow="Privacy & memory"
+        title={`${view.character.displayName}’s memory`}
       />
+
+      <div className="memory-page__layout">
+        <div className="memory-page__primary">
+          <Surface
+            as="section"
+            aria-labelledby="memory-overview-heading"
+            className="memory-card"
+            padding="lg"
+            tone="raised"
+          >
+            <div className="memory-section-heading">
+              <div>
+                <h2 id="memory-overview-heading">Memory overview</h2>
+                <p>
+                  Review saved memories, whether they can be used in chat, and
+                  whether a relationship summary is present.
+                </p>
+              </div>
+            </div>
+            <MemoryStatus
+              activeItems={view.items.length}
+              recallEnabled={view.settings.usageEnabled}
+              recordingEnabled={view.settings.recordingEnabled}
+              summaryPresent={summaryPresent}
+            />
+          </Surface>
+
+          <Surface
+            as="section"
+            aria-labelledby="memory-items-heading"
+            className="memory-card"
+            padding="lg"
+            tone="raised"
+          >
+            <div className="memory-section-heading">
+              <div>
+                <h2 id="memory-items-heading">Saved memories</h2>
+                <p>
+                  Automatic and edited memories stay separate from your
+                  transcripts.
+                </p>
+              </div>
+            </div>
+            <MemoryItemList
+              deleteAction={actions.deleteMemory}
+              editAction={actions.editMemory}
+              items={view.items}
+            />
+          </Surface>
+
+          <RelationshipSummaryForm
+            view={view}
+            editAction={actions.summary}
+            regenerateAction={actions.regenerate}
+          />
+        </div>
+
+        <div className="memory-page__secondary">
+          <Surface
+            as="section"
+            aria-labelledby="memory-controls-heading"
+            className="memory-card"
+            padding="lg"
+            tone="subtle"
+          >
+            <div className="memory-section-heading">
+              <div>
+                <h2 id="memory-controls-heading">Recording & recall</h2>
+                <p>
+                  These controls change future memory updates without changing
+                  past chats.
+                </p>
+              </div>
+            </div>
+            <MemoryControlsForm
+              settings={view.settings}
+              action={actions.controls}
+            />
+          </Surface>
+
+          <Surface
+            as="section"
+            aria-labelledby="memory-sync-heading"
+            className="memory-card"
+            padding="lg"
+            tone="default"
+          >
+            <div className="memory-section-heading">
+              <div>
+                <h2 id="memory-sync-heading">Memory synchronization</h2>
+                <p>
+                  Check whether automatic extraction or summary generation still
+                  needs work.
+                </p>
+              </div>
+            </div>
+            {allSynced ? (
+              <StatusNotice title="Synced" tone="success">
+                Memory and summary are up to date.
+              </StatusNotice>
+            ) : (
+              <ul className="memory-sync-list">
+                {view.extractions.map((row) => (
+                  <ExtractionStatus
+                    key={row.id}
+                    extraction={row}
+                    retry={actions.retry}
+                  />
+                ))}
+                <li className="memory-sync-item">
+                  <div className="memory-sync-item__row">
+                    <div>
+                      <p className="memory-sync-item__label">
+                        Relationship summary
+                      </p>
+                      <p className="memory-sync-item__value">
+                        {statusCopy[view.summaryStatus]}
+                      </p>
+                    </div>
+                  </div>
+                </li>
+              </ul>
+            )}
+          </Surface>
+        </div>
+      </div>
+
       <ForgetCharacterForm
         revision={view.settings.revision}
         action={actions.forget}

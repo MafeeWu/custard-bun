@@ -2,6 +2,8 @@
 
 import { useActionState, useState } from "react";
 import type { RelationshipMemoryScreenView } from "@/server/memory/memory-queries";
+import { Button } from "@/components/ui/button";
+import { CheckboxField } from "@/components/ui/field";
 import {
   idleMemoryState,
   MemoryFormStatus,
@@ -29,53 +31,53 @@ export function MemoryControlsForm({
     }
   }
   return (
-    <form action={action} onSubmit={baseRevision.beginSubmission}>
+    <form
+      action={action}
+      className="memory-form"
+      onSubmit={baseRevision.beginSubmission}
+    >
       <input
         name="expectedRevision"
         type="hidden"
         value={baseRevision.revision}
       />
       <fieldset disabled={pending}>
-        <legend>Memory controls</legend>
-        <p>
+        <legend>Recording & recall</legend>
+        <p className="memory-form__lead">
           Current settings:{" "}
           {settings.recordingEnabled ? "Recording on" : "Recording stopped"};{" "}
           {settings.usageEnabled ? "Chat usage on" : "Chat usage stopped"}.
         </p>
-        <label>
-          <input
-            type="checkbox"
-            name="stopRecording"
-            checked={recording ?? !settings.recordingEnabled}
-            onChange={(event) => {
-              if (recording === null && usage === null) baseRevision.capture();
-              setRecording(event.target.checked);
-            }}
-          />{" "}
-          Stop recording
-        </label>
+        <CheckboxField
+          checked={recording ?? !settings.recordingEnabled}
+          label="Stop recording"
+          name="stopRecording"
+          onChange={(event) => {
+            if (recording === null && usage === null) baseRevision.capture();
+            setRecording(event.target.checked);
+          }}
+        />
         <p>
           Stops new automatic memories and cancels pending extraction. Existing
           memory is kept.
         </p>
-        <label>
-          <input
-            type="checkbox"
-            name="stopUsage"
-            checked={usage ?? !settings.usageEnabled}
-            onChange={(event) => {
-              if (recording === null && usage === null) baseRevision.capture();
-              setUsage(event.target.checked);
-            }}
-          />{" "}
-          Stop using in chat
-        </label>
+        <CheckboxField
+          checked={usage ?? !settings.usageEnabled}
+          label="Stop using in chat"
+          name="stopUsage"
+          onChange={(event) => {
+            if (recording === null && usage === null) baseRevision.capture();
+            setUsage(event.target.checked);
+          }}
+        />
         <p>
           Stops memory and summary recall in future chat prompts. Recording is
           controlled separately. Replies already started may use their existing
           prompt.
         </p>
-        <button type="submit">{pending ? "Saving…" : "Save controls"}</button>
+        <div className="memory-form__actions">
+          <Button type="submit">{pending ? "Saving…" : "Save controls"}</Button>
+        </div>
       </fieldset>
       <MemoryFormStatus state={state} />
     </form>

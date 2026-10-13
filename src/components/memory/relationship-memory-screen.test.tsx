@@ -1,4 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { memoryScreenFixture } from "@/test/memory-screen-fixture";
@@ -39,6 +45,42 @@ test("automatic active cards render only approved fields, evidence count and dat
     /private-|confidence|test-model/,
   );
 });
+test("relationship overview summarizes recording, recall, saved items, and summary availability", () => {
+  render(
+    <RelationshipMemoryScreen
+      view={memoryScreenFixture()}
+      actions={actionSet()}
+    />,
+  );
+  expect(
+    screen.getByRole("heading", { level: 2, name: "Memory overview" }),
+  ).toBeVisible();
+  expect(screen.getByText("1 saved memory")).toBeVisible();
+  expect(screen.getByText("Recording active")).toBeVisible();
+  expect(screen.getByText("Recall active")).toBeVisible();
+  expect(screen.getByText("Summary available")).toBeVisible();
+});
+test("zero saved memories render an explicit empty state and an absent summary state", () => {
+  const view = memoryScreenFixture();
+  view.items = [];
+  view.summary = null;
+  render(<RelationshipMemoryScreen view={view} actions={actionSet()} />);
+  expect(
+    screen.getByRole("heading", { level: 3, name: "No saved memories yet" }),
+  ).toBeVisible();
+  expect(screen.getByText("Summary not generated")).toBeVisible();
+});
+test("recording and recall remain explicit when both controls are disabled", () => {
+  const view = memoryScreenFixture();
+  view.settings.recordingEnabled = false;
+  view.settings.usageEnabled = false;
+  render(<RelationshipMemoryScreen view={view} actions={actionSet()} />);
+  expect(screen.getByText("Recording stopped")).toBeVisible();
+  expect(screen.getByText("Recall stopped")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Regenerate summary" }),
+  ).toBeDisabled();
+});
 test("summary clear submits revision and clears a previous draft after success", async () => {
   const actions = actionSet();
   const view = memoryScreenFixture();
@@ -76,12 +118,16 @@ test("forget removes stale summary drafts when refreshed state has no summary", 
     "Private draft",
   );
   await userEvent.click(
-    screen.getByRole("checkbox", {
+    screen.getByRole("button", { name: "Forget character" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "Forget character" });
+  await userEvent.click(
+    within(dialog).getByRole("checkbox", {
       name: "I want this character to forget me.",
     }),
   );
   await userEvent.click(
-    screen.getByRole("button", { name: "Forget character" }),
+    within(dialog).getByRole("button", { name: "Forget character" }),
   );
   await waitFor(() => expect(actions.forget).toHaveBeenCalled());
   const next = memoryScreenFixture();
@@ -98,10 +144,16 @@ test("delete, retry and regeneration submit scoped IDs or current revisions", as
   render(
     <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
   );
-  await userEvent.click(
-    screen.getByRole("checkbox", { name: "Permanently delete this memory." }),
-  );
   await userEvent.click(screen.getByRole("button", { name: "Delete memory" }));
+  const deleteDialog = screen.getByRole("dialog", { name: "Delete memory" });
+  await userEvent.click(
+    within(deleteDialog).getByRole("checkbox", {
+      name: "Permanently delete this memory.",
+    }),
+  );
+  await userEvent.click(
+    within(deleteDialog).getByRole("button", { name: "Delete memory" }),
+  );
   await waitFor(() => expect(actions.deleteMemory).toHaveBeenCalled());
   expect(
     (actions.deleteMemory.mock.calls[0][1] as FormData).get("memoryId"),
@@ -223,6 +275,26 @@ test("an ineligible needs-retry run has no manual retry action", () => {
     screen.queryByRole("button", { name: "Retry extraction" }),
   ).not.toBeInTheDocument();
 });
+test("failed retry keeps the synchronization alert visible and focused", async () => {
+  const actions = actionSet();
+  actions.retry.mockResolvedValue({
+    status: "error",
+    message: "Unable to retry extraction. Try again.",
+  });
+  render(
+    <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Retry extraction" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveFocus();
+  expect(
+    screen.getByText("Unable to retry extraction. Try again."),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Retry extraction" }),
+  ).toBeEnabled();
+});
 test("memory and summary content render as inert text rather than HTML", () => {
   const view = memoryScreenFixture();
   view.items[0].content = '<img src="x" onerror="alert(1)">';
@@ -267,31 +339,55 @@ test("background refresh cannot silently advance dirty memory, summary or contro
   expect(actions.summary.mock.calls[0][1].get("expectedRevision")).toBe("2");
   expect(actions.controls.mock.calls[0][1].get("expectedRevision")).toBe("1");
 });
-test("background refresh preserves destructive confirmation base revisions", async () => {
+test("background refresh preserves destructive delete confirmation base revision", async () => {
+  const actions = actionSet();
+  const { rerender } = render(
+    <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Delete memory" }));
+  await userEvent.click(
+    within(screen.getByRole("dialog", { name: "Delete memory" })).getByRole(
+      "checkbox",
+      { name: "Permanently delete this memory." },
+    ),
+  );
+  const next = memoryScreenFixture();
+  next.items[0].revision = 3;
+  rerender(<RelationshipMemoryScreen view={next} actions={actions} />);
+  await userEvent.click(
+    within(screen.getByRole("dialog", { name: "Delete memory" })).getByRole(
+      "button",
+      { name: "Delete memory" },
+    ),
+  );
+  expect(actions.deleteMemory.mock.calls[0][1].get("expectedRevision")).toBe(
+    "1",
+  );
+});
+test("background refresh preserves forget confirmation base revision", async () => {
   const actions = actionSet();
   const { rerender } = render(
     <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
   );
   await userEvent.click(
-    screen.getByRole("checkbox", { name: "Permanently delete this memory." }),
-  );
-  await userEvent.click(
-    screen.getByRole("checkbox", {
-      name: "I want this character to forget me.",
-    }),
-  );
-  const next = memoryScreenFixture();
-  next.items[0].revision = 3;
-  next.settings.revision = 5;
-  rerender(<RelationshipMemoryScreen view={next} actions={actions} />);
-  await userEvent.click(screen.getByRole("button", { name: "Delete memory" }));
-  await userEvent.click(
     screen.getByRole("button", { name: "Forget character" }),
   );
-  await waitFor(() => expect(actions.forget).toHaveBeenCalled());
-  expect(actions.deleteMemory.mock.calls[0][1].get("expectedRevision")).toBe(
-    "1",
+  await userEvent.click(
+    within(screen.getByRole("dialog", { name: "Forget character" })).getByRole(
+      "checkbox",
+      { name: "I want this character to forget me." },
+    ),
   );
+  const next = memoryScreenFixture();
+  next.settings.revision = 5;
+  rerender(<RelationshipMemoryScreen view={next} actions={actions} />);
+  await userEvent.click(
+    within(screen.getByRole("dialog", { name: "Forget character" })).getByRole(
+      "button",
+      { name: "Forget character" },
+    ),
+  );
+  await waitFor(() => expect(actions.forget).toHaveBeenCalled());
   expect(actions.forget.mock.calls[0][1].get("expectedRevision")).toBe("1");
 });
 test("recording and chat usage controls are independently submitted", async () => {
@@ -412,17 +508,49 @@ test.each([
     await userEvent.click(
       screen.getByRole("checkbox", { name: "Stop using in chat" }),
     );
-    await userEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Permanently delete this memory.",
-      }),
-    );
-    await userEvent.click(
-      screen.getByRole("checkbox", {
-        name: "I want this character to forget me.",
-      }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: button }));
+    if (kind === "deleteMemory") {
+      await userEvent.click(
+        screen.getByRole("button", { name: "Delete memory" }),
+      );
+      await userEvent.click(
+        within(screen.getByRole("dialog", { name: "Delete memory" })).getByRole(
+          "checkbox",
+          {
+            name: "Permanently delete this memory.",
+          },
+        ),
+      );
+    }
+    if (kind === "forget") {
+      await userEvent.click(
+        screen.getByRole("button", { name: "Forget character" }),
+      );
+      await userEvent.click(
+        within(
+          screen.getByRole("dialog", { name: "Forget character" }),
+        ).getByRole("checkbox", {
+          name: "I want this character to forget me.",
+        }),
+      );
+    }
+    if (kind === "deleteMemory") {
+      await userEvent.click(
+        within(screen.getByRole("dialog", { name: "Delete memory" })).getByRole(
+          "button",
+          { name: "Delete memory" },
+        ),
+      );
+    } else if (kind === "forget") {
+      await userEvent.click(
+        within(
+          screen.getByRole("dialog", { name: "Forget character" }),
+        ).getByRole("button", {
+          name: "Forget character",
+        }),
+      );
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: button }));
+    }
     expect(await screen.findByRole("alert")).toHaveFocus();
     for (const revision of [3, 4, 5]) {
       const next = memoryScreenFixture();
@@ -443,7 +571,31 @@ test.each([
     expect(screen.getByLabelText("Relationship summary")).toHaveValue(
       "We talk about tea. My draft",
     );
-    await userEvent.click(screen.getByRole("button", { name: button }));
+    if (kind === "deleteMemory") {
+      const dialog = screen.getByRole("dialog", { name: "Delete memory" });
+      const checkbox = within(dialog).getByRole("checkbox", {
+        name: "Permanently delete this memory.",
+      }) as HTMLInputElement;
+      if (!checkbox.checked) {
+        await userEvent.click(checkbox);
+      }
+      await userEvent.click(
+        within(dialog).getByRole("button", { name: "Delete memory" }),
+      );
+    } else if (kind === "forget") {
+      const dialog = screen.getByRole("dialog", { name: "Forget character" });
+      const checkbox = within(dialog).getByRole("checkbox", {
+        name: "I want this character to forget me.",
+      }) as HTMLInputElement;
+      if (!checkbox.checked) {
+        await userEvent.click(checkbox);
+      }
+      await userEvent.click(
+        within(dialog).getByRole("button", { name: "Forget character" }),
+      );
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: button }));
+    }
     await waitFor(() => expect(actions[kind]).toHaveBeenCalledTimes(2));
     expect(actions[kind].mock.calls[1][1].get("expectedRevision")).toBe("3");
   },
@@ -530,7 +682,7 @@ test.each(["Save summary", "Clear summary", "Regenerate summary"])(
     expect(action.mock.calls[1][1].get("expectedRevision")).toBe("2");
   },
 );
-test("forget confirmation distinguishes transcript retention and epoch cancellation", async () => {
+test("forget section explains its consequences and opens a confirmation dialog", async () => {
   const actions = actionSet();
   render(
     <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
@@ -539,18 +691,60 @@ test("forget confirmation distinguishes transcript retention and epoch cancellat
   expect(region).toHaveTextContent(
     "Removes memory, evidence, and relationship summary. Cancels old work and starts a new memory epoch. Your conversation transcripts are kept.",
   );
+  await userEvent.click(
+    within(region).getByRole("button", { name: "Forget character" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "Forget character" });
   expect(
-    within(region).getByRole("checkbox", {
+    within(dialog).getByRole("checkbox", {
       name: "I want this character to forget me.",
     }),
   ).toBeRequired();
   expect(
-    within(region).getByRole("button", { name: "Forget character" }),
+    within(dialog).getByRole("button", { name: "Forget character" }),
   ).toBeDisabled();
-  await userEvent.click(within(region).getByRole("checkbox"));
+  await userEvent.click(within(dialog).getByRole("checkbox"));
   expect(
-    within(region).getByRole("button", { name: "Forget character" }),
+    within(dialog).getByRole("button", { name: "Forget character" }),
   ).toBeEnabled();
+});
+test("forget dialog stays open while a destructive action is pending", async () => {
+  const actions = actionSet();
+  let finish!: (state: { status: "success"; message: string }) => void;
+  actions.forget.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <RelationshipMemoryScreen view={memoryScreenFixture()} actions={actions} />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Forget character" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "Forget character" });
+  await userEvent.click(
+    within(dialog).getByRole("checkbox", {
+      name: "I want this character to forget me.",
+    }),
+  );
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Forget character" }),
+  );
+  expect(
+    within(dialog).getByRole("button", { name: "Forgetting…" }),
+  ).toBeDisabled();
+  fireEvent.click(dialog);
+  expect(
+    screen.getByRole("dialog", { name: "Forget character" }),
+  ).toBeVisible();
+  finish({ status: "success", message: "Saved." });
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Forget character" }),
+    ).not.toBeInTheDocument(),
+  );
 });
 test("sensitive manual edits require explicit intent; edit/delete/summary/retry forms are accessible", async () => {
   render(
@@ -562,11 +756,19 @@ test("sensitive manual edits require explicit intent; edit/delete/summary/retry 
   expect(
     screen.getAllByRole("checkbox", { name: /explicitly want to remember/ }),
   ).toHaveLength(2);
-  expect(screen.getByRole("button", { name: "Delete memory" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Delete memory" }));
+  const dialog = screen.getByRole("dialog", { name: "Delete memory" });
+  expect(
+    within(dialog).getByRole("button", { name: "Delete memory" }),
+  ).toBeDisabled();
   await userEvent.click(
-    screen.getByRole("checkbox", { name: "Permanently delete this memory." }),
+    within(dialog).getByRole("checkbox", {
+      name: "Permanently delete this memory.",
+    }),
   );
-  expect(screen.getByRole("button", { name: "Delete memory" })).toBeEnabled();
+  expect(
+    within(dialog).getByRole("button", { name: "Delete memory" }),
+  ).toBeEnabled();
   expect(screen.getByLabelText("Relationship summary")).toHaveValue(
     "We talk about tea.",
   );

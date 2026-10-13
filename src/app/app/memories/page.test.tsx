@@ -39,8 +39,16 @@ test("privacy overview renders only owner-scoped relationships without operation
     "href",
     "/app/memories/character-1",
   );
+  expect(
+    screen.getByRole("heading", { level: 2, name: "Relationships" }),
+  ).toBeVisible();
   expect(screen.getByText(/Recording stopped/)).toBeVisible();
+  expect(screen.getByText(/Recall active/)).toBeVisible();
   expect(screen.getByText(/2 memories/)).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open controls" })).toHaveAttribute(
+    "href",
+    "/app/memories/character-1",
+  );
   expect(
     screen.getByRole("complementary", { name: "Application navigation" }),
   ).toBeVisible();
@@ -48,5 +56,8 @@ test("privacy overview renders only owner-scoped relationships without operation
 test("empty overview explains where relationships appear", async () => {
   mocks.list.mockResolvedValue([]);
   render(await MemoryPage());
+  expect(
+    screen.getByRole("heading", { name: "No character memories yet" }),
+  ).toBeVisible();
   expect(screen.getByText(/Start a conversation/)).toBeVisible();
 });
