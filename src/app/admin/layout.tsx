@@ -1,9 +1,20 @@
-import Link from "next/link";
+import { Brain, ChartBar, Chats, ShieldCheck, Users } from "@phosphor-icons/react";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
+import { BrandMark } from "@/components/brand/brand-mark";
+import { AdminShell } from "@/components/layout/admin-shell";
 import { requireAdmin } from "@/server/admin/require-admin";
+import { getPublicConfig } from "@/server/config/public-config";
 
 export const dynamic = "force-dynamic";
+
+const navigationItems = [
+  { href: "/admin/characters", icon: Chats, label: "Characters" },
+  { href: "/admin/users", icon: Users, label: "Users" },
+  { href: "/admin/usage", icon: ChartBar, label: "Usage" },
+  { href: "/admin/memory", icon: Brain, label: "Memory operations" },
+  { href: "/admin/audit", icon: ShieldCheck, label: "Audit" },
+] as const;
 
 export default async function AdminLayout({
   children,
@@ -11,29 +22,14 @@ export default async function AdminLayout({
   children: ReactNode;
 }) {
   await requireAdmin(await headers());
+  const { branding } = await getPublicConfig();
 
   return (
-    <div>
-      <nav aria-label="Administration">
-        <ul>
-          <li>
-            <Link href="/admin/characters">Characters</Link>
-          </li>
-          <li>
-            <Link href="/admin/users">Users</Link>
-          </li>
-          <li>
-            <Link href="/admin/usage">Usage</Link>
-          </li>
-          <li>
-            <Link href="/admin/memory">Memory operations</Link>
-          </li>
-          <li>
-            <Link href="/admin/audit">Audit</Link>
-          </li>
-        </ul>
-      </nav>
-      <main>{children}</main>
-    </div>
+    <AdminShell
+      brand={<BrandMark branding={branding} />}
+      navigationItems={[...navigationItems]}
+    >
+      {children}
+    </AdminShell>
   );
 }
