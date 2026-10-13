@@ -65,3 +65,28 @@ test("falls back to initials instead of rendering a remote avatar path", () => {
     screen.queryByAltText("Remote Listener avatar"),
   ).not.toBeInTheDocument();
 });
+
+test("keeps a numbered card heading semantic without adding the number to the link name", () => {
+  render(
+    <CharacterCard
+      index={2}
+      character={{
+        id: "33333333-3333-3333-3333-333333333333",
+        slug: "numbered-listener",
+        displayName: "Numbered Listener",
+        avatarPath: "/characters/calm-listener.svg",
+        shortDescription: "A card whose ordering is visual metadata.",
+        openingMessage: "The accessible name should describe the character.",
+      }}
+    />,
+  );
+
+  expect(
+    screen.getByRole("heading", { level: 2, name: "Numbered Listener" }),
+  ).toBeVisible();
+  expect(screen.getByText("Character 3")).toHaveAttribute(
+    "aria-hidden",
+    "true",
+  );
+  expect(screen.getByRole("link")).not.toHaveAttribute("aria-label");
+});

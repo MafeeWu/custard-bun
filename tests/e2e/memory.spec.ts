@@ -76,8 +76,14 @@ test("recalls and deletes a preference without crossing users or characters", as
     expect(await chatPrompt("Other user check")).not.toContain("jasmine tea");
     await page.goto(url);
     const card = page.getByRole("article", { name: "Memory", exact: true });
-    await card.getByLabel("Permanently delete this memory.").check();
     await card
+      .getByRole("button", { name: "Delete memory", exact: true })
+      .click();
+    const deleteDialog = page.getByRole("dialog", { name: "Delete memory" });
+    await deleteDialog
+      .getByLabel("Permanently delete this memory.")
+      .check();
+    await deleteDialog
       .getByRole("button", { name: "Delete memory", exact: true })
       .click();
     await expect(card).toHaveCount(0);
@@ -110,8 +116,14 @@ test("item deletion fences held extraction and summary recall while retaining un
     const held = await heldExtraction(database, id);
     await page.goto(url);
     const card = page.getByRole("article", { name: "Memory", exact: true }).filter({ hasText: "jasmine tea" });
-    await card.getByLabel("Permanently delete this memory.").check();
     await card.getByRole("button", { name: "Delete memory", exact: true }).click();
+    const deleteDialog = page.getByRole("dialog", { name: "Delete memory" });
+    await deleteDialog
+      .getByLabel("Permanently delete this memory.")
+      .check();
+    await deleteDialog
+      .getByRole("button", { name: "Delete memory", exact: true })
+      .click();
     await expect(card).toHaveCount(0);
     await expect(page.getByLabel("Relationship summary", { exact: true })).not.toHaveValue(/jasmine tea/);
     await releaseExtraction(database, id, held, "jasmine tea");
@@ -239,15 +251,19 @@ test("inference, sensitive policy, independent controls, conversation deletion a
     await completeChat(page, "Transcript survives forgetting");
     await waitForExtraction(database, id);
     await page.goto(url);
-    await page.getByLabel("I want this character to forget me.").check();
     await page
       .getByRole("button", { name: "Forget character", exact: true })
       .click();
+    const forgetDialog = page.getByRole("dialog", { name: "Forget character" });
+    await forgetDialog
+      .getByLabel("I want this character to forget me.")
+      .check();
+    await forgetDialog
+      .getByRole("button", { name: "Forget character", exact: true })
+      .click();
+    await expect(forgetDialog).toHaveCount(0);
     await expect(
-      page.getByLabel("I want this character to forget me."),
-    ).not.toBeChecked();
-    await expect(
-      page.getByText("No saved memories for this character."),
+      page.getByRole("heading", { name: "No saved memories yet" }),
     ).toBeVisible();
     await expect(
       page.getByLabel("Relationship summary", { exact: true }),
@@ -279,15 +295,21 @@ for (const action of ["Forget", "disable recording"] as const) {
       const held = await heldExtraction(database, id);
       await page.goto(url);
       if (action === "Forget") {
-        await page.getByLabel("I want this character to forget me.").check();
         await page
           .getByRole("button", { name: "Forget character", exact: true })
           .click();
+        const forgetDialog = page.getByRole("dialog", {
+          name: "Forget character",
+        });
+        await forgetDialog
+          .getByLabel("I want this character to forget me.")
+          .check();
+        await forgetDialog
+          .getByRole("button", { name: "Forget character", exact: true })
+          .click();
+        await expect(forgetDialog).toHaveCount(0);
         await expect(
-          page.getByLabel("I want this character to forget me."),
-        ).not.toBeChecked();
-        await expect(
-          page.getByText("No saved memories for this character."),
+          page.getByRole("heading", { name: "No saved memories yet" }),
         ).toBeVisible();
       } else {
         await page.getByLabel("Stop recording", { exact: true }).check();

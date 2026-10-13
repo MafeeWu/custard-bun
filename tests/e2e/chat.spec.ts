@@ -13,6 +13,7 @@ import {
 import { createAdminTestDatabase } from "./support/admin";
 import { e2eEnvironment } from "./support/environment";
 import {
+  fakeModelBaseUrl,
   fakeModelRequests,
   registerAndSignIn,
   resetFakeModel,
@@ -92,7 +93,7 @@ async function assertLiveComposerReplayRecovery(
       (request) => request.body.messages?.at(-1)?.content === content,
     );
     expect(providerCalls).toHaveLength(1);
-    const completed = await fetch("http://127.0.0.1:3102/__e2e__/control", {
+    const completed = await fetch(`${fakeModelBaseUrl}/__e2e__/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ completeRequestId: providerCalls[0]!.id }),
@@ -491,7 +492,7 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
 
   await page.goto(calmConversationUrl);
   await page
-    .getByRole("button", { name: "Conversation actions", exact: true })
+    .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
   await page.getByText("Archive this conversation and start over.").click();
   await page.getByRole("button", { name: "Start over", exact: true }).click();
@@ -507,7 +508,12 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
     }),
   ).toBeVisible();
   await expect(page.getByLabel("Message", { exact: true })).toHaveCount(0);
-  await page.getByText("Permanently delete this conversation.").click();
+  await page
+    .getByRole("button", { name: "Open conversation actions", exact: true })
+    .click();
+  await page
+    .getByLabel(/Permanently delete this conversation\./)
+    .check();
   await expect(page.getByText(/Existing long-term memory is retained/)).toBeVisible();
   await page
     .getByRole("button", { name: "Delete conversation", exact: true })
@@ -515,9 +521,11 @@ test("streams, interrupts, retries, stops, restores and deletes conversations sa
   await expect(page).toHaveURL(newConversationUrl);
 
   await page
-    .getByRole("button", { name: "Conversation actions", exact: true })
+    .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
-  await page.getByText("Permanently delete this conversation.").click();
+  await page
+    .getByLabel(/Permanently delete this conversation\./)
+    .check();
   await page
     .getByRole("button", { name: "Delete conversation", exact: true })
     .click();

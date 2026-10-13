@@ -1,6 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 import type { Database } from "../../../src/server/db/client";
-import { fakeModelRequests, sendChatMessage } from "./chat";
+import {
+  fakeModelBaseUrl,
+  fakeModelRequests,
+  sendChatMessage,
+} from "./chat";
 
 export async function completeChat(page: Page, content: string) {
   await sendChatMessage(page, content);
@@ -75,18 +79,33 @@ export async function heldExtraction(
   const content = request.body.messages!.at(-1)!.content;
   expect(typeof content).toBe("string");
   const sourceId = JSON.parse(content as string).sourceMessageId;
-  const result = await database.$client.query(
-    `SELECT r.id AS run_id, r.user_id, r.character_id, r.memory_epoch, r.job_id,
-            e.id AS execution_id, e.response_at, e.settled_at
-     FROM memory_extraction_runs r
-     JOIN generation_attempts a ON a.id=r.generation_attempt_id
-     JOIN conversation_messages m ON m.id=a.assistant_message_id
-     JOIN memory_extraction_executions e ON e.run_id=r.id
-     WHERE r.conversation_id=$1 AND m.in_reply_to=$2 AND r.status='running'`,
-    [conversationId, sourceId],
-  );
-  expect(result.rows).toHaveLength(1);
-  const row = result.rows[0];
+  let rows: Array<{
+    run_id: string;
+    user_id: string;
+    character_id: string;
+    memory_epoch: number;
+    job_id: string;
+    execution_id: string;
+    response_at: Date | null;
+    settled_at: Date | null;
+  }> = [];
+  await expect
+    .poll(async () => {
+      const result = await database.$client.query(
+        `SELECT r.id AS run_id, r.user_id, r.character_id, r.memory_epoch, r.job_id,
+                e.id AS execution_id, e.response_at, e.settled_at
+         FROM memory_extraction_runs r
+         JOIN generation_attempts a ON a.id=r.generation_attempt_id
+         JOIN conversation_messages m ON m.id=a.assistant_message_id
+         JOIN memory_extraction_executions e ON e.run_id=r.id
+         WHERE r.conversation_id=$1 AND m.in_reply_to=$2 AND r.status='running'`,
+        [conversationId, sourceId],
+      );
+      rows = result.rows;
+      return rows.length;
+    })
+    .toBe(1);
+  const row = rows[0]!;
   expect(row.response_at).toBeNull();
   expect(row.settled_at).toBeNull();
   expect(row.job_id).toBeTruthy();
@@ -107,7 +126,7 @@ export async function releaseExtraction(
   held: Awaited<ReturnType<typeof heldExtraction>>,
   forbiddenContent: string,
 ) {
-  const response = await fetch("http://127.0.0.1:3102/__e2e__/control", {
+  const response = await fetch(`${fakeModelBaseUrl}/__e2e__/control`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ completeRequestId: held.requestId }),
@@ -149,7 +168,7 @@ export async function memoryUrl(page: Page) {
 export async function restartConversation(page: Page) {
   const old = page.url();
   await page
-    .getByRole("button", { name: "Conversation actions", exact: true })
+    .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
   await page.getByLabel("Archive this conversation and start over.").check();
   await page.getByRole("button", { name: "Start over", exact: true }).click();
@@ -172,7 +191,7 @@ export async function chatPrompt(currentMessage: string) {
 
 export async function deleteConversation(page: Page) {
   await page
-    .getByRole("button", { name: "Conversation actions", exact: true })
+    .getByRole("button", { name: "Open conversation actions", exact: true })
     .click();
   await expect(
     page.getByText(/Existing long-term memory is retained/),

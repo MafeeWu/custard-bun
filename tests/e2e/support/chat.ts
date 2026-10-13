@@ -1,7 +1,8 @@
 import { expect, type Page } from "@playwright/test";
 import { clearMailbox, waitForActionUrl } from "../helpers/mailbox";
 
-export const fakeModelBaseUrl = "http://127.0.0.1:3102";
+export const fakeModelBaseUrl =
+  process.env.E2E_FAKE_MODEL_BASE_URL ?? "http://127.0.0.1:3102";
 
 export interface FakeModelRequest {
   id: string;

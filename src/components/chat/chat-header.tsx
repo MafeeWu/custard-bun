@@ -1,4 +1,4 @@
-import { Brain, Circle } from "@phosphor-icons/react";
+import { Brain, Circle } from "@phosphor-icons/react/ssr";
 import type { ReactNode } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { LinkButton } from "@/components/ui/button";

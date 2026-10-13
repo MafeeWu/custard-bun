@@ -1,8 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
 import { e2eEnvironment } from "./tests/e2e/support/environment";
 
+const fakeModelBaseUrl =
+  process.env.E2E_FAKE_MODEL_BASE_URL ?? "http://127.0.0.1:3102";
+
 export default defineConfig({
   testDir: "./tests/e2e",
+  testIgnore: ["visual-redesign.spec.ts", "accessibility.spec.ts"],
   fullyParallel: false,
   workers: 1,
   use: {
@@ -12,9 +16,10 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "pnpm build && mkdir -p test-results && : > test-results/e2e-app.log && exec pnpm start >> test-results/e2e-app.log 2>&1",
+        "pnpm db:deploy && pnpm exec tsx tests/e2e/support/reset-state.ts && pnpm build && mkdir -p test-results && : > test-results/e2e-app.log && exec pnpm start >> test-results/e2e-app.log 2>&1",
       url: "http://127.0.0.1:3000/",
       reuseExistingServer: false,
+      timeout: 180_000,
       env: e2eEnvironment,
     },
     {
@@ -25,7 +30,7 @@ export default defineConfig({
     },
     {
       command: "pnpm exec tsx tests/e2e/support/fake-model-server.ts",
-      url: "http://127.0.0.1:3102/",
+      url: `${fakeModelBaseUrl}/`,
       reuseExistingServer: false,
       env: e2eEnvironment,
     },

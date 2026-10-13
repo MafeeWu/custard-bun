@@ -1,4 +1,4 @@
-import type { Icon } from "@phosphor-icons/react";
+import type { Icon } from "@phosphor-icons/react/dist/lib/types";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { cx } from "@/components/ui/cx";

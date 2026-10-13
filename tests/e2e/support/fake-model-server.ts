@@ -407,7 +407,7 @@ const invokedPath = process.argv[1]
 
 if (invokedPath === import.meta.url) {
   createFakeModelServer(process.env.MODEL_API_KEY).listen(
-    3102,
+    Number(process.env.E2E_FAKE_MODEL_PORT ?? "3102"),
     process.env.E2E_FAKE_BIND ?? "127.0.0.1",
   );
 }

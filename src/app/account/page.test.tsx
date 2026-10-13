@@ -137,7 +137,7 @@ test("shows grouped account, privacy, export, deletion, and legal surfaces witho
     "href",
     "/app/memories/character-1",
   );
-  expect(screen.getByText(/Chat usage stopped/)).toBeVisible();
+  expect(screen.getByText("Recall stopped", { exact: true })).toBeVisible();
   expect(
     screen.getByRole("heading", { level: 2, name: "Export your data" }),
   ).toBeVisible();

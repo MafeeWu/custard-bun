@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 import {
   fixturePath,
@@ -283,6 +283,15 @@ async function main() {
         2,
       ),
     );
+    const visualSnapshotSource =
+      "tests/e2e/visual-redesign.spec.ts-snapshots";
+    const visualSnapshotEvidence =
+      "test-results/privacy-release/ui-snapshots";
+    await rm(visualSnapshotEvidence, { recursive: true, force: true });
+    await mkdir("test-results/privacy-release", { recursive: true });
+    await cp(visualSnapshotSource, visualSnapshotEvidence, {
+      recursive: true,
+    });
     console.log(await readFile(`${root}/gate-result.json`, "utf8"));
   } finally {
     await pool?.end();

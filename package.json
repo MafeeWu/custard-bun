@@ -17,6 +17,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:visual": "playwright test --config playwright.visual.config.ts tests/e2e/visual-redesign.spec.ts",
+    "test:e2e:a11y": "playwright test --config playwright.visual.config.ts tests/e2e/accessibility.spec.ts",
     "auth:generate": "auth generate --config src/server/auth/auth-cli.ts --output src/server/db/auth-schema.ts --yes",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/server/db/migrate.ts",

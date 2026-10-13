@@ -25,9 +25,11 @@ export function CharacterCard({
       : index !== undefined
         ? `Character ${index + 1}`
         : "Official character";
+  const headingId = `character-${character.slug}-title`;
 
   return (
     <Link
+      aria-labelledby={headingId}
       data-emphasis={emphasis}
       href={`/characters/${character.slug}`}
       className={cx(
@@ -60,8 +62,17 @@ export function CharacterCard({
           />
         </div>
         <div className="character-card__copy">
-          <p className="character-card__eyebrow">{eyebrow}</p>
-          <h2>{character.displayName}</h2>
+          <p
+            aria-hidden={
+              emphasis === "standard" && index !== undefined
+                ? true
+                : undefined
+            }
+            className="character-card__eyebrow"
+          >
+            {eyebrow}
+          </p>
+          <h2 id={headingId}>{character.displayName}</h2>
           <p className="character-card__summary">
             {character.shortDescription}
           </p>

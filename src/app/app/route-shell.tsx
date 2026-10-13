@@ -1,4 +1,4 @@
-import { Brain, Chats, UserCircle } from "@phosphor-icons/react";
+import { Brain, Chats, UserCircle } from "@phosphor-icons/react/ssr";
 import type { ReactNode } from "react";
 import { BrandMark } from "@/components/brand/brand-mark";
 import { AppShell } from "@/components/layout/app-shell";

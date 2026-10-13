@@ -1,0 +1,36 @@
+branding:
+  name: Clear Daylight Companion Space For Thoughtful Private Chats!
+  description: Private conversations with consistent AI characters.
+  logoPath: /brand/logo.svg
+  faviconPath: /brand/favicon.svg
+  primaryColor: "#F59E0B"
+registration:
+  open: true
+  maxAttemptsPerHourPerIp: 100
+links:
+  privacyUrl: https://example.com/privacy
+  termsUrl: https://example.com/terms
+  supportUrl: mailto:support@example.com
+chat:
+  firstTokenTimeoutMs: 1000
+  requestTimeoutMs: 5000
+  promptTokenBudget: 8192
+  maxInputCharacters: 12000
+  maxOutputTokens: 1024
+  defaultUserDailyRequestLimit: 100
+  defaultUserDailyTokenLimit: 100000
+  defaultInstanceMonthlyRequestLimit: 10000
+  defaultInstanceMonthlyTokenBudget: 10000000
+  maxConcurrentGenerations: 4
+memory:
+  enabled: true
+  promptTokenBudget: 2048
+  relationshipSummaryTokenBudget: 512
+  memoryItemsTokenBudget: 1536
+  maxActiveItemsPerCharacter: 200
+  maxItemCharacters: 500
+  maxSummaryCharacters: 4000
+  extractionRetryLimit: 5
+  extractionRetryDelaySeconds: 60
+  exportRetentionHours: 24
+  maxExportArchiveBytes: 262144000

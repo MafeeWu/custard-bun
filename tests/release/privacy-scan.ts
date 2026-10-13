@@ -33,6 +33,7 @@ export async function scanPrivacySurfaces(root: string): Promise<{
     "worker-logs",
     "admin-html",
     "static-assets",
+    "ui-snapshots",
   ]) {
     const files = await filesRecursively(join(root, surface));
     if (!files.length) throw new Error(`Missing privacy evidence: ${surface}`);

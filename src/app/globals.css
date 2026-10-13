@@ -50,7 +50,7 @@ a {
 }
 
 .brand-link {
-  color: var(--color-accent);
+  color: var(--color-accent-text);
   font-weight: 600;
   text-decoration: none;
 }
@@ -694,11 +694,23 @@ a {
 .home-preview-card__eyebrow,
 .home-stage__eyebrow {
   margin: 0;
-  color: var(--color-accent-hover);
+  color: var(--color-accent-text);
   font-size: var(--font-size-label);
   font-weight: 700;
   letter-spacing: var(--tracking-label);
   text-transform: uppercase;
+}
+
+.ui-surface--subtle .home-section-heading__eyebrow {
+  color: var(--color-text);
+}
+
+.ui-surface--accent .home-section-heading__eyebrow {
+  color: var(--color-accent-soft-contrast);
+}
+
+.ui-surface--accent .home-value__copy {
+  color: var(--color-accent-soft-contrast);
 }
 
 .home-hero__headline,
@@ -1103,6 +1115,10 @@ a {
   min-width: 0;
 }
 
+.chat-message:last-child {
+  scroll-margin-bottom: var(--chat-composer-reserved);
+}
+
 .chat-message__bubble {
   padding: 0.875rem 1rem;
   border-radius: var(--radius-chat) var(--radius-chat) var(--radius-chat)
@@ -1440,7 +1456,7 @@ a {
 }
 
 .character-eyebrow {
-  color: var(--color-accent);
+  color: var(--color-accent-text);
   font-size: 0.875rem;
 }
 
@@ -1956,7 +1972,7 @@ a {
 }
 
 .ui-page-header__eyebrow {
-  color: var(--color-accent);
+  color: var(--color-accent-text);
   font-size: var(--font-size-label);
   font-weight: 700;
   letter-spacing: var(--tracking-label);
@@ -2402,7 +2418,7 @@ a {
 }
 
 .auth-brand-panel__eyebrow {
-  color: var(--color-accent-hover);
+  color: var(--color-accent-text);
   font-size: var(--font-size-label);
   font-weight: 700;
   letter-spacing: var(--tracking-label);
@@ -2565,6 +2581,10 @@ a {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .home-motion {
+    transform: none !important;
+  }
+
   .chat-message[data-motion="reduced"] {
     animation: chat-message-enter-reduced var(--duration-fast)
       var(--ease-standard);

@@ -1,4 +1,4 @@
-import { Chats } from "@phosphor-icons/react";
+import { Chats } from "@phosphor-icons/react/ssr";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { startConversationAction } from "@/app/app/conversations/actions";

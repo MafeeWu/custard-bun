@@ -32,7 +32,7 @@ test("loads name, logo, favicon, and visible primary color from runtime YAML", a
   await withBrandingServer(configPath, yaml, async (url) => {
     await page.goto(url);
     await expect(
-      page.getByRole("heading", { name: "Golden Friend" }),
+      page.locator("main").getByText("Golden Friend", { exact: true }),
     ).toBeVisible();
     await expect(page.locator("img").first()).toHaveAttribute(
       "src",

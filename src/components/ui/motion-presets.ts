@@ -1,3 +1,5 @@
+"use client";
+
 import { type MotionProps, type Variants } from "motion/react";
 
 export interface MotionPresetCollection {

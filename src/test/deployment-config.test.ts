@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 import { parse } from "yaml";
 import { ESLint } from "eslint";
@@ -31,7 +31,7 @@ test("production image builds with bounded worker and heap use without changing 
   const build = dockerfile
     .split("FROM deps AS build")[1]
     ?.split("FROM base AS runner")[0];
-  expect(build).toContain("ENV NODE_OPTIONS=--max-old-space-size=768");
+  expect(build).toContain("ENV NODE_OPTIONS=--max-old-space-size=1024");
   expect(build).toContain("pnpm build --webpack");
   expect(dockerfile.split("FROM base AS runner")[1]).not.toContain(
     "NODE_OPTIONS",
@@ -160,4 +160,45 @@ test("the deterministic model provider remains Playwright-only", async () => {
   );
   expect(composeSource).not.toContain("3102:3102");
   expect(composeSource).not.toContain("__e2e__");
+});
+
+test("production builds pin repository-owned font, motion, and icon packages without remote assets", async () => {
+  const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  const lockfile = await readFile("pnpm-lock.yaml", "utf8");
+  const layout = await readFile("src/app/layout.tsx", "utf8");
+  const styles = [
+    await readFile("src/app/globals.css", "utf8"),
+    await readFile("src/app/theme.css", "utf8"),
+  ].join("\n");
+
+  expect(packageJson.dependencies).toMatchObject({
+    "@phosphor-icons/react": "2.1.10",
+    geist: "1.7.2",
+    motion: "14.1.0",
+  });
+  expect(lockfile).toContain("'@phosphor-icons/react@2.1.10'");
+  expect(lockfile).toContain("geist@1.7.2");
+  expect(lockfile).toContain("motion@14.1.0");
+  expect(layout).toContain('from "geist/font/');
+  expect(styles).not.toMatch(/url\(\s*["']?https?:\/\//i);
+});
+
+test("production image retains every repository-owned public asset", async () => {
+  const dockerfile = await readFile("Dockerfile", "utf8");
+  const dockerignore = await readFile(".dockerignore", "utf8");
+  const brandAssets = await readdir("public/brand");
+  const characterAssets = await readdir("public/characters");
+
+  expect(dockerfile).toContain("COPY --from=build /app/public ./public");
+  expect(dockerignore).not.toMatch(/^public(?:\/|$)/m);
+  expect(brandAssets.sort()).toEqual(["favicon.svg", "logo.svg"]);
+  expect(characterAssets.sort()).toEqual([
+    "action-coach.svg",
+    "calm-listener.svg",
+    "creative-storyteller.svg",
+    "energetic-friend.svg",
+    "rational-companion.svg",
+  ]);
 });

@@ -1,10 +1,16 @@
 import { expect, test } from "@playwright/test";
+import { rateLimit } from "../../src/server/db/auth-schema";
+import { createAdminTestDatabase } from "./support/admin";
+import { e2eEnvironment } from "./support/environment";
 import { clearMailbox, waitForActionUrl } from "./helpers/mailbox";
 
 test("registers, verifies, signs in, resets password, and deletes the account", async ({
   page,
   browser,
 }) => {
+  const database = createAdminTestDatabase(e2eEnvironment.DATABASE_URL!);
+  await database.delete(rateLimit);
+  await database.$client.end();
   await clearMailbox();
   const email = `person-${Date.now()}@example.com`;
   const firstPassword = "correct horse battery staple";
@@ -66,9 +72,17 @@ test("registers, verifies, signs in, resets password, and deletes the account", 
   await expect(page).toHaveURL(/\/app$/);
 
   await page.goto("/account");
-  await page.getByLabel("Confirm account email").fill(email);
-  await page.getByRole("button", { name: "Delete account" }).click();
-  await expect(page.getByRole("status")).toContainText(/confirmation link/i);
+  await page
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  const deletionDialog = page.getByRole("dialog", { name: "Delete account" });
+  await deletionDialog.getByLabel("Confirm account email").fill(email);
+  await deletionDialog
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: /confirmation link/i }),
+  ).toBeVisible();
   const deletionUrl = await waitForActionUrl(email, "Confirm deletion");
   await page.goto(deletionUrl);
   await page

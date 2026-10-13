@@ -8,6 +8,7 @@ import { unzipSync, strFromU8 } from "fflate";
 import { bootstrapAdmin, createAdminTestDatabase } from "./support/admin";
 import { e2eEnvironment } from "./support/environment";
 import {
+  fakeModelBaseUrl,
   registerAndSignIn,
   resetFakeModel,
   startCharacterConversation,
@@ -60,6 +61,7 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
       "app-logs",
       "worker-logs",
       "static-assets",
+      "ui-snapshots",
     ]) {
       await mkdir(`${root}/${name}`, { recursive: true });
     }
@@ -289,12 +291,18 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     );
     const held = await heldExtraction(database, conversationId);
     await page.goto("/account");
-    await page.getByLabel("Confirm account email").fill(email);
     await page
       .getByRole("button", { name: "Delete account", exact: true })
       .click();
+    const deletionDialog = page.getByRole("dialog", {
+      name: "Delete account",
+    });
+    await deletionDialog.getByLabel("Confirm account email").fill(email);
+    await deletionDialog
+      .getByRole("button", { name: "Delete account", exact: true })
+      .click();
     await expect(
-      page.getByRole("status").filter({ hasText: "confirmation link" }),
+      page.getByRole("status").filter({ hasText: /confirmation link/i }),
     ).toBeVisible();
     const requestId = (
       await database.$client.query(
@@ -354,7 +362,7 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
           (await (await fetch("http://127.0.0.1:3103/state")).json()).state,
       )
       .toBe("resumed");
-    const release = await fetch("http://127.0.0.1:3102/__e2e__/control", {
+    const release = await fetch(`${fakeModelBaseUrl}/__e2e__/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ completeRequestId: held.requestId }),
@@ -499,6 +507,11 @@ test("private ZIP, expiry, immediate lockout, stalled work purge, and all-surfac
     await cp("test-results/e2e-worker.log", `${root}/worker-logs/all.log`);
     await cp(".next/static", `${root}/static-assets/next`, { recursive: true });
     await cp("public", `${root}/static-assets/public`, { recursive: true });
+    await cp(
+      "tests/e2e/visual-redesign.spec.ts-snapshots",
+      `${root}/ui-snapshots`,
+      { recursive: true },
+    );
     const scan = await scanPrivacySurfaces(root);
     await writeFile(
       `${root}/scan-result.json`,

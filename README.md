@@ -62,6 +62,22 @@ configuration.
 Mailpit is used only by the automated test stack and is not a production
 dependency.
 
+## Clear Daylight interface
+
+The interface uses the Clear Daylight light theme by default and follows the
+system `prefers-color-scheme` setting for its coordinated dark theme. There is
+no client-only theme toggle, so the selected theme applies before hydration.
+The deployer-owned `branding.primaryColor` remains the only accent input;
+runtime-derived button, link, soft-surface, and focus colors preserve readable
+contrast for very light, very dark, saturated, and muted accents in both
+themes.
+
+Geist Sans and Geist Mono are bundled from the pinned local package, and the
+single Phosphor icon family is bundled with the application. The production UI
+does not fetch remote fonts or image assets. Motion follows
+`prefers-reduced-motion`; reduced-motion users receive non-spatial transitions,
+and essential dialog and drawer focus behavior remains available.
+
 `POSTGRES_PASSWORD` may contain URI delimiters such as `/`, `?`, `#`, `@`,
 literal `%2F`, `$`, and spaces. Use **single quotes** in `.env`, for example
 `POSTGRES_PASSWORD='replace/ ? # @ %2F $literal space'` (not a real password).
@@ -85,7 +101,7 @@ docker compose up --build
 The same production image is used for the migration job, worker, and app.
 It retains the pinned lockfile for runtime CLI commands and omits rebuild-only
 Next caches; startup must not resolve or install a new dependency graph.
-The image build invokes `pnpm build --webpack` with a build-only 768 MiB V8 heap
+The image build invokes `pnpm build --webpack` with a build-only 1024 MiB V8 heap
 and one Next build worker, avoiding unbounded native bundler memory on small
 self-hosted Docker VMs. These limits do not constrain the runtime app or worker.
 The ordinary host release gate still runs `pnpm build` with the default bundler.
@@ -656,6 +672,24 @@ pnpm db:deploy
 pnpm test:e2e
 pnpm db:test:down
 ```
+
+Run the dedicated Clear Daylight browser gates after deploying the guarded test
+database:
+
+```bash
+pnpm db:deploy
+pnpm test:e2e:visual
+pnpm test:e2e:a11y
+```
+
+The visual gate compares desktop light, desktop dark, mobile reduced-motion,
+320px/200%-scale, no-JavaScript theme, error-state, and representative product
+surfaces. The accessibility gate runs Axe with contrast enabled and disabled in
+separate passes and verifies keyboard navigation, Escape handling, and focus
+restoration. Committed baselines and runtime evidence use synthetic fixtures
+and are scanned recursively for privacy sentinels. Treat all screenshot and
+browser evidence as private test artifacts; do not publish or attach it outside
+the controlled review process.
 
 Before running `db:deploy` in the test sequence, ensure `.env`'s `DATABASE_URL`
 targets the same guarded local test database as `TEST_DATABASE_URL`. Integration

@@ -60,6 +60,9 @@
   --color-accent-soft-contrast: #0b1220;
   --color-accent-border: #f7c977;
   --color-accent-contrast: #0b1220;
+  --color-accent-text-light: #9c6913;
+  --color-accent-text-dark: #f59e0b;
+  --color-accent-text: var(--color-accent-text-light);
   --color-focus: #7f5c19;
   --color-success: #0f766e;
   --color-warning: #b45309;
@@ -81,6 +84,7 @@
     --color-text: #e5eef8;
     --color-text-muted: #c7d4e5;
     --color-text-subtle: #94a9c3;
+    --color-accent-text: var(--color-accent-text-dark);
     --color-success: #34d399;
     --color-warning: #fbbf24;
     --color-danger: #fb7185;

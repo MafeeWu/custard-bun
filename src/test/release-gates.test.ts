@@ -46,4 +46,8 @@ test("production gate extends real Compose and starts both app and worker behind
   expect(script).toContain("buildImages");
   expect(script).toContain("data_export_jobs");
   expect(script).toContain("account_deletion_requests");
+  expect(script).toContain(
+    "tests/e2e/visual-redesign.spec.ts-snapshots",
+  );
+  expect(script).toContain("test-results/privacy-release/ui-snapshots");
 });

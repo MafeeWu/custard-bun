@@ -282,7 +282,7 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
     );
 
     await userPage
-      .getByRole("button", { name: "Conversation actions", exact: true })
+      .getByRole("button", { name: "Open conversation actions", exact: true })
       .click();
     await userPage
       .getByText("Archive this conversation and start over.")
@@ -339,7 +339,7 @@ test("an administrator drafts, previews, publishes, selects defaults, archives, 
       userPage.locator('li[data-status="complete"]').last(),
     ).toContainText("Hello there");
     await userPage
-      .getByRole("button", { name: "Conversation actions", exact: true })
+      .getByRole("button", { name: "Open conversation actions", exact: true })
       .click();
     await userPage
       .getByText("Archive this conversation and start over.")

@@ -1,4 +1,4 @@
-import { ArrowRight } from "@phosphor-icons/react";
+import { ArrowRight } from "@phosphor-icons/react/ssr";
 import Link from "next/link";
 import { Avatar } from "@/components/ui/avatar";
 import { Surface } from "@/components/ui/surface";

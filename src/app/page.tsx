@@ -1,4 +1,4 @@
-import { Chats } from "@phosphor-icons/react";
+import { Chats } from "@phosphor-icons/react/ssr";
 import { BrandMark } from "@/components/brand/brand-mark";
 import { HomeHero } from "@/components/home/home-hero";
 import { HomeSections } from "@/components/home/home-sections";

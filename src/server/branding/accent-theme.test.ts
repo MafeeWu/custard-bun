@@ -7,6 +7,8 @@ import {
 
 const LIGHT_SURFACE = "#F8FAFC";
 const DARK_SURFACE = "#0F172A";
+const LIGHT_TEXT_SURFACES = ["#FFFFFF", LIGHT_SURFACE, "#F1F5F9"];
+const DARK_TEXT_SURFACES = [DARK_SURFACE, "#111C2E", "#162338"];
 
 describe("createBrandThemeVariables", () => {
   test.each(["#FFFFFF", "#000000", "#F59E0B", "#1757D5", "#7F8C8D"])(
@@ -37,6 +39,26 @@ describe("createBrandThemeVariables", () => {
           theme["--color-accent-soft"],
         ),
       ).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  test.each(["#FFFFFF", "#000000", "#F59E0B", "#00FF00", "#FF00FF"])(
+    "derives readable accent text for light and dark surfaces from %s",
+    (accent) => {
+      const theme = createBrandThemeVariables(accent) as Record<string, string>;
+
+      for (const surface of LIGHT_TEXT_SURFACES) {
+        expect(
+          contrastRatio(theme["--color-accent-text-light"]!, surface),
+          `light surface ${surface}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const surface of DARK_TEXT_SURFACES) {
+        expect(
+          contrastRatio(theme["--color-accent-text-dark"]!, surface),
+          `dark surface ${surface}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
     },
   );
 

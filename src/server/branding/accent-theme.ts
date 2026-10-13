@@ -8,6 +8,8 @@ export type BrandThemeVariable =
   | "--color-accent-soft-contrast"
   | "--color-accent-border"
   | "--color-accent-contrast"
+  | "--color-accent-text-light"
+  | "--color-accent-text-dark"
   | "--color-focus";
 
 export type BrandThemeVariables = Record<BrandThemeVariable, string>;
@@ -17,7 +19,10 @@ const LIGHT_TEXT = "#FFFFFF";
 const DARK_TEXT = "#0B1220";
 const LIGHT_FOCUS_SURFACE = "#F8FAFC";
 const DARK_FOCUS_SURFACE = "#0F172A";
+const LIGHT_TEXT_SURFACE = "#F1F5F9";
+const DARK_TEXT_SURFACE = "#162338";
 const MINIMUM_FOCUS_CONTRAST = 3;
+const MINIMUM_TEXT_CONTRAST = 4.5;
 const FOCUS_MIX_STEPS = [
   0, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32, 0.36, 0.44, 0.52, 0.6, 0.68, 0.76,
 ] as const;
@@ -48,6 +53,16 @@ export function createBrandThemeVariables(
     "--color-accent-soft-contrast": deriveReadableTextColor(accentSoft),
     "--color-accent-border": mixHex(accent, LIGHT_TEXT, 0.62),
     "--color-accent-contrast": deriveReadableTextColor(accent),
+    "--color-accent-text-light": deriveSurfaceTextColor(
+      accent,
+      LIGHT_TEXT_SURFACE,
+      DARK_TEXT,
+    ),
+    "--color-accent-text-dark": deriveSurfaceTextColor(
+      accent,
+      DARK_TEXT_SURFACE,
+      LIGHT_TEXT,
+    ),
     "--color-focus": deriveFocusColor(accent),
   };
 }
@@ -112,6 +127,21 @@ function deriveReadableTextColor(background: string): string {
     contrastRatio(LIGHT_TEXT, background)
     ? DARK_TEXT
     : LIGHT_TEXT;
+}
+
+function deriveSurfaceTextColor(
+  accent: string,
+  surface: string,
+  target: string,
+): string {
+  for (let percentage = 0; percentage <= 100; percentage += 1) {
+    const candidate = mixHex(accent, target, percentage / 100);
+    if (contrastRatio(candidate, surface) >= MINIMUM_TEXT_CONTRAST) {
+      return candidate;
+    }
+  }
+
+  return target;
 }
 
 function mixHex(base: string, target: string, amount: number): string {

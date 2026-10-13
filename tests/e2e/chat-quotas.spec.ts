@@ -158,9 +158,9 @@ async function setGlobalSettings(
   await page
     .getByRole("button", { name: "Save chat settings", exact: true })
     .click();
-  await expect(page.getByRole("status")).toContainText(
-    "Chat settings updated.",
-  );
+  await expect(
+    page.getByText("Chat settings updated.", { exact: true }),
+  ).toBeVisible();
 }
 
 async function setUserOverride(

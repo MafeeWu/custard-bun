@@ -14,7 +14,7 @@ RUN pnpm install --prod --frozen-lockfile
 
 FROM deps AS build
 COPY . .
-ENV NODE_OPTIONS=--max-old-space-size=768
+ENV NODE_OPTIONS=--max-old-space-size=1024
 # Build-only placeholders satisfy strict validation. Runtime containers
 # revalidate their actual mounted config and environment on startup.
 ENV APP_CONFIG_PATH=app.config.yml

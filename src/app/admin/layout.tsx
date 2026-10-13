@@ -1,4 +1,10 @@
-import { Brain, ChartBar, Chats, ShieldCheck, Users } from "@phosphor-icons/react";
+import {
+  Brain,
+  ChartBar,
+  Chats,
+  ShieldCheck,
+  Users,
+} from "@phosphor-icons/react/ssr";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
 import { BrandMark } from "@/components/brand/brand-mark";
