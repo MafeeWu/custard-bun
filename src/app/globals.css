@@ -289,12 +289,9 @@ a {
   z-index: 1;
   display: flex;
   justify-content: end;
-  padding: var(--space-3) 0 0;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    var(--color-canvas) var(--space-3)
-  );
+  padding: var(--space-3) 0;
+  background: var(--color-canvas);
+  border-top: 1px solid var(--color-border);
 }
 
 @media (max-width: 720px) {
@@ -1683,6 +1680,11 @@ a {
 
 .ui-field__error {
   color: var(--color-danger);
+}
+
+.ui-field__error-list {
+  margin: 0;
+  padding-inline-start: var(--space-5);
 }
 
 .ui-field__control,

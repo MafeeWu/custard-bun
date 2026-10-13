@@ -87,3 +87,47 @@ test("applies reset values and submits the incremented revision on the next muta
   expect(submitted).toBeInstanceOf(FormData);
   expect((submitted as FormData).get("expectedRevision")).toBe("4");
 });
+
+test("renders every validation message returned for a field", async () => {
+  const user = userEvent.setup();
+  vi.mocked(updateGlobalChatSettingsAction).mockResolvedValue({
+    status: "error",
+    message: "Check the highlighted fields and try again.",
+    fieldErrors: {
+      userDailyRequestLimit: [
+        "Enter a positive whole number.",
+        "Keep the request limit below the deployment maximum.",
+      ],
+    },
+    values: {
+      expectedRevision: "3",
+      userDailyRequestLimit: "0",
+      userDailyTokenLimit: "10000",
+      instanceMonthlyRequestLimit: "1000",
+      instanceMonthlyTokenBudget: "100000",
+      maxConcurrentGenerations: "4",
+    },
+  });
+
+  render(
+    <ChatSettingsForm
+      settings={{
+        revision: 3,
+        userDailyRequestLimit: 100,
+        userDailyTokenLimit: 10_000,
+        instanceMonthlyRequestLimit: 1_000,
+        instanceMonthlyTokenBudget: 100_000,
+        maxConcurrentGenerations: 4,
+      }}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Save chat settings" }));
+
+  expect(
+    await screen.findByText("Enter a positive whole number."),
+  ).toBeVisible();
+  expect(
+    screen.getByText("Keep the request limit below the deployment maximum."),
+  ).toBeVisible();
+});

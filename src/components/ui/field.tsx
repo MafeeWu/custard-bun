@@ -14,7 +14,7 @@ export interface FieldProps {
   label: string;
   htmlFor: string;
   hint?: string;
-  error?: string;
+  error?: ReactNode;
   children: ReactNode;
 }
 
@@ -59,7 +59,7 @@ export function Field({ children, error, hint, htmlFor, label }: FieldProps) {
   );
 
   return (
-    <div className={cx("ui-field", error && "ui-field--error")}>
+    <div className={cx("ui-field", Boolean(error) && "ui-field--error")}>
       <label className="ui-field__label" htmlFor={htmlFor}>
         {label}
       </label>
@@ -70,11 +70,25 @@ export function Field({ children, error, hint, htmlFor, label }: FieldProps) {
         </p>
       ) : null}
       {error ? (
-        <p className="ui-field__error" id={errorId} role="alert">
+        <div className="ui-field__error" id={errorId} role="alert">
           {error}
-        </p>
+        </div>
       ) : null}
     </div>
+  );
+}
+
+export function fieldErrorMessages(messages?: readonly string[]) {
+  if (!messages?.length) {
+    return null;
+  }
+
+  return (
+    <ul className="ui-field__error-list">
+      {messages.map((message) => (
+        <li key={message}>{message}</li>
+      ))}
+    </ul>
   );
 }
 

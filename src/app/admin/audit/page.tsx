@@ -26,23 +26,39 @@ function auditPageHref(page: number): string {
   return `/admin/audit?${params.toString()}`;
 }
 
-const blockedMetadataKeys = new Set([
-  "prompt",
-  "password",
-  "token",
-  "reason",
-  "message",
-  "memory",
-  "providerkey",
+const visibleMetadataKeys = new Set([
+  "archived",
+  "changedFields",
+  "dailyRequestLimit",
+  "dailyTokenLimit",
+  "enabled",
+  "instanceMonthlyRequestLimit",
+  "instanceMonthlyTokenBudget",
+  "maxConcurrentGenerations",
+  "memoryEpoch",
+  "newVersionNumber",
+  "nextRevision",
+  "nextState",
+  "operationId",
+  "operationType",
+  "previousDailyRequestLimit",
+  "previousDailyTokenLimit",
+  "previousEnabled",
+  "previousRevision",
+  "previousState",
+  "previousVersionNumber",
+  "revision",
+  "slug",
+  "userDailyRequestLimit",
+  "userDailyTokenLimit",
+  "versionNumber",
 ]);
 
 function metadataSummary(
   metadata: Record<string, string | number | boolean | null>,
 ) {
   const safe = Object.fromEntries(
-    Object.entries(metadata).filter(
-      ([key]) => !blockedMetadataKeys.has(key.toLowerCase()),
-    ),
+    Object.entries(metadata).filter(([key]) => visibleMetadataKeys.has(key)),
   );
   return JSON.stringify(safe);
 }

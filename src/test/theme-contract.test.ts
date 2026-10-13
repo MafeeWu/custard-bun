@@ -58,10 +58,10 @@ test("accent-soft chat surfaces declare a dedicated readable foreground", async 
     /\.chat-version-notice\s*\{[^}]*color:\s*var\(--color-accent-soft-contrast\);/s,
   );
   expect(css).toMatch(
-    /\.chat-message-user article\s*\{[^}]*color:\s*var\(--color-accent-soft-contrast\);/s,
+    /\.chat-message--user \.chat-message__bubble\s*\{[^}]*color:\s*var\(--color-accent-soft-contrast\);/s,
   );
   expect(css).toMatch(
-    /\.chat-message-user\s+\.chat-message-author,\s*\.chat-message-user\s+\.chat-message-status\s*\{[^}]*color:\s*var\(--color-accent-soft-contrast\);/s,
+    /\.chat-message--user\s+\.chat-message-author,\s*\.chat-message--user\s+\.chat-message-status\s*\{[^}]*color:\s*var\(--color-accent-soft-contrast\);/s,
   );
 });
 
@@ -91,4 +91,14 @@ test("mobile eyebrow styling stays inside a valid character-eyebrow rule", async
 
   expect(hasEyebrowRule).toBe(true);
   expect(hasOrphanDeclarations).toBe(false);
+});
+
+test("admin action surfaces avoid decorative gradients", async () => {
+  const css = await readFile("src/app/globals.css", "utf8");
+  const stickyActions = extractBlock(
+    css,
+    ".admin-character-editor__sticky-actions",
+  );
+
+  expect(stickyActions).not.toContain("gradient(");
 });

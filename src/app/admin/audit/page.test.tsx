@@ -21,7 +21,7 @@ beforeEach(() => {
   });
 });
 
-test("renders safe audit event summaries without prompt or reason content", async () => {
+test("renders only allowlisted audit metadata fields", async () => {
   vi.mocked(listAdminAuditEvents).mockResolvedValue({
     total: 51,
     events: [
@@ -37,6 +37,12 @@ test("renders safe audit event summaries without prompt or reason content", asyn
           prompt: "full prompt",
           memory: "memory content",
           providerKey: "private-provider-key",
+          requestId: "private-request-id",
+          providerEndpoint: "https://private-provider.example/v1",
+          rawError: "private stack trace",
+          apiKey: "private-api-key",
+          disableReason: "private disable reason",
+          unexpectedField: "not explicitly approved",
         },
         operationId: "op-1",
         createdAt: new Date("2026-10-08T01:02:03Z"),
@@ -62,7 +68,7 @@ test("renders safe audit event summaries without prompt or reason content", asyn
   expect(screen.getAllByText("op-1")[0]).toBeVisible();
   expect(
     screen.queryByText(
-      /Repeated abuse|full prompt|ban reason|memory content|private-provider-key/i,
+      /Repeated abuse|full prompt|ban reason|memory content|private-provider-key|private-request-id|private-provider\.example|private stack trace|private-api-key|private disable reason|not explicitly approved/i,
     ),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Next page" })).toHaveAttribute(

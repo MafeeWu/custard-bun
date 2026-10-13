@@ -3,7 +3,11 @@
 import { useActionState, useId } from "react";
 import { AdminSection } from "@/components/admin/admin-section";
 import { Button } from "@/components/ui/button";
-import { CheckboxField, Field } from "@/components/ui/field";
+import {
+  CheckboxField,
+  Field,
+  fieldErrorMessages,
+} from "@/components/ui/field";
 import { StatusNotice } from "@/components/ui/status-notice";
 import {
   resetGlobalMemorySettingsAction,
@@ -60,7 +64,7 @@ export function GlobalMemorySettingsForm({
           value={values.expectedRevision}
         />
         <Field
-          error={state.fieldErrors?.enabled?.[0]}
+          error={fieldErrorMessages(state.fieldErrors?.enabled)}
           htmlFor={`${id}-enabled`}
           label="New memory processing"
         >

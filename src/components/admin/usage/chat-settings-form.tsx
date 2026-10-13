@@ -3,7 +3,12 @@
 import { useActionState, useId } from "react";
 import { AdminSection } from "@/components/admin/admin-section";
 import { Button } from "@/components/ui/button";
-import { CheckboxField, Field, Input } from "@/components/ui/field";
+import {
+  CheckboxField,
+  Field,
+  fieldErrorMessages,
+  Input,
+} from "@/components/ui/field";
 import { StatusNotice } from "@/components/ui/status-notice";
 import {
   resetGlobalChatSettingsAction,
@@ -82,7 +87,7 @@ export function ChatSettingsForm({
         />
         {fields.map(([name, label]) => (
           <Field
-            error={state.fieldErrors?.[name]?.[0]}
+            error={fieldErrorMessages(state.fieldErrors?.[name])}
             htmlFor={`${formId}-${name}`}
             key={name}
             label={label}

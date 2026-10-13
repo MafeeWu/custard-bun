@@ -3,7 +3,7 @@
 import { useActionState, useId } from "react";
 import type { UserAdminActionState } from "@/app/admin/users/actions";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/field";
+import { Field, fieldErrorMessages, Input } from "@/components/ui/field";
 import { StatusNotice } from "@/components/ui/status-notice";
 
 type UserQuotaAction = (
@@ -48,7 +48,7 @@ export function UserQuotaForm({
         </StatusNotice>
       ) : null}
       <Field
-        error={state.fieldErrors?.dailyRequestLimit?.[0]}
+        error={fieldErrorMessages(state.fieldErrors?.dailyRequestLimit)}
         htmlFor={`${formId}-requests`}
         label="Daily request override"
       >
@@ -63,7 +63,7 @@ export function UserQuotaForm({
         />
       </Field>
       <Field
-        error={state.fieldErrors?.dailyTokenLimit?.[0]}
+        error={fieldErrorMessages(state.fieldErrors?.dailyTokenLimit)}
         htmlFor={`${formId}-tokens`}
         label="Daily token override"
       >
