@@ -132,7 +132,7 @@ release artifacts.
 
 ## Phase 6: Clear Daylight Interface Redesign
 
-**Status:** Proposed design pending written-spec approval.
+**Status:** Implementation plan ready for approval.
 
 **Design:** `docs/superpowers/specs/2026-10-13-clear-daylight-interface-redesign.md`
 
