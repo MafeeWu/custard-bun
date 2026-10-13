@@ -206,12 +206,13 @@ a {
   padding: 0.75rem 1rem;
   border-left: 4px solid var(--color-accent);
   background: var(--color-accent-soft);
+  color: var(--color-accent-soft-contrast);
 }
 
 .chat-conversation {
   display: grid;
   gap: 1rem;
-  min-height: calc(100vh - 11rem);
+  min-height: calc(100dvh - 11rem);
   margin-top: 1rem;
 }
 
@@ -239,6 +240,16 @@ a {
 .chat-message-user article {
   background: var(--color-accent-soft);
   border-color: var(--color-accent-border);
+  color: var(--color-accent-soft-contrast);
+}
+
+.chat-message-user .chat-message-author,
+.chat-message-user .chat-message-status {
+  color: var(--color-accent-soft-contrast);
+}
+
+.chat-message-user pre {
+  color: var(--color-text);
 }
 
 .chat-message-author,

@@ -5,6 +5,7 @@ export type BrandThemeVariable =
   | "--color-accent-hover"
   | "--color-accent-active"
   | "--color-accent-soft"
+  | "--color-accent-soft-contrast"
   | "--color-accent-border"
   | "--color-accent-contrast"
   | "--color-focus";
@@ -29,18 +30,24 @@ export function createBrandThemeVariables(
   }
 
   const accent = primaryColor.toUpperCase();
-  const contrast =
-    contrastRatio(DARK_TEXT, accent) >= contrastRatio(LIGHT_TEXT, accent)
-      ? DARK_TEXT
-      : LIGHT_TEXT;
+  const accentSoft = mixHex(accent, LIGHT_TEXT, 0.86);
 
   return {
     "--color-accent": accent,
-    "--color-accent-hover": mixHex(accent, contrast, 0.12),
-    "--color-accent-active": mixHex(accent, contrast, 0.2),
-    "--color-accent-soft": mixHex(accent, LIGHT_TEXT, 0.86),
+    "--color-accent-hover": mixHex(
+      accent,
+      deriveReadableTextColor(accent),
+      0.12,
+    ),
+    "--color-accent-active": mixHex(
+      accent,
+      deriveReadableTextColor(accent),
+      0.2,
+    ),
+    "--color-accent-soft": accentSoft,
+    "--color-accent-soft-contrast": deriveReadableTextColor(accentSoft),
     "--color-accent-border": mixHex(accent, LIGHT_TEXT, 0.62),
-    "--color-accent-contrast": contrast,
+    "--color-accent-contrast": deriveReadableTextColor(accent),
     "--color-focus": deriveFocusColor(accent),
   };
 }
@@ -98,6 +105,13 @@ function deriveFocusColor(accent: string): string {
       right.minimumContrast - left.minimumContrast ||
       left.distance - right.distance,
   )[0]!.color;
+}
+
+function deriveReadableTextColor(background: string): string {
+  return contrastRatio(DARK_TEXT, background) >=
+    contrastRatio(LIGHT_TEXT, background)
+    ? DARK_TEXT
+    : LIGHT_TEXT;
 }
 
 function mixHex(base: string, target: string, amount: number): string {

@@ -25,6 +25,21 @@ describe("createBrandThemeVariables", () => {
     },
   );
 
+  test.each(["#FFFFFF", "#000000", "#F59E0B", "#1757D5", "#7F8C8D"])(
+    "derives readable accent-soft surface text from %s",
+    (accent) => {
+      const theme = createBrandThemeVariables(accent) as Record<string, string>;
+
+      expect(theme).toHaveProperty("--color-accent-soft-contrast");
+      expect(
+        contrastRatio(
+          theme["--color-accent-soft-contrast"],
+          theme["--color-accent-soft"],
+        ),
+      ).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
   test.each(["#FFFFFF", "#05070B", "#1757D5", "#7F8C8D"])(
     "keeps focus visible for %s on light and dark surfaces",
     (accent) => {
