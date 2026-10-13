@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 import { authClient } from "@/server/auth/auth-client";
 import { authErrorMessage } from "./error-message";
 
@@ -45,23 +48,37 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form aria-label="Forgot password" onSubmit={handleSubmit}>
-      <label htmlFor="forgot-password-email">Email</label>
-      <input
-        id="forgot-password-email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        disabled={pending}
-        required
-      />
+    <form
+      aria-label="Forgot password"
+      className="auth-form"
+      onSubmit={handleSubmit}
+    >
+      <div className="auth-form__fields">
+        <Field
+          error={errorMessage}
+          htmlFor="forgot-password-email"
+          label="Email"
+        >
+          <Input
+            autoComplete="email"
+            disabled={pending}
+            id="forgot-password-email"
+            name="email"
+            required
+            type="email"
+          />
+        </Field>
+      </div>
 
-      <button disabled={pending} type="submit">
-        {pending ? "Sending reset link..." : "Send reset link"}
-      </button>
+      <Button className="auth-form__submit" pending={pending} type="submit">
+        Send reset link
+      </Button>
 
-      {statusMessage ? <p role="status">{statusMessage}</p> : null}
-      {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+      {statusMessage ? (
+        <StatusNotice className="auth-form__notice" tone="success">
+          {statusMessage}
+        </StatusNotice>
+      ) : null}
     </form>
   );
 }

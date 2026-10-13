@@ -37,6 +37,38 @@ test("returns to the sign-in page after sign out", async () => {
   expect(push).toHaveBeenCalledWith("/auth/sign-in");
 });
 
+test("keeps the visible button label stable and blocks duplicate sign-out requests while pending", async () => {
+  const push = vi.fn();
+  let resolveSignOut: ((value: unknown) => void) | undefined;
+
+  vi.mocked(useRouter).mockReturnValue({ push } as never);
+  vi.mocked(authClient.signOut).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveSignOut = resolve;
+      }) as never,
+  );
+
+  const user = userEvent.setup();
+
+  render(<SignOutButton />);
+
+  await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+  const button = screen.getByRole("button", { name: "Sign out" });
+
+  expect(button).toBeDisabled();
+  expect(button).toHaveClass("auth-form__submit");
+  expect(button).toHaveAttribute("aria-busy", "true");
+
+  await user.click(button);
+  expect(authClient.signOut).toHaveBeenCalledOnce();
+
+  resolveSignOut?.({ data: { success: true }, error: null });
+
+  await waitFor(() => expect(push).toHaveBeenCalledWith("/auth/sign-in"));
+});
+
 test("shows an alert when sign out fails", async () => {
   const push = vi.fn();
   vi.mocked(useRouter).mockReturnValue({ push } as never);

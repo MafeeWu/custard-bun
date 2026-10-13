@@ -12,9 +12,9 @@ export function AuthShell({
   aside: ReactNode;
   brand: ReactNode;
   children: ReactNode;
-  description: string;
+  description?: string;
   footer?: ReactNode;
-  title: string;
+  title?: string;
 }) {
   return (
     <div className="auth-shell">
@@ -24,10 +24,12 @@ export function AuthShell({
             <Link className="shell-brand auth-shell__brand" href="/">
               <span className="shell-brand__name">{brand}</span>
             </Link>
-            <div className="auth-shell__copy">
-              <h1>{title}</h1>
-              <p>{description}</p>
-            </div>
+            {title || description ? (
+              <div className="auth-shell__copy">
+                {title ? <h1>{title}</h1> : null}
+                {description ? <p>{description}</p> : null}
+              </div>
+            ) : null}
             {children}
             {footer ? <div className="auth-shell__footer">{footer}</div> : null}
           </div>

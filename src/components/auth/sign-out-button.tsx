@@ -2,6 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { StatusNotice } from "@/components/ui/status-notice";
 import { authClient } from "@/server/auth/auth-client";
 
 export function SignOutButton() {
@@ -30,11 +32,20 @@ export function SignOutButton() {
   }
 
   return (
-    <div>
-      <button disabled={pending} type="button" onClick={handleClick}>
-        {pending ? "Signing out..." : "Sign out"}
-      </button>
-      {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+    <div className="auth-form auth-form--compact">
+      <Button
+        className="auth-form__submit"
+        onClick={handleClick}
+        pending={pending}
+        type="button"
+      >
+        Sign out
+      </Button>
+      {errorMessage ? (
+        <StatusNotice className="auth-form__notice" tone="danger">
+          {errorMessage}
+        </StatusNotice>
+      ) : null}
     </div>
   );
 }

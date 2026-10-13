@@ -2,6 +2,9 @@
 
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 import { authClient } from "@/server/auth/auth-client";
 import { authErrorMessage } from "./error-message";
 
@@ -52,25 +55,39 @@ export function ResetPasswordForm() {
   }
 
   return (
-    <form aria-label="Reset password" onSubmit={handleSubmit}>
-      <label htmlFor="reset-password">New password</label>
-      <input
-        id="reset-password"
-        name="password"
-        type="password"
-        autoComplete="new-password"
-        disabled={pending}
-        minLength={12}
-        maxLength={128}
-        required
-      />
+    <form
+      aria-label="Reset password"
+      className="auth-form"
+      onSubmit={handleSubmit}
+    >
+      <div className="auth-form__fields">
+        <Field
+          error={errorMessage}
+          htmlFor="reset-password"
+          label="New password"
+        >
+          <Input
+            autoComplete="new-password"
+            disabled={pending}
+            id="reset-password"
+            maxLength={128}
+            minLength={12}
+            name="password"
+            required
+            type="password"
+          />
+        </Field>
+      </div>
 
-      <button disabled={pending} type="submit">
-        {pending ? "Resetting password..." : "Reset password"}
-      </button>
+      <Button className="auth-form__submit" pending={pending} type="submit">
+        Reset password
+      </Button>
 
-      {statusMessage ? <p role="status">{statusMessage}</p> : null}
-      {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+      {statusMessage ? (
+        <StatusNotice className="auth-form__notice" tone="success">
+          {statusMessage}
+        </StatusNotice>
+      ) : null}
     </form>
   );
 }

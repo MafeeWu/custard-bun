@@ -1582,6 +1582,182 @@ a {
   color: var(--color-text-muted);
 }
 
+.auth-form-layout,
+.auth-form-layout__header,
+.auth-form-layout__body,
+.auth-form-layout__alternate,
+.auth-form-layout__stack,
+.auth-form,
+.auth-form__fields,
+.auth-brand-panel,
+.auth-brand-panel__copy,
+.auth-brand-panel__portrait,
+.auth-brand-panel__portrait-copy {
+  display: grid;
+}
+
+.auth-form-layout,
+.auth-brand-panel {
+  gap: var(--space-6);
+}
+
+.auth-form-layout__header,
+.auth-form-layout__alternate,
+.auth-form-layout__stack,
+.auth-brand-panel__copy,
+.auth-brand-panel__portrait,
+.auth-brand-panel__portrait-copy {
+  gap: var(--space-3);
+}
+
+.auth-form-layout__title,
+.auth-form-layout__description,
+.auth-form-layout__legal,
+.auth-form-layout__alternate p,
+.auth-form-layout__support-copy,
+.auth-brand-panel__eyebrow,
+.auth-brand-panel__description,
+.auth-brand-panel__portrait-name,
+.auth-brand-panel__portrait-note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.auth-form-layout__title {
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-tight);
+  letter-spacing: var(--tracking-display);
+}
+
+.auth-form-layout__description,
+.auth-form-layout__legal,
+.auth-form-layout__support-copy,
+.auth-brand-panel__description,
+.auth-brand-panel__portrait-note {
+  color: var(--color-text-muted);
+}
+
+.auth-form-layout__alternate {
+  padding-top: var(--space-4);
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.auth-form-layout__alternate > :first-child {
+  margin-top: 0;
+}
+
+.auth-form-layout__alternate > :last-child {
+  margin-bottom: 0;
+}
+
+.auth-form-layout__legal {
+  font-size: var(--font-size-helper);
+}
+
+.auth-form {
+  gap: var(--space-4);
+}
+
+.auth-form__fields {
+  gap: var(--space-4);
+}
+
+.auth-form__submit {
+  inline-size: 100%;
+  justify-content: center;
+  min-inline-size: 12rem;
+}
+
+.auth-form__notice {
+  margin: 0;
+}
+
+.auth-form--compact {
+  gap: var(--space-3);
+}
+
+.auth-brand-panel {
+  position: relative;
+  min-height: 100%;
+  align-content: space-between;
+  overflow: hidden;
+}
+
+.auth-brand-panel::before {
+  content: "";
+  position: absolute;
+  inset: auto -4rem -4rem auto;
+  width: 14rem;
+  height: 14rem;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-accent-soft) 70%, transparent) 0%,
+    transparent 72%
+  );
+  pointer-events: none;
+}
+
+.auth-brand-panel__copy,
+.auth-brand-panel__portraits {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-brand-panel__eyebrow {
+  color: var(--color-accent-hover);
+  font-size: var(--font-size-label);
+  font-weight: 700;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.auth-brand-panel__brand {
+  min-width: 0;
+}
+
+.auth-brand-panel__brand .inline-flex {
+  flex-wrap: wrap;
+}
+
+.auth-brand-panel__description {
+  max-width: 30ch;
+}
+
+.auth-brand-panel__portraits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.auth-brand-panel__portrait {
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: calc(var(--radius-surface) - 0.25rem);
+  background: color-mix(in srgb, var(--color-surface-raised) 90%, transparent);
+  box-shadow: 0 18px 36px
+    color-mix(in srgb, var(--color-shadow) 52%, transparent);
+}
+
+.auth-brand-panel__portrait:first-child {
+  grid-column: 1 / -1;
+}
+
+.auth-brand-panel__portrait-name {
+  font-size: var(--font-size-body-small);
+  font-weight: 700;
+}
+
+.auth-brand-panel__portrait-note {
+  font-size: var(--font-size-helper);
+}
+
+.ui-input::placeholder,
+.ui-textarea::placeholder {
+  color: var(--color-text-subtle);
+  opacity: 1;
+}
+
 @media (min-width: 768px) {
   .shell-header__inner {
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1628,6 +1804,14 @@ a {
 
   .auth-shell__main {
     order: 2;
+  }
+
+  .auth-form__submit {
+    inline-size: auto;
+  }
+
+  .auth-brand-panel__portraits {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

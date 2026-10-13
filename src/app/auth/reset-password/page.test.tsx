@@ -21,7 +21,7 @@ vi.mock("@/server/config/public-config", () => ({
   }),
 }));
 
-test("shows an alert for a missing reset token", async () => {
+test("shows an alert for a missing reset token and preserves legal links inside the auth shell", async () => {
   const element = await ResetPasswordPage({
     searchParams: Promise.resolve({}),
   });
@@ -30,5 +30,20 @@ test("shows an alert for a missing reset token", async () => {
 
   expect(screen.getByRole("alert")).toHaveTextContent(
     /this reset link is invalid or has expired/i,
+  );
+  expect(
+    screen.getByRole("complementary", { name: "Brand context" }),
+  ).toBeVisible();
+  expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+    "href",
+    "https://example.com/privacy",
+  );
+  expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute(
+    "href",
+    "https://example.com/terms",
+  );
+  expect(screen.getByRole("link", { name: "Support" })).toHaveAttribute(
+    "href",
+    "mailto:support@example.com",
   );
 });

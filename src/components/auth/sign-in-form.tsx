@@ -2,6 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/field";
 import { authClient } from "@/server/auth/auth-client";
 import { signInErrorMessage } from "./error-message";
 
@@ -38,32 +40,34 @@ export function SignInForm() {
   }
 
   return (
-    <form aria-label="Sign in" onSubmit={handleSubmit}>
-      <label htmlFor="sign-in-email">Email</label>
-      <input
-        id="sign-in-email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        disabled={pending}
-        required
-      />
+    <form aria-label="Sign in" className="auth-form" onSubmit={handleSubmit}>
+      <div className="auth-form__fields">
+        <Field error={errorMessage} htmlFor="sign-in-email" label="Email">
+          <Input
+            autoComplete="email"
+            disabled={pending}
+            id="sign-in-email"
+            name="email"
+            required
+            type="email"
+          />
+        </Field>
 
-      <label htmlFor="sign-in-password">Password</label>
-      <input
-        id="sign-in-password"
-        name="password"
-        type="password"
-        autoComplete="current-password"
-        disabled={pending}
-        required
-      />
+        <Field htmlFor="sign-in-password" label="Password">
+          <Input
+            autoComplete="current-password"
+            disabled={pending}
+            id="sign-in-password"
+            name="password"
+            required
+            type="password"
+          />
+        </Field>
+      </div>
 
-      <button disabled={pending} type="submit">
-        {pending ? "Signing in..." : "Sign in"}
-      </button>
-
-      {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+      <Button className="auth-form__submit" pending={pending} type="submit">
+        Sign in
+      </Button>
     </form>
   );
 }

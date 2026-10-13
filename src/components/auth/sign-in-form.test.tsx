@@ -19,6 +19,30 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+test("keeps the sign-in form control order and autofill contract", () => {
+  vi.mocked(useRouter).mockReturnValue({ push: vi.fn() } as never);
+
+  render(<SignInForm />);
+
+  const form = screen.getByRole("form", { name: "Sign in" });
+  const controls = form.querySelectorAll("input, button");
+
+  expect(
+    [...controls].map(
+      (element) => element.getAttribute("name") ?? element.textContent,
+    ),
+  ).toEqual(["email", "password", "Sign in"]);
+
+  expect(screen.getByLabelText("Email")).toHaveAttribute(
+    "autocomplete",
+    "email",
+  );
+  expect(screen.getByLabelText("Password")).toHaveAttribute(
+    "autocomplete",
+    "current-password",
+  );
+});
+
 test("redirects to the application after sign in", async () => {
   const push = vi.fn();
   vi.mocked(useRouter).mockReturnValue({ push } as never);
@@ -46,6 +70,46 @@ test("redirects to the application after sign in", async () => {
   expect(push).toHaveBeenCalledWith("/app");
 });
 
+test("keeps the visible button label stable and blocks duplicate submission while pending", async () => {
+  const push = vi.fn();
+  let resolveSignIn: ((value: unknown) => void) | undefined;
+
+  vi.mocked(useRouter).mockReturnValue({ push } as never);
+  vi.mocked(authClient.signIn.email).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveSignIn = resolve;
+      }) as never,
+  );
+
+  const user = userEvent.setup();
+
+  render(<SignInForm />);
+
+  await user.type(screen.getByLabelText("Email"), "person@example.com");
+  await user.type(
+    screen.getByLabelText("Password"),
+    "correct horse battery staple",
+  );
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+  const button = screen.getByRole("button", { name: "Sign in" });
+
+  expect(button).toBeDisabled();
+  expect(button).toHaveClass("auth-form__submit");
+  expect(button).toHaveAttribute("aria-busy", "true");
+
+  await user.click(button);
+  expect(authClient.signIn.email).toHaveBeenCalledOnce();
+
+  resolveSignIn?.({
+    data: { redirect: false, token: "session", url: undefined, user: {} },
+    error: null,
+  });
+
+  await waitFor(() => expect(push).toHaveBeenCalledWith("/app"));
+});
+
 test("shows verification guidance for a 403 response", async () => {
   vi.mocked(useRouter).mockReturnValue({ push: vi.fn() } as never);
   vi.mocked(authClient.signIn.email).mockResolvedValue({
@@ -70,6 +134,10 @@ test("shows verification guidance for a 403 response", async () => {
 
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Verify your email before signing in.",
+  );
+  expect(screen.getByLabelText("Email")).toHaveAttribute(
+    "aria-describedby",
+    expect.stringContaining("sign-in-email-error"),
   );
 });
 

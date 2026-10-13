@@ -21,7 +21,7 @@ vi.mock("@/server/config/public-config", () => ({
   }),
 }));
 
-test("reads the registration policy on the server and passes it to the form", async () => {
+test("reads the registration policy on the server, preserves legal links, and keeps the auth shell structure", async () => {
   const element = await SignUpPage();
 
   render(element);
@@ -29,7 +29,21 @@ test("reads the registration policy on the server and passes it to the form", as
   expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
     /create your custard bun account/i,
   );
+  expect(screen.getByText(/registration is currently closed/i)).toBeVisible();
+  expect(screen.getByRole("main")).toBeVisible();
   expect(
-    screen.getByText(/registration is currently closed/i),
+    screen.getByRole("complementary", { name: "Brand context" }),
   ).toBeVisible();
+  expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+    "href",
+    "https://example.com/privacy",
+  );
+  expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute(
+    "href",
+    "https://example.com/terms",
+  );
+  expect(screen.getByRole("link", { name: "Support" })).toHaveAttribute(
+    "href",
+    "mailto:support@example.com",
+  );
 });

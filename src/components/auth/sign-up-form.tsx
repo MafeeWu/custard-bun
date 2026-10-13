@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 import { authClient } from "@/server/auth/auth-client";
 import { authErrorMessage } from "./error-message";
 
@@ -14,7 +17,11 @@ export function SignUpForm({ registrationOpen }: SignUpFormProps) {
   const [errorMessage, setErrorMessage] = useState<string>();
 
   if (!registrationOpen) {
-    return <p>Registration is currently closed.</p>;
+    return (
+      <StatusNotice className="auth-form__notice" tone="warning">
+        Registration is currently closed.
+      </StatusNotice>
+    );
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -54,44 +61,56 @@ export function SignUpForm({ registrationOpen }: SignUpFormProps) {
   }
 
   return (
-    <form aria-label="Create account" onSubmit={handleSubmit}>
-      <label htmlFor="sign-up-name">Name</label>
-      <input
-        id="sign-up-name"
-        name="name"
-        autoComplete="name"
-        disabled={pending}
-        required
-      />
+    <form
+      aria-label="Create account"
+      className="auth-form"
+      onSubmit={handleSubmit}
+    >
+      <div className="auth-form__fields">
+        <Field htmlFor="sign-up-name" label="Name">
+          <Input
+            autoComplete="name"
+            disabled={pending}
+            id="sign-up-name"
+            name="name"
+            required
+          />
+        </Field>
 
-      <label htmlFor="sign-up-email">Email</label>
-      <input
-        id="sign-up-email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        disabled={pending}
-        required
-      />
+        <Field error={errorMessage} htmlFor="sign-up-email" label="Email">
+          <Input
+            autoComplete="email"
+            disabled={pending}
+            id="sign-up-email"
+            name="email"
+            required
+            type="email"
+          />
+        </Field>
 
-      <label htmlFor="sign-up-password">Password</label>
-      <input
-        id="sign-up-password"
-        name="password"
-        type="password"
-        autoComplete="new-password"
-        disabled={pending}
-        minLength={12}
-        maxLength={128}
-        required
-      />
+        <Field htmlFor="sign-up-password" label="Password">
+          <Input
+            autoComplete="new-password"
+            disabled={pending}
+            id="sign-up-password"
+            maxLength={128}
+            minLength={12}
+            name="password"
+            required
+            type="password"
+          />
+        </Field>
+      </div>
 
-      <button disabled={pending} type="submit">
-        {pending ? "Creating account..." : "Create account"}
-      </button>
+      <Button className="auth-form__submit" pending={pending} type="submit">
+        Create account
+      </Button>
 
-      {statusMessage ? <p role="status">{statusMessage}</p> : null}
-      {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+      {statusMessage ? (
+        <StatusNotice className="auth-form__notice" tone="success">
+          {statusMessage}
+        </StatusNotice>
+      ) : null}
     </form>
   );
 }

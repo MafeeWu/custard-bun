@@ -4,7 +4,13 @@ import VerifyEmailPage from "./page";
 
 vi.mock("@/server/config/public-config", () => ({
   getPublicConfig: async () => ({
-    branding: { name: "Test", logoPath: "/brand/logo.svg" },
+    branding: {
+      name: "Test",
+      description: "Trusted private conversations.",
+      logoPath: "/brand/logo.svg",
+      faviconPath: "/brand/favicon.svg",
+      primaryColor: "#F59E0B",
+    },
     links: {
       privacyUrl: "/privacy",
       termsUrl: "/terms",
@@ -14,7 +20,7 @@ vi.mock("@/server/config/public-config", () => ({
 }));
 
 test.each(["TOKEN_EXPIRED", "INVALID_TOKEN", "private-untrusted-error"])(
-  "verification failure %s uses safe actionable copy",
+  "verification failure %s uses safe actionable copy and preserves legal links",
   async (error) => {
     render(await VerifyEmailPage({ searchParams: Promise.resolve({ error }) }));
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -26,5 +32,20 @@ test.each(["TOKEN_EXPIRED", "INVALID_TOKEN", "private-untrusted-error"])(
     expect(
       screen.queryByText(/Open the verification link we sent/),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "Brand context" }),
+    ).toBeVisible();
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+      "href",
+      "/privacy",
+    );
+    expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute(
+      "href",
+      "/terms",
+    );
+    expect(screen.getByRole("link", { name: "Support" })).toHaveAttribute(
+      "href",
+      "/support",
+    );
   },
 );
