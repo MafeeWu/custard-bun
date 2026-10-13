@@ -77,6 +77,7 @@ export function MemoryFormStatus({ state }: { state: MemoryActionState }) {
     if (state.status === "conflict" || state.status === "error")
       statusRef.current?.focus();
   }, [state, router]);
+  if (state.status === "idle" || !state.message) return null;
   return (
     <p
       ref={statusRef}

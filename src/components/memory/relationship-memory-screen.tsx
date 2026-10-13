@@ -216,27 +216,29 @@ export function RelationshipMemoryScreen({
                 Memory and summary are up to date.
               </StatusNotice>
             ) : (
-              <ul className="memory-sync-list">
-                {view.extractions.map((row) => (
-                  <ExtractionStatus
-                    key={row.id}
-                    extraction={row}
-                    retry={actions.retry}
-                  />
-                ))}
-                <li className="memory-sync-item">
-                  <div className="memory-sync-item__row">
-                    <div>
-                      <p className="memory-sync-item__label">
-                        Relationship summary
-                      </p>
-                      <p className="memory-sync-item__value">
-                        {statusCopy[view.summaryStatus]}
-                      </p>
+              <div aria-live="polite" role="status">
+                <ul className="memory-sync-list">
+                  {view.extractions.map((row) => (
+                    <ExtractionStatus
+                      key={row.id}
+                      extraction={row}
+                      retry={actions.retry}
+                    />
+                  ))}
+                  <li className="memory-sync-item">
+                    <div className="memory-sync-item__row">
+                      <div>
+                        <p className="memory-sync-item__label">
+                          Relationship summary
+                        </p>
+                        <p className="memory-sync-item__value">
+                          {statusCopy[view.summaryStatus]}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </li>
-              </ul>
+                  </li>
+                </ul>
+              </div>
             )}
           </Surface>
         </div>

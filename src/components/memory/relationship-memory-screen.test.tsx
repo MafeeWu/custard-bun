@@ -436,6 +436,45 @@ test.each(["synced", "processing", "retrying", "needs_retry"] as const)(
     ).toBe(status === "needs_retry");
   },
 );
+test("non-synced synchronization stays in one polite live region while preserving retry copy and feedback", async () => {
+  const actions = actionSet();
+  actions.retry.mockResolvedValue({
+    status: "error",
+    message: "Unable to retry extraction. Try again.",
+  });
+  const view = memoryScreenFixture();
+  view.extractions = [
+    { id: "run-1", status: "needs_retry", canRetry: true },
+    { id: "run-2", status: "processing", canRetry: false },
+  ];
+  view.summaryStatus = "retrying";
+  render(<RelationshipMemoryScreen view={view} actions={actions} />);
+
+  const syncSection = screen.getByRole("region", {
+    name: "Memory synchronization",
+  });
+  const liveStatuses = within(syncSection).getAllByRole("status");
+  expect(liveStatuses).toHaveLength(1);
+
+  const [liveStatus] = liveStatuses;
+  const retryButton = screen.getByRole("button", { name: "Retry extraction" });
+  expect(liveStatus).toHaveAttribute("aria-live", "polite");
+  expect(liveStatus).toContainElement(retryButton);
+  expect(within(liveStatus).getByText("Needs retry")).toBeVisible();
+  expect(within(liveStatus).getByText("Processing")).toBeVisible();
+  expect(within(liveStatus).getByText("Relationship summary")).toBeVisible();
+  expect(within(liveStatus).getByText("Retrying")).toBeVisible();
+
+  await userEvent.click(retryButton);
+
+  expect(await screen.findByRole("alert")).toHaveFocus();
+  expect(
+    screen.getByText("Unable to retry extraction. Try again."),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Retry extraction" }),
+  ).toBeEnabled();
+});
 test("conflict retains draft while refreshing authoritative content and revision", async () => {
   const actions = actionSet();
   actions.editMemory.mockResolvedValue({
