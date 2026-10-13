@@ -1,30 +1,47 @@
 @import "tailwindcss";
+@import "./theme.css";
 
 :root {
-  color-scheme: light dark;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-text);
+  background: var(--color-canvas);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
-  background: #111827;
-  color: #f9fafb;
+  min-height: 100dvh;
+  background: var(--color-canvas);
+  color: var(--color-text);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  text-rendering: optimizeLegibility;
 }
 
 button,
 input,
+select,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
 .brand-primary {
   display: inline-block;
   border: 0;
-  background-color: var(--brand-primary);
-  color: #111;
+  background-color: var(--color-accent);
+  color: var(--color-accent-contrast);
   padding: 0.75rem 1.25rem;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-button);
   font-weight: 600;
 }
 
@@ -33,7 +50,7 @@ a {
 }
 
 .brand-link {
-  color: var(--brand-primary);
+  color: var(--color-accent);
   font-weight: 600;
   text-decoration: none;
 }
@@ -80,16 +97,17 @@ a {
   gap: 1rem;
   align-items: center;
   padding: 1rem;
-  border: 1px solid rgb(255 255 255 / 0.14);
-  border-radius: 1rem;
-  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface);
+  box-shadow: 0 12px 28px var(--color-shadow);
   text-decoration: none;
 }
 
 .conversation-card img,
 .chat-character img {
-  border-radius: 50%;
-  background: rgb(255 255 255 / 0.08);
+  border-radius: var(--radius-avatar);
+  background: var(--color-canvas-subtle);
 }
 
 .conversation-card span {
@@ -99,7 +117,7 @@ a {
 
 .chat-page {
   width: min(100%, 54rem);
-  min-height: 100vh;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 1rem;
 }
@@ -118,7 +136,7 @@ a {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.75rem 0;
-  background: #111827;
+  background: color-mix(in srgb, var(--color-canvas) 92%, transparent);
 }
 
 .chat-character,
@@ -138,7 +156,7 @@ a {
 .chat-disclosure summary {
   cursor: pointer;
   font-weight: 700;
-  color: var(--brand-primary);
+  color: var(--color-accent);
 }
 
 .chat-history,
@@ -148,10 +166,10 @@ a {
   right: 0;
   width: min(20rem, calc(100vw - 2rem));
   padding: 1rem;
-  border: 1px solid rgb(255 255 255 / 0.18);
-  border-radius: 0.75rem;
-  background: #1f2937;
-  box-shadow: 0 18px 40px rgb(0 0 0 / 0.35);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-soft);
 }
 
 .chat-history h2 {
@@ -169,7 +187,7 @@ a {
 }
 
 .chat-history span {
-  color: #d1d5db;
+  color: var(--color-text-muted);
   font-size: 0.875rem;
 }
 
@@ -181,13 +199,13 @@ a {
 .chat-confirm-action + .chat-confirm-action {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid rgb(255 255 255 / 0.12);
+  border-top: 1px solid var(--color-border);
 }
 
 .chat-version-notice {
   padding: 0.75rem 1rem;
-  border-left: 4px solid var(--brand-primary);
-  background: rgb(255 255 255 / 0.05);
+  border-left: 4px solid var(--color-accent);
+  background: var(--color-accent-soft);
 }
 
 .chat-conversation {
@@ -209,8 +227,9 @@ a {
 
 .chat-message article {
   padding: 0.875rem 1rem;
-  border-radius: 1rem;
-  background: #1f2937;
+  border-radius: var(--radius-chat);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
 }
 
 .chat-message-user {
@@ -218,13 +237,14 @@ a {
 }
 
 .chat-message-user article {
-  background: color-mix(in srgb, var(--brand-primary) 22%, #1f2937);
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
 }
 
 .chat-message-author,
 .chat-message-status {
   margin: 0;
-  color: #d1d5db;
+  color: var(--color-text-muted);
   font-size: 0.8rem;
 }
 
@@ -235,8 +255,8 @@ a {
 .chat-message pre {
   overflow-x: auto;
   padding: 0.75rem;
-  border-radius: 0.5rem;
-  background: #0b1020;
+  border-radius: var(--radius-input);
+  background: var(--color-canvas-subtle);
 }
 
 .chat-composer-shell {
@@ -245,7 +265,7 @@ a {
   display: grid;
   gap: 0.5rem;
   padding: 0.75rem 0;
-  background: #111827;
+  background: color-mix(in srgb, var(--color-canvas) 94%, transparent);
 }
 
 .chat-composer {
@@ -260,9 +280,9 @@ a {
   resize: vertical;
   box-sizing: border-box;
   padding: 0.75rem;
-  border: 1px solid rgb(255 255 255 / 0.2);
-  border-radius: 0.75rem;
-  background: #1f2937;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
   color: inherit;
 }
 
@@ -270,9 +290,9 @@ a {
 .chat-confirm-action button {
   padding: 0.7rem 1rem;
   border: 0;
-  border-radius: 0.6rem;
-  background: var(--brand-primary);
-  color: #111;
+  border-radius: var(--radius-button);
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
   font-weight: 700;
 }
 
@@ -284,8 +304,9 @@ a {
 
 .chat-error {
   padding: 0.75rem;
-  border: 1px solid #f87171;
-  border-radius: 0.75rem;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-input);
+  background: var(--color-danger-surface);
 }
 
 .sr-only {
@@ -317,7 +338,7 @@ a {
 }
 
 .character-card-link:focus-visible {
-  outline: 3px solid var(--brand-primary);
+  outline: 3px solid var(--color-focus);
   outline-offset: 0.25rem;
   border-radius: 1rem;
 }
@@ -329,10 +350,10 @@ a {
   grid-template-columns: auto 1fr;
   align-items: start;
   padding: 1rem;
-  border: 1px solid rgb(255 255 255 / 0.14);
-  border-radius: 1rem;
-  background: rgb(17 24 39 / 0.88);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface);
+  box-shadow: 0 12px 32px var(--color-shadow);
 }
 
 .character-avatar,
@@ -341,9 +362,9 @@ a {
   max-width: 6rem;
   height: auto;
   aspect-ratio: 1;
-  border-radius: 1rem;
+  border-radius: var(--radius-surface);
   object-fit: cover;
-  background: rgb(255 255 255 / 0.08);
+  background: var(--color-canvas-subtle);
 }
 
 .character-card-copy,
@@ -360,7 +381,7 @@ a {
 
 .character-opening {
   margin: 0;
-  color: #d1d5db;
+  color: var(--color-text-muted);
 }
 
 .character-profile {
@@ -384,7 +405,7 @@ a {
 }
 
 .character-eyebrow {
-  color: var(--brand-primary);
+  color: var(--color-accent);
   font-size: 0.875rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -398,9 +419,9 @@ a {
 
 .character-detail-section {
   padding: 1rem;
-  border: 1px solid rgb(255 255 255 / 0.12);
-  border-radius: 1rem;
-  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface);
 }
 
 .character-detail-section ul {
@@ -429,9 +450,9 @@ a {
 
 .memory-card {
   padding: 1.25rem;
-  border: 1px solid rgb(255 255 255 / 0.14);
-  border-radius: 1rem;
-  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface);
   min-width: 0;
 }
 
@@ -460,19 +481,19 @@ a {
   resize: vertical;
   padding: 0.75rem;
   color: inherit;
-  background: #111827;
-  border: 1px solid #9ca3af;
-  border-radius: 0.5rem;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-input);
 }
 
 .memory-card button {
   justify-self: start;
   min-height: 2.75rem;
   padding: 0.5rem 1rem;
-  color: inherit;
-  background: rgb(255 255 255 / 0.08);
-  border: 1px solid #9ca3af;
-  border-radius: 0.5rem;
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-button);
   cursor: pointer;
 }
 
@@ -482,12 +503,12 @@ a {
 }
 
 .memory-card :focus-visible {
-  outline: 3px solid var(--brand-primary);
+  outline: 3px solid var(--color-focus);
   outline-offset: 3px;
 }
 
 .memory-card input[type="checkbox"] {
-  accent-color: var(--brand-primary);
+  accent-color: var(--color-accent);
 }
 
 .memory-content,
@@ -505,7 +526,7 @@ a {
 }
 
 .memory-danger {
-  border-color: #f87171;
+  border-color: var(--color-danger);
 }
 
 @media (min-width: 48rem) {

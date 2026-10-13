@@ -28,12 +28,15 @@
     "db:test:down": "docker compose -p ai-companion-test -f compose.test.yml down -v"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@better-auth/drizzle-adapter": "1.7.5",
     "auth": "1.7.5",
     "better-auth": "1.7.5",
     "drizzle-orm": "0.45.3",
     "fflate": "0.8.3",
+    "geist": "1.7.2",
     "js-tiktoken": "1.0.21",
+    "motion": "14.1.0",
     "next": "16.3.6",
     "nodemailer": "10.0.10",
     "pg": "8.23.0",
@@ -48,6 +51,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/jest-dom": "7.0.1",
