@@ -10,6 +10,7 @@ import { requireSession } from "@/server/auth/require-session";
 import { listActiveConversations } from "@/server/chat/conversation-queries";
 import { getPublicConfig } from "@/server/config/public-config";
 import { getDatabase } from "@/server/db/database";
+import { renderApplicationRouteShell } from "./route-shell";
 
 export default async function ApplicationHomePage() {
   const requestHeaders = await headers();
@@ -25,8 +26,8 @@ export default async function ApplicationHomePage() {
   );
   const showAdminLink = session.user.role === "admin";
 
-  return (
-    <main className="application-home">
+  return renderApplicationRouteShell(
+    <div className="application-home">
       <PageHeader
         actions={
           conversations.length ? (
@@ -98,6 +99,7 @@ export default async function ApplicationHomePage() {
           <SignOutButton />
         </Surface>
       </div>
-    </main>
+    </div>,
+    config.branding,
   );
 }

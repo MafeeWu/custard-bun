@@ -18,6 +18,17 @@ vi.mock("@/server/auth/require-session", () => ({
   requireSession: mocks.auth,
 }));
 vi.mock("@/server/db/database", () => ({ getDatabase: async () => ({}) }));
+vi.mock("@/server/config/public-config", () => ({
+  getPublicConfig: vi.fn(async () => ({
+    branding: {
+      name: "Custard Bun",
+      description: "Private conversations with consistent AI characters.",
+      logoPath: "/brand/logo.svg",
+      faviconPath: "/brand/favicon.svg",
+      primaryColor: "#F59E0B",
+    },
+  })),
+}));
 vi.mock("@/server/memory/memory-queries", () => ({
   getRelationshipMemoryScreenView: mocks.get,
 }));
@@ -47,6 +58,9 @@ test("owned character page composes real management forms", async () => {
   expect(screen.getByLabelText("Memory content")).toHaveValue(
     "Likes green tea.",
   );
+  expect(
+    screen.getByRole("complementary", { name: "Application navigation" }),
+  ).toBeVisible();
 });
 test("wrong owner or missing character is not-found safe", async () => {
   mocks.get.mockResolvedValue(null);

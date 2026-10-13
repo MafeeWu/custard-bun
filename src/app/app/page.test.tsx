@@ -113,8 +113,18 @@ test("prefers the display name, renders continuation links, and keeps shell navi
   expect(
     screen.getByRole("link", { name: "Browse characters" }),
   ).toHaveAttribute("href", "/characters");
-  expect(screen.queryByRole("link", { name: "Memories" })).toBeNull();
-  expect(screen.queryByRole("link", { name: "Account" })).toBeNull();
+  const appNavigation = screen.getByRole("complementary", {
+    name: "Application navigation",
+  });
+  expect(
+    within(appNavigation).getByRole("link", { name: "Conversations" }),
+  ).toHaveAttribute("href", "/app");
+  expect(
+    within(appNavigation).getByRole("link", { name: "Memories" }),
+  ).toHaveAttribute("href", "/app/memories");
+  expect(
+    within(appNavigation).getByRole("link", { name: "Account" }),
+  ).toHaveAttribute("href", "/account");
 
   const accountArea = screen.getByRole("complementary", { name: "Account" });
   expect(
@@ -145,12 +155,15 @@ test("renders the composed empty state with one browse action and no duplicate p
       name: "No active conversations yet",
     }),
   ).toBeVisible();
-  expect(screen.getByRole("img", { name: "Custard Bun logo" })).toBeVisible();
+  expect(
+    screen.getAllByRole("img", { name: "Custard Bun logo" }).length,
+  ).toBeGreaterThanOrEqual(1);
   expect(
     screen.getAllByRole("link", { name: "Browse characters" }),
   ).toHaveLength(1);
-  expect(screen.queryByRole("link", { name: "Memories" })).toBeNull();
-  expect(screen.queryByRole("link", { name: "Account" })).toBeNull();
+  expect(
+    screen.getByRole("complementary", { name: "Application navigation" }),
+  ).toBeVisible();
   expect(screen.getByRole("complementary", { name: "Account" })).toBeVisible();
 });
 

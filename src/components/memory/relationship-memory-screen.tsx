@@ -77,7 +77,7 @@ export function RelationshipMemoryScreen({
     return () => clearInterval(timer);
   }, [processing, router]);
   return (
-    <main className="memory-page">
+    <div className="memory-page">
       <header>
         <p className="character-eyebrow">Privacy & memory</p>
         <h1>{view.character.displayName}’s memory</h1>
@@ -149,6 +149,6 @@ export function RelationshipMemoryScreen({
         revision={view.settings.revision}
         action={actions.forget}
       />
-    </main>
+    </div>
   );
 }

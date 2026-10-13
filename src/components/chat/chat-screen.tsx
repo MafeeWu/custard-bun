@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useActionState, useState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import type { ConversationActionState } from "@/app/app/conversations/actions";
 import type {
   ArchivedConversationSummary,
@@ -67,9 +67,13 @@ export function ChatScreen({
     setMessages(conversation.messages);
   }
   const active = conversation.lifecycle === "active";
+  const authoritativeMessageIds = useMemo(
+    () => new Set(conversation.messages.map((message) => message.id)),
+    [conversation.messages],
+  );
 
   return (
-    <main className="chat-page">
+    <div className="chat-page">
       <ChatHeader
         actions={
           <ChatActions
@@ -106,7 +110,10 @@ export function ChatScreen({
       )}
 
       <section aria-label="Conversation" className="chat-conversation">
-        <ChatTimeline messages={messages} />
+        <ChatTimeline
+          authoritativeMessageIds={authoritativeMessageIds}
+          messages={messages}
+        />
         {active ? (
           <ChatComposer
             conversationId={conversation.id}
@@ -120,6 +127,6 @@ export function ChatScreen({
           <p role="status">This archived conversation is read-only.</p>
         )}
       </section>
-    </main>
+    </div>
   );
 }

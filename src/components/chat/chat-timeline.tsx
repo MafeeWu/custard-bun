@@ -3,11 +3,17 @@
 import { ChatMessage, type ChatClientMessage } from "./chat-message";
 import { ChatMessageMotion, messageMotionKey } from "./chat-message-motion";
 
-function entersFromClientInsert(message: ChatClientMessage) {
-  return message.id.startsWith("user-") || message.id.startsWith("attempt-");
+function authoritativeIdsFor(messages: ChatClientMessage[]) {
+  return new Set(messages.map((message) => message.id));
 }
 
-export function ChatTimeline({ messages }: { messages: ChatClientMessage[] }) {
+export function ChatTimeline({
+  messages,
+  authoritativeMessageIds = authoritativeIdsFor(messages),
+}: {
+  messages: ChatClientMessage[];
+  authoritativeMessageIds?: ReadonlySet<string>;
+}) {
   return (
     <ol
       className="chat-timeline"
@@ -19,7 +25,7 @@ export function ChatTimeline({ messages }: { messages: ChatClientMessage[] }) {
 
         return (
           <ChatMessageMotion
-            entering={entersFromClientInsert(message)}
+            entering={!authoritativeMessageIds.has(message.id)}
             key={key}
             message={message}
           >

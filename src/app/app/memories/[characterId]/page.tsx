@@ -13,6 +13,7 @@ import {
   retryExtractionAction,
   updateMemoryControlsAction,
 } from "../actions";
+import { renderApplicationRouteShell } from "../../route-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ export default async function CharacterMemoryPage({
     characterId,
   });
   if (!view) notFound();
-  return (
+  return renderApplicationRouteShell(
     <RelationshipMemoryScreen
       view={view}
       actions={{
@@ -40,6 +41,6 @@ export default async function CharacterMemoryPage({
         forget: forgetCharacterAction.bind(null, characterId),
         retry: retryExtractionAction.bind(null, characterId),
       }}
-    />
+    />,
   );
 }

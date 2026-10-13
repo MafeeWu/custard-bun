@@ -10,6 +10,17 @@ vi.mock("@/server/auth/require-session", () => ({
   requireSession: mocks.auth,
 }));
 vi.mock("@/server/db/database", () => ({ getDatabase: async () => ({}) }));
+vi.mock("@/server/config/public-config", () => ({
+  getPublicConfig: vi.fn(async () => ({
+    branding: {
+      name: "Custard Bun",
+      description: "Private conversations with consistent AI characters.",
+      logoPath: "/brand/logo.svg",
+      faviconPath: "/brand/favicon.svg",
+      primaryColor: "#F59E0B",
+    },
+  })),
+}));
 vi.mock("@/server/memory/memory-queries", () => ({
   listMemoryRelationships: mocks.list,
 }));
@@ -30,6 +41,9 @@ test("privacy overview renders only owner-scoped relationships without operation
   );
   expect(screen.getByText(/Recording stopped/)).toBeVisible();
   expect(screen.getByText(/2 memories/)).toBeVisible();
+  expect(
+    screen.getByRole("complementary", { name: "Application navigation" }),
+  ).toBeVisible();
 });
 test("empty overview explains where relationships appear", async () => {
   mocks.list.mockResolvedValue([]);

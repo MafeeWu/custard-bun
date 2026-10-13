@@ -255,3 +255,126 @@ test("messages expose semantic presentation classes and stable non-content motio
     expect(className).not.toContain("assistant text");
   }
 });
+
+test("authoritative server transcripts do not enter even with optimistic-looking ids", () => {
+  render(
+    <ChatScreen
+      conversation={conversation({
+        messages: [
+          {
+            id: "user-server-snapshot",
+            role: "user",
+            kind: "user",
+            content: "Persisted user text",
+          },
+          {
+            id: "attempt-server-snapshot",
+            role: "assistant",
+            kind: "generated",
+            attemptId: "server-snapshot",
+            status: "complete",
+            content: "Persisted assistant text",
+            errorCode: null,
+            retryable: false,
+          },
+        ],
+      })}
+      archivedConversations={[]}
+      restartAction={action}
+      deleteAction={action}
+    />,
+  );
+
+  expect(
+    screen.getByText("Persisted user text").closest("li"),
+  ).not.toHaveAttribute("data-motion");
+  expect(
+    screen.getByText("Persisted assistant text").closest("li"),
+  ).not.toHaveAttribute("data-motion");
+});
+
+test("authoritative refreshes do not re-enter but client-only user and attempt messages do", async () => {
+  const user = userEvent.setup();
+  const firstConversation = conversation({
+    messages: [
+      {
+        id: "user-refresh-snapshot",
+        role: "user",
+        kind: "user",
+        content: "Before refresh",
+      },
+    ],
+  });
+  const props = {
+    archivedConversations: [],
+    restartAction: action,
+    deleteAction: action,
+  };
+  const { rerender } = render(
+    <ChatScreen conversation={firstConversation} {...props} />,
+  );
+  rerender(
+    <ChatScreen
+      conversation={conversation({
+        messages: [
+          {
+            id: "user-refresh-snapshot",
+            role: "user",
+            kind: "user",
+            content: "Before refresh",
+          },
+          {
+            id: "attempt-refresh-snapshot",
+            role: "assistant",
+            kind: "generated",
+            attemptId: "refresh-snapshot",
+            status: "complete",
+            content: "After refresh",
+            errorCode: null,
+            retryable: false,
+          },
+        ],
+      })}
+      {...props}
+    />,
+  );
+
+  expect(screen.getByText("After refresh").closest("li")).not.toHaveAttribute(
+    "data-motion",
+  );
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(
+                encoder.encode(
+                  '{"type":"started","attemptId":"client-inserted"}\n{"type":"delta","attemptId":"client-inserted","text":"Client reply"}\n{"type":"completed","attemptId":"client-inserted","usage":{"inputTokens":1,"outputTokens":1,"estimated":false}}\n',
+                ),
+              );
+              controller.close();
+            },
+          }),
+        ),
+    ),
+  );
+  vi.spyOn(crypto, "randomUUID").mockReturnValue("client-request-id");
+
+  await user.type(screen.getByLabelText("Message"), "Client message");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(await screen.findByText("Client message")).toBeVisible();
+  expect(screen.getByText("Client message").closest("li")).toHaveAttribute(
+    "data-motion",
+    "standard",
+  );
+  expect(await screen.findByText("Client reply")).toBeVisible();
+  expect(screen.getByText("Client reply").closest("li")).toHaveAttribute(
+    "data-motion",
+    "standard",
+  );
+});

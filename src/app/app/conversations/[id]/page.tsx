@@ -12,6 +12,7 @@ import {
   listArchivedCharacterConversations,
 } from "@/server/chat/conversation-queries";
 import { getDatabase } from "@/server/db/database";
+import { renderFocusedChatRouteShell } from "../../route-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export default async function ConversationPage({
     (candidate) => candidate.character.id === conversation.character.id,
   )?.id;
 
-  return (
+  return renderFocusedChatRouteShell(
     <ChatScreen
       activeConversationId={
         activeConversationId === conversation.id
@@ -59,6 +60,6 @@ export default async function ConversationPage({
         conversation.id,
         conversation.character.slug,
       )}
-    />
+    />,
   );
 }

@@ -23,6 +23,17 @@ vi.mock("@/server/auth/require-session", () => ({
 vi.mock("@/server/db/database", () => ({
   getDatabase: vi.fn(async () => ({})),
 }));
+vi.mock("@/server/config/public-config", () => ({
+  getPublicConfig: vi.fn(async () => ({
+    branding: {
+      name: "Custard Bun",
+      description: "Private conversations with consistent AI characters.",
+      logoPath: "/brand/logo.svg",
+      faviconPath: "/brand/favicon.svg",
+      primaryColor: "#F59E0B",
+    },
+  })),
+}));
 vi.mock("@/server/chat/conversation-queries", () => ({
   getConversationForUser: vi.fn(),
   listActiveConversations: vi.fn(),
@@ -73,11 +84,25 @@ test("loads only the owned conversation and character history into the focused p
     }),
   );
 
+  expect(screen.getByRole("main")).toHaveClass("shell-main--focused-chat");
+  expect(document.querySelector("main.chat-page")).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Calm Guide" })).toBeVisible();
   expect(screen.getByText("Welcome.")).toBeVisible();
   expect(
     screen.getByRole("button", { name: "Open conversation history" }),
   ).toBeVisible();
+  expect(screen.getByRole("link", { name: "Conversations" })).toHaveAttribute(
+    "href",
+    "/app",
+  );
+  expect(screen.getByRole("link", { name: "Memories" })).toHaveAttribute(
+    "href",
+    "/app/memories",
+  );
+  expect(screen.getByRole("link", { name: "Account" })).toHaveAttribute(
+    "href",
+    "/account",
+  );
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
   expect(getConversationForUser).toHaveBeenCalledWith(expect.anything(), {
     userId: "user-1",
