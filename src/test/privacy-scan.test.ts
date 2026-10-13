@@ -25,11 +25,27 @@ async function surfaces() {
     "worker-logs",
     "admin-html",
     "static-assets",
-    "ui-snapshots",
   ]) {
     await mkdir(`${root}/${name}/unexpected/nested`, { recursive: true });
     await writeFile(`${root}/${name}/unexpected/nested/file`, "safe content");
   }
+  await mkdir(`${root}/ui-snapshots/unexpected/nested`, { recursive: true });
+  await writeFile(
+    `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
+    "safe light",
+  );
+  await writeFile(
+    `${root}/ui-snapshots/unexpected/nested/home-desktop-dark.png`,
+    "safe dark",
+  );
+  await writeFile(
+    `${root}/ui-snapshots/unexpected/nested/home-mobile-light-reduced.png`,
+    "safe mobile",
+  );
+  await writeFile(
+    `${root}/ui-snapshots/unexpected/nested/account-error-state.png`,
+    "safe error",
+  );
   await writeFile(
     `${root}/responses/unexpected/nested/success`,
     JSON.stringify({ status: 200 }) + "\nsuccess body",
@@ -43,7 +59,7 @@ async function surfaces() {
 test("scans every byte of every nested file in all required surfaces", async () => {
   await surfaces();
   expect(await scanPrivacySurfaces(root)).toMatchObject({
-    files: 9,
+    files: 12,
     responseEvidence: { success: 1, error: 1 },
   });
 });
@@ -85,7 +101,10 @@ async function visualEvidence() {
   await mkdir(resultRoot, { recursive: true });
   await writeFile(`${snapshotRoot}/home-desktop-light.png`, "safe light");
   await writeFile(`${snapshotRoot}/home-desktop-dark.png`, "safe dark");
-  await writeFile(`${snapshotRoot}/home-mobile-light-reduced.png`, "safe mobile");
+  await writeFile(
+    `${snapshotRoot}/home-mobile-light-reduced.png`,
+    "safe mobile",
+  );
   await writeFile(`${resultRoot}/error-state.png`, "safe error");
 }
 
@@ -95,6 +114,37 @@ test("recursively scans visual snapshots and runtime evidence", async () => {
     files: 4,
   });
 });
+
+test.each(visualPrivacySentinels)(
+  "release scanning rejects a visual privacy sentinel in copied UI evidence: %s",
+  async (sentinel) => {
+    await surfaces();
+    await writeFile(
+      `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
+      sentinel,
+    );
+    await expect(scanPrivacySurfaces(root)).rejects.toThrow(
+      "Visual privacy sentinel found in ui-snapshots",
+    );
+  },
+);
+
+test.each(["light", "dark", "mobile", "error"])(
+  "release scanning fails closed without %s UI evidence",
+  async (kind) => {
+    await surfaces();
+    const paths = {
+      light: `${root}/ui-snapshots/unexpected/nested/home-desktop-light.png`,
+      dark: `${root}/ui-snapshots/unexpected/nested/home-desktop-dark.png`,
+      mobile: `${root}/ui-snapshots/unexpected/nested/home-mobile-light-reduced.png`,
+      error: `${root}/ui-snapshots/unexpected/nested/account-error-state.png`,
+    };
+    await rm(paths[kind as keyof typeof paths]);
+    await expect(scanPrivacySurfaces(root)).rejects.toThrow(
+      `Missing visual privacy evidence: ${kind}`,
+    );
+  },
+);
 
 test.each(visualPrivacySentinels)(
   "rejects a visual privacy sentinel at any nested path: %s",
@@ -149,7 +199,7 @@ test("allows owner contents in responses and exports, never in operator surfaces
       privacySentinels.privateContent,
     );
   }
-  await expect(scanPrivacySurfaces(root)).resolves.toMatchObject({ files: 9 });
+  await expect(scanPrivacySurfaces(root)).resolves.toMatchObject({ files: 12 });
   await writeFile(
     `${root}/worker-logs/unexpected/nested/file`,
     privacySentinels.privateContent,

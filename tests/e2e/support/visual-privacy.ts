@@ -1,6 +1,9 @@
-import { readdir, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { visualPrivacySentinels } from "./visual-fixtures";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  assertVisualEvidenceFilesArePrivate,
+  visualPrivacySentinels,
+} from "../../release/visual-evidence";
 
 export { visualPrivacySentinels };
 
@@ -35,26 +38,7 @@ export async function assertVisualEvidenceIsPrivate(
     join(root, "test-results/ui-evidence"),
   );
   const files = [...snapshotFiles, ...resultFiles];
-  const evidence = {
-    light: files.some((file) => basename(file).includes("desktop-light")),
-    dark: files.some((file) => basename(file).includes("desktop-dark")),
-    mobile: files.some((file) => basename(file).includes("mobile")),
-    error: files.some((file) => basename(file).includes("error-state")),
-  };
-
-  for (const [kind, present] of Object.entries(evidence)) {
-    if (!present) throw new Error(`Missing visual privacy evidence: ${kind}`);
-  }
-
-  for (const file of files) {
-    const bytes = await readFile(file);
-    const sentinel = visualPrivacySentinels.find((value) =>
-      bytes.includes(Buffer.from(value)),
-    );
-    if (sentinel) {
-      throw new Error(`Visual privacy sentinel found in ${file}`);
-    }
-  }
+  await assertVisualEvidenceFilesArePrivate(files);
 
   return { files: files.length };
 }

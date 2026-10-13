@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import baseConfig from "./playwright.config";
-import { visualFixtureValues } from "./tests/e2e/support/visual-fixtures";
+import { visualFixtureValues } from "./tests/release/visual-evidence";
 
 const fakeModelBaseUrl = "http://127.0.0.1:3202";
 process.env.E2E_FAKE_MODEL_BASE_URL = fakeModelBaseUrl;
@@ -24,6 +24,8 @@ export default defineConfig({
   testMatch: ["visual-redesign.spec.ts", "accessibility.spec.ts"],
   testIgnore: [],
   outputDir: "test-results/ui-evidence",
+  snapshotPathTemplate:
+    "{snapshotDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
   use: {
     ...baseConfig.use,
     trace: "off",

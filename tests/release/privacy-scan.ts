@@ -1,3 +1,10 @@
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  assertVisualEvidenceFilesArePrivate,
+  visualPrivacySentinels,
+} from "./visual-evidence";
+
 export const privacySentinels = {
   providerKey: "task12_provider_key_76e4c681b7e7474e",
   providerEndpoint: "task12-provider-endpoint-299ce953ab6a469a",
@@ -38,6 +45,9 @@ export async function scanPrivacySurfaces(root: string): Promise<{
     const files = await filesRecursively(join(root, surface));
     if (!files.length) throw new Error(`Missing privacy evidence: ${surface}`);
     counts[surface] = files.length;
+    if (surface === "ui-snapshots") {
+      await assertVisualEvidenceFilesArePrivate(files, surface);
+    }
     const forbidden =
       surface === "responses" || surface === "decoded-exports"
         ? [
@@ -45,7 +55,9 @@ export async function scanPrivacySurfaces(root: string): Promise<{
             privacySentinels.providerEndpoint,
             privacySentinels.otherUser,
           ]
-        : Object.values(privacySentinels);
+        : surface === "ui-snapshots"
+          ? [...Object.values(privacySentinels), ...visualPrivacySentinels]
+          : Object.values(privacySentinels);
     for (const file of files) {
       const bytes = await readFile(file);
       if (forbidden.some((sentinel) => bytes.includes(Buffer.from(sentinel)))) {
@@ -77,6 +89,3 @@ export async function scanPrivacySurfaces(root: string): Promise<{
     responseEvidence,
   };
 }
-
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";

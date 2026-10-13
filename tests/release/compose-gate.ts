@@ -8,7 +8,8 @@ import {
   migrationHashes,
   verifyPhase3Upgrade,
 } from "./database-gate";
-import { privacySentinels } from "./privacy-scan";
+import { filesRecursively, privacySentinels } from "./privacy-scan";
+import { assertVisualEvidenceFilesArePrivate } from "./visual-evidence";
 
 const root = ".superpowers/release-compose";
 const project = `task12-release-${process.pid}`;
@@ -283,10 +284,12 @@ async function main() {
         2,
       ),
     );
-    const visualSnapshotSource =
-      "tests/e2e/visual-redesign.spec.ts-snapshots";
-    const visualSnapshotEvidence =
-      "test-results/privacy-release/ui-snapshots";
+    const visualSnapshotSource = "tests/e2e/visual-redesign.spec.ts-snapshots";
+    const visualSnapshotEvidence = "test-results/privacy-release/ui-snapshots";
+    await assertVisualEvidenceFilesArePrivate(
+      await filesRecursively(visualSnapshotSource),
+      "ui-snapshots",
+    );
     await rm(visualSnapshotEvidence, { recursive: true, force: true });
     await mkdir("test-results/privacy-release", { recursive: true });
     await cp(visualSnapshotSource, visualSnapshotEvidence, {

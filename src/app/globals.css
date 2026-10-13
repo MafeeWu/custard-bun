@@ -1115,7 +1115,11 @@ a {
   min-width: 0;
 }
 
-.chat-message:last-child {
+.chat-timeline__end {
+  display: block;
+  inline-size: 1px;
+  block-size: 1px;
+  margin-block-start: -1px;
   scroll-margin-bottom: var(--chat-composer-reserved);
 }
 

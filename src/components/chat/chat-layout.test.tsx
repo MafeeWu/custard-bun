@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { UserConversationDetail } from "@/server/chat/conversation-queries";
 import { ChatScreen } from "./chat-screen";
 import { ChatComposer, type ChatClientMessage } from "./chat-composer";
@@ -41,6 +41,18 @@ beforeAll(() => {
       },
     });
   }
+
+  if (!HTMLElement.prototype.scrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value() {},
+      writable: true,
+    });
+  }
+});
+
+beforeEach(() => {
+  vi.restoreAllMocks();
 });
 
 function conversation(
@@ -254,6 +266,87 @@ test("messages expose semantic presentation classes and stable non-content motio
     expect(className).not.toContain("Complete");
     expect(className).not.toContain("assistant text");
   }
+});
+
+test("streaming follows while the reader remains near the bottom", () => {
+  const scrollIntoView = vi
+    .spyOn(HTMLElement.prototype, "scrollIntoView")
+    .mockImplementation(() => {});
+  const initial: ChatClientMessage[] = [
+    {
+      id: "attempt-stream",
+      role: "assistant",
+      kind: "generated",
+      attemptId: "attempt-stream",
+      status: "streaming",
+      content: "Partial",
+      errorCode: null,
+      retryable: false,
+    },
+  ];
+  const { rerender } = render(<ChatTimeline messages={initial} />);
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+  const marker = document.querySelector(".chat-timeline__end")!;
+  vi.spyOn(marker, "getBoundingClientRect").mockReturnValue({
+    bottom: 750,
+  } as DOMRect);
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: 800,
+  });
+  fireEvent.scroll(document);
+  rerender(
+    <ChatTimeline
+      messages={[{ ...initial[0], content: "Partial response grows" }]}
+    />,
+  );
+
+  expect(scrollIntoView).toHaveBeenCalledTimes(2);
+});
+
+test("streaming does not override deliberate upward scrolling and resumes near bottom", () => {
+  const scrollIntoView = vi
+    .spyOn(HTMLElement.prototype, "scrollIntoView")
+    .mockImplementation(() => {});
+  const initial: ChatClientMessage[] = [
+    {
+      id: "attempt-reader",
+      role: "assistant",
+      kind: "generated",
+      attemptId: "attempt-reader",
+      status: "streaming",
+      content: "Partial",
+      errorCode: null,
+      retryable: false,
+    },
+  ];
+  const { rerender } = render(<ChatTimeline messages={initial} />);
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+  const marker = document.querySelector(".chat-timeline__end")!;
+  const markerBox = vi.spyOn(marker, "getBoundingClientRect");
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: 800,
+  });
+  markerBox.mockReturnValue({ bottom: 1_200 } as DOMRect);
+  fireEvent.scroll(document);
+  rerender(
+    <ChatTimeline
+      messages={[{ ...initial[0], content: "Do not pull me down" }]}
+    />,
+  );
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+  markerBox.mockReturnValue({ bottom: 750 } as DOMRect);
+  fireEvent.scroll(document);
+  rerender(
+    <ChatTimeline
+      messages={[{ ...initial[0], content: "Follow again near the bottom" }]}
+    />,
+  );
+  expect(scrollIntoView).toHaveBeenCalledTimes(2);
 });
 
 test("authoritative server transcripts do not enter even with optimistic-looking ids", () => {

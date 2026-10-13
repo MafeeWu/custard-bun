@@ -32,9 +32,23 @@ async function expectLatestMessageAboveComposer(page: Page) {
   const composer = await page
     .getByLabel("Message", { exact: true })
     .boundingBox();
+  const diagnostics = await page.evaluate(() => {
+    const marker = document.querySelector(".chat-timeline__end");
+    const shell = document.querySelector(".chat-composer-shell");
+    return {
+      composerTop: shell?.getBoundingClientRect().top,
+      innerHeight: window.innerHeight,
+      markerBottom: marker?.getBoundingClientRect().bottom,
+      scrollHeight: document.documentElement.scrollHeight,
+      scrollY: window.scrollY,
+    };
+  });
   expect(message).not.toBeNull();
   expect(composer).not.toBeNull();
-  expect(message!.y + message!.height).toBeLessThanOrEqual(composer!.y);
+  expect(
+    message!.y + message!.height,
+    JSON.stringify(diagnostics),
+  ).toBeLessThanOrEqual(composer!.y);
 }
 
 async function expectDialogInsideViewport(page: Page) {
@@ -47,6 +61,49 @@ async function expectDialogInsideViewport(page: Page) {
   expect(box!.y).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width);
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+}
+
+async function apply200PercentLayoutZoom(page: Page) {
+  await page.addInitScript(() => {
+    const applyZoom = () => {
+      const root = document.documentElement;
+      root.dataset.baseFontSize = getComputedStyle(root).fontSize;
+      root.style.fontSize = "200%";
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", applyZoom, { once: true });
+    } else {
+      applyZoom();
+    }
+  });
+}
+
+async function readLayoutZoomMetrics(page: Page) {
+  return page.evaluate(() => {
+    const root = document.documentElement;
+    const baseFontSize = Number.parseFloat(root.dataset.baseFontSize ?? "0");
+    const scaledFontSize = Number.parseFloat(getComputedStyle(root).fontSize);
+    const effectiveViewportWidth = window.innerWidth;
+    return {
+      baseFontSize,
+      devicePixelRatio: window.devicePixelRatio,
+      effectiveViewportWidth,
+      scaledFontSize,
+    };
+  });
+}
+
+async function scrollLatestAboveComposer(page: Page) {
+  await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".chat-timeline__end");
+    const composer = document.querySelector<HTMLElement>(
+      ".chat-composer-shell",
+    );
+    if (!marker || !composer) return;
+    const scrollingElement =
+      document.scrollingElement ?? document.documentElement;
+    scrollingElement.scrollTop = scrollingElement.scrollHeight;
+  });
 }
 
 async function screenshotDialogError(page: Page, testInfo: TestInfo) {
@@ -261,7 +318,52 @@ test("fits 60-character branding and an 80-character character at 320px", async 
   );
 });
 
-test("preserves a 320px CSS viewport at 200% device scale", async ({
+test("reflows layout and text at 200% zoom", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-light");
+  await page.setViewportSize({ width: 640, height: 1800 });
+  await apply200PercentLayoutZoom(page);
+  const fixture = await resetVisualFixtures(`${testInfo.project.name}-zoom`);
+  try {
+    await page.goto("/characters/visual-long-name");
+    const metrics = await readLayoutZoomMetrics(page);
+    expect(metrics.effectiveViewportWidth).toBe(640);
+    expect(metrics.devicePixelRatio).toBe(1);
+    expect(metrics.scaledFontSize).toBeGreaterThanOrEqual(
+      metrics.baseFontSize * 1.9,
+    );
+    await expectNoHorizontalOverflow(page);
+    await expectVisibleBox(
+      page.getByRole("button", { name: "Open navigation", exact: true }),
+    );
+
+    await registerVisualUser(page, fixture);
+    const conversationId = await startCharacterConversation(
+      page,
+      "calm-listener",
+    );
+    await completeChat(page, "A zoomed deterministic hello.");
+    await scrollLatestAboveComposer(page);
+    await expectNoHorizontalOverflow(page);
+    await expectVisibleBox(
+      page.getByRole("button", { name: "Send", exact: true }),
+    );
+    await expectLatestMessageAboveComposer(page);
+    await page.goto("/account");
+    await expectNoHorizontalOverflow(page);
+    const deleteAccount = page.getByRole("button", {
+      name: "Delete account",
+      exact: true,
+    });
+    await expectVisibleBox(deleteAccount);
+    await deleteAccount.click();
+    await expectDialogInsideViewport(page);
+    expect(new URL(page.url()).pathname).not.toContain(conversationId);
+  } finally {
+    await fixture.database.$client.end();
+  }
+});
+
+test("supplementally preserves a 320px CSS viewport at 200% device scale", async ({
   browser,
 }) => {
   const context = await browser.newContext({

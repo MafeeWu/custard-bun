@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { privacySentinels } from "../../tests/release/privacy-scan";
-import { visualFixtureValues } from "../../tests/e2e/support/visual-fixtures";
+import { visualFixtureValues } from "../../tests/release/visual-evidence";
 
 async function loadPlaywrightConfig(
   ciValue: string | undefined,
@@ -53,8 +53,7 @@ async function loadPlaywrightConfig(
     if (original.E2E_FAKE_MODEL_BASE_URL === undefined) {
       delete process.env.E2E_FAKE_MODEL_BASE_URL;
     } else {
-      process.env.E2E_FAKE_MODEL_BASE_URL =
-        original.E2E_FAKE_MODEL_BASE_URL;
+      process.env.E2E_FAKE_MODEL_BASE_URL = original.E2E_FAKE_MODEL_BASE_URL;
     }
     if (original.E2E_FAKE_MODEL_PORT === undefined) {
       delete process.env.E2E_FAKE_MODEL_PORT;
@@ -88,7 +87,8 @@ test.each([
       url: "http://127.0.0.1:3000/",
     });
     expect(config.webServer[1]).toMatchObject({
-      command: "mkdir -p test-results && : > test-results/e2e-worker.log && exec pnpm exec tsx tests/e2e/support/worker-harness.ts >> test-results/e2e-worker.log 2>&1",
+      command:
+        "mkdir -p test-results && : > test-results/e2e-worker.log && exec pnpm exec tsx tests/e2e/support/worker-harness.ts >> test-results/e2e-worker.log 2>&1",
       reuseExistingServer: false,
       url: "http://127.0.0.1:3101/",
     });
@@ -166,6 +166,9 @@ test("limits the visual harness to quality specs across light, dark, and reduced
   ]);
   expect(config.testIgnore).toEqual([]);
   expect(config.use).toMatchObject({ trace: "off" });
+  expect(config.snapshotPathTemplate).toBe(
+    "{snapshotDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
+  );
   expect(config.projects).toMatchObject([
     {
       name: "desktop-light",
@@ -220,5 +223,16 @@ test("lets the deterministic provider bind the visual harness port", async () =>
     "tests/e2e/support/fake-model-server.ts",
     "utf8",
   );
-  expect(source).toContain("process.env.E2E_FAKE_MODEL_PORT ?? \"3102\"");
+  expect(source).toContain('process.env.E2E_FAKE_MODEL_PORT ?? "3102"');
+});
+
+test("the visual gate exercises real 200% layout and text scaling", async () => {
+  const source = await readFile("tests/e2e/visual-redesign.spec.ts", "utf8");
+
+  expect(source).toContain("reflows layout and text at 200% zoom");
+  expect(source).toContain('root.style.fontSize = "200%"');
+  expect(source).toContain("scaledFontSize");
+  expect(source).toContain("effectiveViewportWidth");
+  expect(source).toContain("expectLatestMessageAboveComposer(page)");
+  expect(source).toContain("expectDialogInsideViewport(page)");
 });

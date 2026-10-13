@@ -17,24 +17,15 @@ import {
   userCharacterMemorySetting,
 } from "../../../src/server/db/memory-schema";
 import type { Database } from "../../../src/server/db/client";
+import {
+  visualFixtureValues,
+  visualPrivacySentinels,
+} from "../../release/visual-evidence";
 import { createAdminTestDatabase, promoteVerifiedTestUser } from "./admin";
 import { registerAndSignIn, resetFakeModel } from "./chat";
 import { e2eEnvironment } from "./environment";
 
-export const visualFixtureValues = {
-  providerKey: "task12_visual_provider_key_19b4df2d9a4d4ff0",
-  providerEndpoint: "task12-visual-provider-endpoint-7d4de48a",
-  email: "task12-visual-private-user@example.invalid",
-  userId: "task12_visual_user_id_8de0fb6a",
-  privateMessage: "task12_visual_private_message_324c850d",
-  memoryContent: "task12_visual_private_memory_d9c318dd",
-  exportId: "task12_visual_export_id_862b4067",
-  rawError: "task12_visual_raw_error_17a454df",
-} as const;
-
-export const visualPrivacySentinels = Object.freeze(
-  Object.values(visualFixtureValues),
-) as readonly string[];
+export { visualFixtureValues, visualPrivacySentinels };
 
 export const visualBrandName =
   "Clear Daylight Companion Space For Thoughtful Private Chats!";
@@ -275,11 +266,25 @@ export async function injectOwnerExportError(
 }
 
 export async function expectNoHorizontalOverflow(page: Page) {
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
+  const result = await page.evaluate(() => ({
+    fits: document.documentElement.scrollWidth <= window.innerWidth,
+    overflowing: [...document.querySelectorAll<HTMLElement>("body *")]
+      .map((element) => {
+        const box = element.getBoundingClientRect();
+        return {
+          box,
+          className: element.className,
+          tagName: element.tagName,
+          text: element.textContent?.trim().slice(0, 80),
+        };
+      })
+      .filter(
+        ({ box }) =>
+          box.width > 0 && (box.left < -1 || box.right > innerWidth + 1),
+      )
+      .slice(0, 10),
+  }));
+  expect(result.fits, JSON.stringify(result.overflowing)).toBe(true);
 }
 
 export async function expectVisibleBox(locator: ReturnType<Page["locator"]>) {

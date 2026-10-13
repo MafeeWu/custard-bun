@@ -132,7 +132,7 @@ release artifacts.
 
 ## Phase 6: Clear Daylight Interface Redesign
 
-**Status:** Complete.
+**Status:** Fix Round 1 gates pending.
 
 **Design:** `docs/superpowers/specs/2026-10-13-clear-daylight-interface-redesign.md`
 
