@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { expect, test, vi } from "vitest";
 import { getPublicCharacterBySlug } from "@/server/characters/character-queries";
 import { listActiveConversations } from "@/server/chat/conversation-queries";
+import { getPublicConfig } from "@/server/config/public-config";
+import type { PublicAppConfig } from "@/server/config/schema";
 import { getDatabase } from "@/server/db/database";
 import CharacterDetailPage, { dynamic } from "./page";
 
@@ -16,6 +18,10 @@ vi.mock("@/server/characters/character-queries", () => ({
 
 vi.mock("@/server/chat/conversation-queries", () => ({
   listActiveConversations: vi.fn(),
+}));
+
+vi.mock("@/server/config/public-config", () => ({
+  getPublicConfig: vi.fn(),
 }));
 
 vi.mock("@/server/auth/auth", () => ({
@@ -34,6 +40,49 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 
+function createPublicConfig(): PublicAppConfig {
+  return {
+    branding: {
+      name: "Custard Bun",
+      description: "Private conversations with consistent AI characters.",
+      logoPath: "/brand/logo.svg",
+      faviconPath: "/brand/favicon.svg",
+      primaryColor: "#F59E0B",
+    },
+    registration: { open: true, maxAttemptsPerHourPerIp: 5 },
+    links: {
+      privacyUrl: "https://example.com/privacy",
+      termsUrl: "https://example.com/terms",
+      supportUrl: "mailto:support@example.com",
+    },
+    chat: {
+      firstTokenTimeoutMs: 10_000,
+      requestTimeoutMs: 60_000,
+      promptTokenBudget: 8_192,
+      maxInputCharacters: 12_000,
+      maxOutputTokens: 1_024,
+      defaultUserDailyRequestLimit: 50,
+      defaultUserDailyTokenLimit: 50_000,
+      defaultInstanceMonthlyRequestLimit: 5_000,
+      defaultInstanceMonthlyTokenBudget: 2_000_000,
+      maxConcurrentGenerations: 4,
+    },
+    memory: {
+      enabled: true,
+      promptTokenBudget: 1_024,
+      relationshipSummaryTokenBudget: 256,
+      memoryItemsTokenBudget: 512,
+      maxActiveItemsPerCharacter: 100,
+      maxItemCharacters: 280,
+      maxSummaryCharacters: 2_000,
+      extractionRetryLimit: 3,
+      extractionRetryDelaySeconds: 60,
+      exportRetentionHours: 24,
+      maxExportArchiveBytes: 262_144,
+    },
+  };
+}
+
 const character = {
   id: "11111111-1111-1111-1111-111111111111",
   slug: "calm-companion",
@@ -49,6 +98,7 @@ const character = {
 };
 
 test("is force-dynamic and gives anonymous visitors a safe sign-in return link", async () => {
+  vi.mocked(getPublicConfig).mockResolvedValue(createPublicConfig());
   vi.mocked(getDatabase).mockResolvedValue({} as never);
   vi.mocked(getPublicCharacterBySlug).mockResolvedValue(character);
 
@@ -96,6 +146,7 @@ test.each([
       getSession: vi.fn(async () => ({ user: { id: "user-1" } })),
     },
   } as never);
+  vi.mocked(getPublicConfig).mockResolvedValue(createPublicConfig());
   vi.mocked(getDatabase).mockResolvedValue({} as never);
   vi.mocked(getPublicCharacterBySlug).mockResolvedValue(character);
   vi.mocked(listActiveConversations).mockResolvedValue([...active]);
@@ -110,6 +161,7 @@ test.each([
 });
 
 test("calls notFound when the public character does not exist", async () => {
+  vi.mocked(getPublicConfig).mockResolvedValue(createPublicConfig());
   vi.mocked(getDatabase).mockResolvedValue({} as never);
   vi.mocked(getPublicCharacterBySlug).mockResolvedValue(null);
 
