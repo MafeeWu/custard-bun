@@ -63,47 +63,42 @@ async function expectDialogInsideViewport(page: Page) {
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
 }
 
-async function apply200PercentLayoutZoom(page: Page) {
-  await page.addInitScript(() => {
-    const applyZoom = () => {
-      const root = document.documentElement;
-      root.dataset.baseFontSize = getComputedStyle(root).fontSize;
-      root.style.fontSize = "200%";
-    };
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", applyZoom, { once: true });
-    } else {
-      applyZoom();
-    }
-  });
-}
-
-async function readLayoutZoomMetrics(page: Page) {
+async function readViewportMetrics(page: Page) {
   return page.evaluate(() => {
-    const root = document.documentElement;
-    const baseFontSize = Number.parseFloat(root.dataset.baseFontSize ?? "0");
-    const scaledFontSize = Number.parseFloat(getComputedStyle(root).fontSize);
-    const effectiveViewportWidth = window.innerWidth;
+    const visualViewport = window.visualViewport;
     return {
-      baseFontSize,
       devicePixelRatio: window.devicePixelRatio,
-      effectiveViewportWidth,
-      scaledFontSize,
+      layoutHeight: window.innerHeight,
+      layoutWidth: window.innerWidth,
+      physicalHeight: window.innerHeight * window.devicePixelRatio,
+      physicalWidth: window.innerWidth * window.devicePixelRatio,
+      visualHeight: visualViewport?.height,
+      visualScale: visualViewport?.scale,
+      visualWidth: visualViewport?.width,
     };
   });
 }
 
 async function scrollLatestAboveComposer(page: Page) {
   await page.evaluate(() => {
-    const marker = document.querySelector<HTMLElement>(".chat-timeline__end");
-    const composer = document.querySelector<HTMLElement>(
-      ".chat-composer-shell",
-    );
-    if (!marker || !composer) return;
     const scrollingElement =
       document.scrollingElement ?? document.documentElement;
     scrollingElement.scrollTop = scrollingElement.scrollHeight;
   });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const scrollingElement =
+          document.scrollingElement ?? document.documentElement;
+        return Math.ceil(scrollingElement.scrollTop + window.innerHeight);
+      }),
+    )
+    .toBeGreaterThanOrEqual(
+      await page.evaluate(
+        () =>
+          (document.scrollingElement ?? document.documentElement).scrollHeight,
+      ),
+    );
 }
 
 async function screenshotDialogError(page: Page, testInfo: TestInfo) {
@@ -318,19 +313,45 @@ test("fits 60-character branding and an 80-character character at 320px", async 
   );
 });
 
-test("reflows layout and text at 200% zoom", async ({ page }, testInfo) => {
+test("reflows the same physical desktop viewport at 200% browser zoom", async ({
+  browser,
+  page: baselinePage,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-light");
-  await page.setViewportSize({ width: 640, height: 1800 });
-  await apply200PercentLayoutZoom(page);
   const fixture = await resetVisualFixtures(`${testInfo.project.name}-zoom`);
+  const zoomContext = await browser.newContext({
+    baseURL: "http://127.0.0.1:3000",
+    colorScheme: "light",
+    deviceScaleFactor: 2,
+    reducedMotion: "no-preference",
+    viewport: { width: 640, height: 450 },
+  });
+  const page = await zoomContext.newPage();
   try {
+    await baselinePage.setViewportSize({ width: 1280, height: 900 });
+    await baselinePage.goto("/characters/visual-long-name");
+    const baseline = await readViewportMetrics(baselinePage);
+    expect(baseline).toMatchObject({
+      devicePixelRatio: 1,
+      layoutHeight: 900,
+      layoutWidth: 1280,
+      physicalHeight: 900,
+      physicalWidth: 1280,
+      visualHeight: 900,
+      visualScale: 1,
+      visualWidth: 1280,
+    });
+
     await page.goto("/characters/visual-long-name");
-    const metrics = await readLayoutZoomMetrics(page);
-    expect(metrics.effectiveViewportWidth).toBe(640);
-    expect(metrics.devicePixelRatio).toBe(1);
-    expect(metrics.scaledFontSize).toBeGreaterThanOrEqual(
-      metrics.baseFontSize * 1.9,
-    );
+    const zoomed = await readViewportMetrics(page);
+    expect(zoomed.devicePixelRatio).toBe(baseline.devicePixelRatio * 2);
+    expect(zoomed.layoutWidth).toBe(baseline.layoutWidth / 2);
+    expect(zoomed.layoutHeight).toBe(baseline.layoutHeight / 2);
+    expect(zoomed.visualWidth).toBe(baseline.visualWidth! / 2);
+    expect(zoomed.visualHeight).toBe(baseline.visualHeight! / 2);
+    expect(zoomed.physicalWidth).toBe(baseline.physicalWidth);
+    expect(zoomed.physicalHeight).toBe(baseline.physicalHeight);
+    expect(zoomed.visualScale).toBe(1);
     await expectNoHorizontalOverflow(page);
     await expectVisibleBox(
       page.getByRole("button", { name: "Open navigation", exact: true }),
@@ -359,6 +380,7 @@ test("reflows layout and text at 200% zoom", async ({ page }, testInfo) => {
     await expectDialogInsideViewport(page);
     expect(new URL(page.url()).pathname).not.toContain(conversationId);
   } finally {
+    await zoomContext.close();
     await fixture.database.$client.end();
   }
 });
