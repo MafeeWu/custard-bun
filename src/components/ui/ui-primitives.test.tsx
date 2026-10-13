@@ -14,6 +14,8 @@ const globalsCss = fs.readFileSync(
   path.resolve(process.cwd(), "src/app/globals.css"),
   "utf8",
 );
+const statusNoticeRule =
+  globalsCss.match(/\.ui-status-notice\s*\{[^}]*\}/s)?.[0] ?? "";
 
 test("pending buttons keep their accessible name, disable submission, and announce busy state", () => {
   render(<Button pending>Save</Button>);
@@ -87,6 +89,11 @@ test("status notices expose an accessible live region", () => {
 
   expect(screen.getByRole("alert")).toHaveTextContent("Could not save");
   expect(screen.getByText("Try again in a moment.")).toBeVisible();
+});
+
+test("status notices keep the semantic surface radius", () => {
+  expect(statusNoticeRule).toContain("border-radius: var(--radius-surface);");
+  expect(statusNoticeRule).not.toContain("border-radius: var(--radius-input);");
 });
 
 test("empty states render a heading and optional action", () => {

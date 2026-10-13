@@ -741,7 +741,7 @@ a {
   gap: var(--space-2);
   padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-input);
+  border-radius: var(--radius-surface);
 }
 
 .ui-status-notice__title {
@@ -929,9 +929,12 @@ a {
   .ui-page-header {
     align-items: start;
   }
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+
+  .character-eyebrow {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
 }
 
 .character-detail-grid {
