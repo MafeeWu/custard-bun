@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { SafeMarkdown } from "./safe-markdown";
@@ -62,4 +63,31 @@ test("does not render raw HTML, images, or navigable javascript links", () => {
   expect(container.querySelector("script")).toBeNull();
   expect(container.querySelector("strong")).toBeNull();
   expect(screen.getByText("Unsafe").closest("a")).not.toHaveAttribute("href");
+});
+
+test("code blocks remain horizontally scrollable with safe presentation classes", () => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync("src/app/globals.css", "utf8").replace(
+    /@import[^;]+;/g,
+    "",
+  );
+  document.head.append(style);
+  try {
+    render(
+      <SafeMarkdown>{`
+\`\`\`ts
+const longLine = "${"x".repeat(160)}";
+\`\`\`
+`}</SafeMarkdown>,
+    );
+
+    const pre = screen.getByText(/const longLine/).closest("pre");
+    expect(pre).toHaveClass("safe-markdown__pre");
+    expect(getComputedStyle(pre!).overflowX).toBe("auto");
+    expect(screen.getByText(/const longLine/).closest("code")).toHaveClass(
+      "safe-markdown__code-block",
+    );
+  } finally {
+    style.remove();
+  }
 });

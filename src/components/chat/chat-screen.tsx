@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useActionState, useState } from "react";
@@ -9,10 +8,11 @@ import type {
   ArchivedConversationSummary,
   UserConversationDetail,
 } from "@/server/chat/conversation-queries";
+import { ChatActions } from "./chat-actions";
 import { ChatComposer } from "./chat-composer";
+import { ChatHeader } from "./chat-header";
 import type { ChatClientMessage } from "./chat-message";
 import { ChatTimeline } from "./chat-timeline";
-import { ConversationHistory } from "./conversation-history";
 
 export type ConversationAction = (
   state: ConversationActionState,
@@ -20,8 +20,6 @@ export type ConversationAction = (
 ) => Promise<ConversationActionState>;
 
 const idleState: ConversationActionState = { status: "idle" };
-const deletionConfirmation =
-  "Permanently delete this conversation. Existing long-term memory is retained. Unapplied extraction from this conversation is cancelled. The deleted transcript cannot later form memory.";
 
 export function StartConversationForm({
   action,
@@ -35,41 +33,6 @@ export function StartConversationForm({
     <form action={formAction}>
       <button className="brand-primary" disabled={pending} type="submit">
         {pending ? "Opening…" : label}
-      </button>
-      {state.message ? (
-        <p role={state.status === "error" ? "alert" : "status"}>
-          {state.message}
-        </p>
-      ) : null}
-    </form>
-  );
-}
-
-function ConfirmAction({
-  action,
-  label,
-  confirmation,
-  disabled = false,
-}: {
-  action: ConversationAction;
-  label: string;
-  confirmation: string;
-  disabled?: boolean;
-}) {
-  const [state, formAction, pending] = useActionState(action, idleState);
-  return (
-    <form action={formAction} className="chat-confirm-action">
-      <label>
-        <input
-          disabled={disabled || pending}
-          name="confirm"
-          required
-          type="checkbox"
-        />{" "}
-        {confirmation}
-      </label>
-      <button disabled={disabled || pending} type="submit">
-        {pending ? "Working…" : label}
       </button>
       {state.message ? (
         <p role={state.status === "error" ? "alert" : "status"}>
@@ -107,59 +70,20 @@ export function ChatScreen({
 
   return (
     <main className="chat-page">
-      <header className="chat-header">
-        <div className="chat-character">
-          <Image
-            alt=""
-            height={56}
-            src={conversation.character.avatarPath}
-            width={56}
+      <ChatHeader
+        actions={
+          <ChatActions
+            active={active}
+            deleteAction={deleteAction}
+            generating={generating}
+            restartAction={restartAction}
           />
-          <div>
-            <p className="character-eyebrow">
-              {active ? (generating ? "Replying" : "Available") : "Archived"}
-            </p>
-            <h1>{conversation.character.displayName}</h1>
-          </div>
-        </div>
-        <div className="chat-header-actions">
-          <Link
-            className="brand-link"
-            href={`/app/memories/${conversation.character.id}`}
-          >
-            Manage memory
-          </Link>
-          <ConversationHistory conversations={archivedConversations} />
-          {active ? (
-            <details className="chat-disclosure">
-              <summary role="button">Conversation actions</summary>
-              <div className="chat-action-menu">
-                <ConfirmAction
-                  action={restartAction}
-                  confirmation="Archive this conversation and start over."
-                  disabled={generating}
-                  label="Start over"
-                />
-                <ConfirmAction
-                  action={deleteAction}
-                  confirmation={deletionConfirmation}
-                  disabled={generating}
-                  label="Delete conversation"
-                />
-              </div>
-            </details>
-          ) : (
-            <div className="chat-archived-action">
-              <ConfirmAction
-                action={deleteAction}
-                confirmation={deletionConfirmation}
-                disabled={generating}
-                label="Delete conversation"
-              />
-            </div>
-          )}
-        </div>
-      </header>
+        }
+        character={conversation.character}
+        history={archivedConversations}
+        memoryHref={`/app/memories/${conversation.character.id}`}
+        state={active ? (generating ? "replying" : "available") : "archived"}
+      />
 
       {!conversation.character.isCurrentDefault ? (
         <p className="chat-version-notice" role="note">

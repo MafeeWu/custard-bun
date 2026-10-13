@@ -541,6 +541,7 @@ export function ChatComposer({
           Message
         </label>
         <textarea
+          className="chat-composer__input"
           id="chat-message"
           name="message"
           placeholder="Write a message"
@@ -555,14 +556,22 @@ export function ChatComposer({
             }
             setContent(event.target.value);
           }}
-          rows={3}
+          rows={1}
         />
         {activeAttemptId ? (
-          <button onClick={() => void stop()} type="button">
+          <button
+            className="chat-composer__action"
+            onClick={() => void stop()}
+            type="button"
+          >
             Stop
           </button>
         ) : (
-          <button disabled={generating || !content.trim()} type="submit">
+          <button
+            className="chat-composer__action"
+            disabled={generating || !content.trim()}
+            type="submit"
+          >
             Send
           </button>
         )}

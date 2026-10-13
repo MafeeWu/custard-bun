@@ -1,5 +1,6 @@
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import { cx } from "@/components/ui/cx";
 
 function safeHref(href: string | undefined): string | undefined {
   if (!href) {
@@ -50,7 +51,25 @@ export function SafeMarkdown({ children }: { children: ReactNode }) {
       skipHtml
       components={{
         a: SafeLink,
+        code: ({ className, children: codeChildren, ...props }) => (
+          <code
+            {...props}
+            className={cx(
+              className?.startsWith("language-")
+                ? "safe-markdown__code-block"
+                : "safe-markdown__code-inline",
+              className,
+            )}
+          >
+            {codeChildren}
+          </code>
+        ),
         img: () => null,
+        pre: ({ children: preChildren, ...props }) => (
+          <pre {...props} className="safe-markdown__pre">
+            {preChildren}
+          </pre>
+        ),
       }}
     >
       {String(children)}

@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import type { UserConversationDetail } from "@/server/chat/conversation-queries";
 import { ChatScreen } from "./chat-screen";
@@ -6,7 +7,8 @@ import { ChatScreen } from "./chat-screen";
 const action = vi.fn(async () => ({ status: "success" as const }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
-test("memory entry targets the current character and deletion explains retained memory and cancelled sources", () => {
+test("memory entry targets the current character and deletion explains retained memory and cancelled sources", async () => {
+  const user = userEvent.setup();
   render(
     <ChatScreen
       conversation={conversation({ messages: [] })}
@@ -18,6 +20,9 @@ test("memory entry targets the current character and deletion explains retained 
   expect(screen.getByRole("link", { name: "Manage memory" })).toHaveAttribute(
     "href",
     "/app/memories/character-1",
+  );
+  await user.click(
+    screen.getByRole("button", { name: "Open conversation actions" }),
   );
   expect(
     screen
@@ -183,7 +188,8 @@ test("renders focused opening, user, streaming, complete, failed, and interrupte
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
 });
 
-test("renders archived conversations as read-only with delete and back actions", () => {
+test("renders archived conversations as read-only with delete and back actions", async () => {
+  const user = userEvent.setup();
   render(
     <ChatScreen
       conversation={conversation({
@@ -208,6 +214,9 @@ test("renders archived conversations as read-only with delete and back actions",
   expect(
     screen.getByRole("link", { name: "Back to current conversation" }),
   ).toHaveAttribute("href", "/app/conversations/conversation-current");
+  await user.click(
+    screen.getByRole("button", { name: "Open conversation actions" }),
+  );
   expect(
     screen.getByRole("button", { name: "Delete conversation" }),
   ).toBeVisible();

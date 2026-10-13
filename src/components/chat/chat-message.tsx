@@ -9,7 +9,9 @@ export type ChatClientMessage =
   | Exclude<ServerMessage, { kind: "generated" }>
   | (GeneratedMessage & { statusMessage?: string });
 
-function generatedStatus(message: Extract<ChatClientMessage, { kind: "generated" }>) {
+function generatedStatus(
+  message: Extract<ChatClientMessage, { kind: "generated" }>,
+) {
   if (message.statusMessage) {
     return message.statusMessage;
   }
@@ -30,37 +32,34 @@ function generatedStatus(message: Extract<ChatClientMessage, { kind: "generated"
 
 export function ChatMessage({ message }: { message: ChatClientMessage }) {
   const assistant = message.role === "assistant";
-  const status = message.kind === "generated" ? generatedStatus(message) : undefined;
+  const status =
+    message.kind === "generated" ? generatedStatus(message) : undefined;
 
   return (
-    <li
-      className={`chat-message chat-message-${message.role}`}
-      data-status={message.kind === "generated" ? message.status : undefined}
+    <article
+      aria-label={assistant ? "Character message" : "Your message"}
+      className="chat-message__bubble"
     >
-      <article aria-label={assistant ? "Character message" : "Your message"}>
-        <p className="chat-message-author">
-          {assistant ? "Character" : "You"}
+      <p className="chat-message-author">{assistant ? "Character" : "You"}</p>
+      {message.content ? (
+        assistant ? (
+          <SafeMarkdown>{message.content}</SafeMarkdown>
+        ) : (
+          <p>{message.content}</p>
+        )
+      ) : null}
+      {status ? (
+        <p
+          className="chat-message-status"
+          role={
+            message.kind === "generated" && message.status === "failed"
+              ? "alert"
+              : "status"
+          }
+        >
+          {status}
         </p>
-        {message.content ? (
-          assistant ? (
-            <SafeMarkdown>{message.content}</SafeMarkdown>
-          ) : (
-            <p>{message.content}</p>
-          )
-        ) : null}
-        {status ? (
-          <p
-            className="chat-message-status"
-            role={
-              message.kind === "generated" && message.status === "failed"
-                ? "alert"
-                : "status"
-            }
-          >
-            {status}
-          </p>
-        ) : null}
-      </article>
-    </li>
+      ) : null}
+    </article>
   );
 }

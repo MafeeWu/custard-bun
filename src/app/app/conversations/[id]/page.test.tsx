@@ -75,12 +75,14 @@ test("loads only the owned conversation and character history into the focused p
 
   expect(screen.getByRole("heading", { name: "Calm Guide" })).toBeVisible();
   expect(screen.getByText("Welcome.")).toBeVisible();
-  expect(screen.getByRole("button", { name: "History" })).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Open conversation history" }),
+  ).toBeVisible();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-  expect(getConversationForUser).toHaveBeenCalledWith(
-    expect.anything(),
-    { userId: "user-1", conversationId: "conversation-1" },
-  );
+  expect(getConversationForUser).toHaveBeenCalledWith(expect.anything(), {
+    userId: "user-1",
+    conversationId: "conversation-1",
+  });
 });
 
 test("returns not found when the conversation is not owned", async () => {
