@@ -1,6 +1,7 @@
 import { Avatar } from "@/components/ui/avatar";
 import { Surface } from "@/components/ui/surface";
 import type { PublicCharacterSummary } from "@/server/characters/character-queries";
+import { isRepositoryOwnedCharacterAvatarPath } from "@/server/characters/character-content";
 
 export function CharacterStage({
   characters,
@@ -36,24 +37,32 @@ export function CharacterStage({
         </p>
       </div>
       <div className="home-stage__portraits">
-        {characters.map((character, index) => (
-          <figure
-            className={`home-stage__portrait home-stage__portrait--${index + 1}`}
-            key={character.id}
-          >
-            <Avatar
-              alt={`${character.displayName} portrait`}
-              className="home-stage__avatar"
-              name={character.displayName}
-              size="lg"
-              src={character.avatarPath}
-            />
-            <figcaption className="home-stage__caption">
-              <p className="home-stage__name">{character.displayName}</p>
-              <p className="home-stage__line">{character.shortDescription}</p>
-            </figcaption>
-          </figure>
-        ))}
+        {characters.map((character, index) => {
+          const avatarPath = isRepositoryOwnedCharacterAvatarPath(
+            character.avatarPath,
+          )
+            ? character.avatarPath
+            : undefined;
+
+          return (
+            <figure
+              className={`home-stage__portrait home-stage__portrait--${index + 1}`}
+              key={character.id}
+            >
+              <Avatar
+                alt={`${character.displayName} portrait`}
+                className="home-stage__avatar"
+                name={character.displayName}
+                size="lg"
+                src={avatarPath}
+              />
+              <figcaption className="home-stage__caption">
+                <p className="home-stage__name">{character.displayName}</p>
+                <p className="home-stage__line">{character.shortDescription}</p>
+              </figcaption>
+            </figure>
+          );
+        })}
       </div>
     </Surface>
   );

@@ -9,25 +9,33 @@ export const characterSlugSchema = z
   .max(64)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
-const avatarPathSchema = z.string().superRefine((value, context) => {
-  if (
-    !/^\/characters\/[A-Za-z0-9/_-]+\.(?:svg|png|webp|jpe?g)$/.test(value) ||
-    value.includes("..") ||
-    value.includes("\\") ||
-    value.includes("?") ||
-    value.includes("#")
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "must be a site-relative character image path",
-    });
-  }
-});
+export const characterAvatarPathSchema = z
+  .string()
+  .superRefine((value, context) => {
+    if (
+      !/^\/characters\/[A-Za-z0-9/_-]+\.(?:svg|png|webp|jpe?g)$/.test(value) ||
+      value.includes("..") ||
+      value.includes("\\") ||
+      value.includes("?") ||
+      value.includes("#")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "must be a site-relative character image path",
+      });
+    }
+  });
+
+export function isRepositoryOwnedCharacterAvatarPath(
+  avatarPath: string,
+): boolean {
+  return characterAvatarPathSchema.safeParse(avatarPath).success;
+}
 
 export const characterContentSchema = z
   .object({
     displayName: boundedLine(80),
-    avatarPath: avatarPathSchema,
+    avatarPath: characterAvatarPathSchema,
     shortDescription: boundedLine(200),
     longDescription: boundedLine(2_000),
     personalityPrinciples: z.array(boundedLine(300)).min(1).max(8),

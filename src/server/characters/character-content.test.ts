@@ -1,5 +1,9 @@
-import { expect, test, describe } from "vitest";
-import { characterContentSchema, characterSlugSchema } from "./character-content";
+import { describe, expect, test } from "vitest";
+import {
+  characterContentSchema,
+  characterSlugSchema,
+  isRepositoryOwnedCharacterAvatarPath,
+} from "./character-content";
 
 const validContent = {
   displayName: "Mira",
@@ -25,9 +29,7 @@ const validContent = {
     topP: 0.9,
     maxOutputTokens: 800,
   },
-  safetyAdditions: [
-    "Use grounding language when the user sounds overwhelmed.",
-  ],
+  safetyAdditions: ["Use grounding language when the user sounds overwhelmed."],
 };
 
 describe("character content schema", () => {
@@ -38,6 +40,16 @@ describe("character content schema", () => {
   test("validates character slugs", () => {
     expect(characterSlugSchema.safeParse("Calm Listener").success).toBe(false);
     expect(characterSlugSchema.safeParse("calm-listener").success).toBe(true);
+  });
+
+  test("classifies repository-owned avatar paths", () => {
+    expect(
+      isRepositoryOwnedCharacterAvatarPath("/characters/calm-listener.svg"),
+    ).toBe(true);
+    expect(
+      isRepositoryOwnedCharacterAvatarPath("https://example.com/avatar.svg"),
+    ).toBe(false);
+    expect(isRepositoryOwnedCharacterAvatarPath("/../secret.svg")).toBe(false);
   });
 
   test.each([
@@ -55,10 +67,24 @@ describe("character content schema", () => {
       { avatarPath: "/characters/avatar.exe" },
     ],
     ["rejects zero principles", { personalityPrinciples: [] }],
-    ["rejects seven example conversations", { exampleConversations: Array.from({ length: 7 }, (_, index) => ({ user: `user ${index}`, assistant: `assistant ${index}` })) }],
-    ["rejects temperature above range", { generationParameters: { temperature: 2.1 } }],
+    [
+      "rejects seven example conversations",
+      {
+        exampleConversations: Array.from({ length: 7 }, (_, index) => ({
+          user: `user ${index}`,
+          assistant: `assistant ${index}`,
+        })),
+      },
+    ],
+    [
+      "rejects temperature above range",
+      { generationParameters: { temperature: 2.1 } },
+    ],
     ["rejects topP below range", { generationParameters: { topP: -0.1 } }],
-    ["rejects max output tokens below range", { generationParameters: { maxOutputTokens: 63 } }],
+    [
+      "rejects max output tokens below range",
+      { generationParameters: { maxOutputTokens: 63 } },
+    ],
     [
       "rejects unknown nested keys",
       {
@@ -79,7 +105,8 @@ describe("character content schema", () => {
     };
 
     if ("exampleConversations" in patch) {
-      candidate.exampleConversations = patch.exampleConversations as typeof validContent.exampleConversations;
+      candidate.exampleConversations =
+        patch.exampleConversations as typeof validContent.exampleConversations;
     }
 
     expect(characterContentSchema.safeParse(candidate).success).toBe(false);

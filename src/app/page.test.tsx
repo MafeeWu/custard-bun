@@ -149,3 +149,56 @@ test("renders an intentional empty character stage without fake portraits", asyn
   ).toBeVisible();
   expect(screen.getAllByRole("img")).toHaveLength(1);
 });
+
+test("renders fallbacks for invalid avatar paths while preserving valid local portraits", async () => {
+  vi.mocked(listPublicCharacters).mockResolvedValue([
+    {
+      id: "99999999-1111-1111-1111-111111111111",
+      slug: "remote-runner",
+      displayName: "Remote Runner",
+      avatarPath: "https://example.com/remote-runner.png",
+      shortDescription: "Should never render as a remote homepage image.",
+      openingMessage: "Do not load me remotely.",
+    },
+    {
+      id: "99999999-2222-2222-2222-222222222222",
+      slug: "trusted-local",
+      displayName: "Trusted Local",
+      avatarPath: "/characters/trusted-local.png",
+      shortDescription: "Should still render as a local homepage image.",
+      openingMessage: "Keep my portrait local.",
+    },
+    {
+      id: "99999999-3333-3333-3333-333333333333",
+      slug: "traversal-trial",
+      displayName: "Traversal Trial",
+      avatarPath: "/../secrets.png",
+      shortDescription: "Should never render from a traversal path.",
+      openingMessage: "Do not render traversal paths.",
+    },
+  ]);
+
+  const element = await HomePage();
+  const { container } = render(element);
+
+  expect(
+    screen.getByRole("img", { name: "Remote Runner portrait" }).tagName,
+  ).toBe("SPAN");
+  expect(
+    screen.getByRole("img", { name: "Traversal Trial portrait" }).tagName,
+  ).toBe("SPAN");
+  expect(
+    screen.queryByAltText("Remote Runner portrait"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByAltText("Traversal Trial portrait"),
+  ).not.toBeInTheDocument();
+  expect(screen.getByAltText("Trusted Local portrait")).toHaveAttribute(
+    "src",
+    "/characters/trusted-local.png",
+  );
+  expect(
+    container.querySelector('img[src="https://example.com/remote-runner.png"]'),
+  ).toBeNull();
+  expect(container.querySelector('img[src="/../secrets.png"]')).toBeNull();
+});
