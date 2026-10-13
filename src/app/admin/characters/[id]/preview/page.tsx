@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { CharacterPreview } from "@/components/admin/characters/character-preview";
 import { requireAdmin } from "@/server/admin/require-admin";
 import { getAdminCharacterPreview } from "@/server/characters/character-queries";
@@ -21,11 +22,14 @@ export default async function CharacterPreviewPage({
   }
 
   return (
-    <section className="page-stack">
+    <section className="admin-page">
       <Link className="brand-link" href={`/admin/characters/${character.id}`}>
         Back to editor
       </Link>
-      <h1>Preview persisted draft</h1>
+      <AdminPageHeader
+        title="Preview persisted draft"
+        description="Review the public presentation generated from the saved draft."
+      />
       <CharacterPreview character={character} />
     </section>
   );

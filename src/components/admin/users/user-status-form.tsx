@@ -2,6 +2,9 @@
 
 import { useActionState, useId } from "react";
 import type { UserAdminActionState } from "@/app/admin/users/actions";
+import { Button } from "@/components/ui/button";
+import { CheckboxField, Field, Textarea } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 
 export interface UserStatusFormUser {
   id: string;
@@ -22,9 +25,9 @@ function ActionFeedback({ state }: { state: UserAdminActionState }) {
     return null;
   }
   return (
-    <div role={state.status === "error" ? "alert" : "status"}>
+    <StatusNotice tone={state.status === "error" ? "danger" : "success"}>
       {state.message}
-    </div>
+    </StatusNotice>
   );
 }
 
@@ -49,43 +52,53 @@ export function UserStatusForm({
 
   if (user.banned) {
     return (
-      <fieldset aria-label={`Restore ${user.name}`}>
+      <fieldset
+        aria-label={`Restore ${user.name}`}
+        className="admin-action-fieldset"
+      >
         <p>Restore access for {user.email}.</p>
-        <form action={restoreFormAction}>
+        <form action={restoreFormAction} className="admin-inline-form">
           <ActionFeedback state={restoreActionState} />
-          <button type="submit" disabled={restorePending}>
+          <Button
+            type="submit"
+            pending={restorePending}
+            size="sm"
+            tone="secondary"
+          >
             Restore user
-          </button>
+          </Button>
         </form>
       </fieldset>
     );
   }
 
   return (
-    <fieldset aria-label={`Disable ${user.name}`}>
+    <fieldset
+      aria-label={`Disable ${user.name}`}
+      className="admin-action-fieldset"
+    >
       <p>Disable access for {user.email} and sign out all active sessions.</p>
-      <form action={disableFormAction}>
+      <form action={disableFormAction} className="admin-inline-form">
         <ActionFeedback state={disableActionState} />
-        <label htmlFor={`${formId}-reason`}>Reason for disabling user</label>
-        <textarea
-          id={`${formId}-reason`}
-          name="reason"
-          minLength={1}
-          maxLength={500}
-          required
-        />
-        <label htmlFor={`${formId}-confirm`}>
-          <input
-            id={`${formId}-confirm`}
-            name="confirm"
-            type="checkbox"
+        <Field htmlFor={`${formId}-reason`} label="Reason for disabling user">
+          <Textarea
+            id={`${formId}-reason`}
+            name="reason"
+            minLength={1}
+            maxLength={500}
             required
+            rows={3}
           />
-          I understand this signs out the user and disables sign-in.
-        </label>
-        <button type="submit" disabled={disablePending}>
+        </Field>
+        <CheckboxField
+          id={`${formId}-confirm`}
+          name="confirm"
+          required
+          label="I understand this signs out the user and disables sign-in."
+        />
+        <Button type="submit" pending={disablePending} size="sm" tone="danger">
           Disable user
-        </button>
+        </Button>
       </form>
     </fieldset>
   );

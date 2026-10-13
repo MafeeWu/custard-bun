@@ -1,4 +1,5 @@
 import { CharacterEditor } from "@/components/admin/characters/character-editor";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import type { CharacterContent } from "@/server/characters/character-content";
 import { createCharacterAction } from "../actions";
 
@@ -21,8 +22,11 @@ const blankContent: CharacterContent = {
 
 export default function NewCharacterPage() {
   return (
-    <section className="page-stack">
-      <h1>Create official character</h1>
+    <section className="admin-page">
+      <AdminPageHeader
+        title="Create official character"
+        description="Start a private draft before it can be previewed or published."
+      />
       <CharacterEditor
         mode="create"
         content={blankContent}

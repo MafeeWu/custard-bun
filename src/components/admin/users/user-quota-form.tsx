@@ -2,6 +2,9 @@
 
 import { useActionState, useId } from "react";
 import type { UserAdminActionState } from "@/app/admin/users/actions";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 
 type UserQuotaAction = (
   state: UserAdminActionState,
@@ -34,42 +37,52 @@ export function UserQuotaForm({
   };
 
   return (
-    <form action={formAction} aria-label={`Quota override for ${user.name}`}>
+    <form
+      action={formAction}
+      aria-label={`Quota override for ${user.name}`}
+      className="admin-inline-form"
+    >
       {state.message ? (
-        <p role={state.status === "error" ? "alert" : "status"}>
+        <StatusNotice tone={state.status === "error" ? "danger" : "success"}>
           {state.message}
-        </p>
+        </StatusNotice>
       ) : null}
-      <label htmlFor={`${formId}-requests`}>Daily request override</label>
-      <input
-        id={`${formId}-requests`}
-        name="dailyRequestLimit"
-        type="number"
-        min={1}
-        step={1}
-        defaultValue={values.dailyRequestLimit}
-        placeholder="Inherit global"
-      />
-      {state.fieldErrors?.dailyRequestLimit?.map((error) => (
-        <p key={error}>{error}</p>
-      ))}
-      <label htmlFor={`${formId}-tokens`}>Daily token override</label>
-      <input
-        id={`${formId}-tokens`}
-        name="dailyTokenLimit"
-        type="number"
-        min={1}
-        step={1}
-        defaultValue={values.dailyTokenLimit}
-        placeholder="Inherit global"
-      />
-      {state.fieldErrors?.dailyTokenLimit?.map((error) => (
-        <p key={error}>{error}</p>
-      ))}
-      <button type="submit" disabled={pending}>
+      <Field
+        error={state.fieldErrors?.dailyRequestLimit?.[0]}
+        htmlFor={`${formId}-requests`}
+        label="Daily request override"
+      >
+        <Input
+          id={`${formId}-requests`}
+          name="dailyRequestLimit"
+          type="number"
+          min={1}
+          step={1}
+          defaultValue={values.dailyRequestLimit}
+          placeholder="Inherit global"
+        />
+      </Field>
+      <Field
+        error={state.fieldErrors?.dailyTokenLimit?.[0]}
+        htmlFor={`${formId}-tokens`}
+        label="Daily token override"
+      >
+        <Input
+          id={`${formId}-tokens`}
+          name="dailyTokenLimit"
+          type="number"
+          min={1}
+          step={1}
+          defaultValue={values.dailyTokenLimit}
+          placeholder="Inherit global"
+        />
+      </Field>
+      <Button type="submit" pending={pending} size="sm" tone="secondary">
         Save quota override
-      </button>
-      <p>Leave both fields blank to clear the override.</p>
+      </Button>
+      <p className="admin-helper-text">
+        Leave both fields blank to clear the override.
+      </p>
     </form>
   );
 }

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
+import { AdminDataList } from "@/components/admin/admin-data-list";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { requireAdmin } from "@/server/admin/require-admin";
 import { listAdminAuditEvents } from "@/server/admin/audit-queries";
 import { getDatabase } from "@/server/db/database";
@@ -24,6 +26,27 @@ function auditPageHref(page: number): string {
   return `/admin/audit?${params.toString()}`;
 }
 
+const blockedMetadataKeys = new Set([
+  "prompt",
+  "password",
+  "token",
+  "reason",
+  "message",
+  "memory",
+  "providerkey",
+]);
+
+function metadataSummary(
+  metadata: Record<string, string | number | boolean | null>,
+) {
+  const safe = Object.fromEntries(
+    Object.entries(metadata).filter(
+      ([key]) => !blockedMetadataKeys.has(key.toLowerCase()),
+    ),
+  );
+  return JSON.stringify(safe);
+}
+
 export default async function AdminAuditPage({ searchParams }: PageProps) {
   await requireAdmin(await headers());
   const params = (await searchParams) ?? {};
@@ -35,43 +58,60 @@ export default async function AdminAuditPage({ searchParams }: PageProps) {
   const totalPages = Math.max(1, Math.ceil(result.total / 50));
 
   return (
-    <section className="page-stack">
-      <header>
-        <h1>Admin audit log</h1>
-        <p>Read-only history of administrative operations.</p>
-      </header>
+    <section className="admin-page">
+      <AdminPageHeader
+        title="Admin audit log"
+        description="Read-only history of administrative operations."
+      />
 
-      {result.events.length === 0 ? <p>No audit events found.</p> : null}
-      {result.events.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Time</th>
-              <th scope="col">Actor</th>
-              <th scope="col">Action</th>
-              <th scope="col">Target</th>
-              <th scope="col">Metadata</th>
-              <th scope="col">Operation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result.events.map((event) => (
-              <tr
-                key={`${event.operationId}-${event.action}-${event.targetId}-${event.createdAt.toISOString()}`}
-              >
-                <td>{event.createdAt.toISOString()}</td>
-                <td>{event.actorLabel}</td>
-                <td>{event.action}</td>
-                <td>{`${event.targetType}:${event.targetId}`}</td>
-                <td>{JSON.stringify(event.metadata)}</td>
-                <td>{event.operationId}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
+      <AdminDataList
+        ariaLabel="Admin audit log"
+        columns={[
+          {
+            key: "time",
+            header: "Time",
+            priority: "secondary",
+            cell: (event) => event.createdAt.toISOString(),
+          },
+          {
+            key: "actor",
+            header: "Actor",
+            priority: "secondary",
+            cell: (event) => event.actorLabel,
+          },
+          {
+            key: "action",
+            header: "Action",
+            priority: "primary",
+            cell: (event) => event.action,
+          },
+          {
+            key: "target",
+            header: "Target",
+            priority: "secondary",
+            cell: (event) => `${event.targetType}:${event.targetId}`,
+          },
+          {
+            key: "metadata",
+            header: "Metadata",
+            priority: "detail",
+            cell: (event) => metadataSummary(event.metadata),
+          },
+          {
+            key: "operation",
+            header: "Operation",
+            priority: "detail",
+            cell: (event) => event.operationId,
+          },
+        ]}
+        emptyTitle="No audit events found."
+        getRowKey={(event) =>
+          `${event.operationId}-${event.action}-${event.targetId}-${event.createdAt.toISOString()}`
+        }
+        rows={result.events}
+      />
 
-      <nav aria-label="Audit pagination">
+      <nav aria-label="Audit pagination" className="admin-pagination">
         {page > 1 ? (
           <Link href={auditPageHref(page - 1)}>Previous page</Link>
         ) : null}

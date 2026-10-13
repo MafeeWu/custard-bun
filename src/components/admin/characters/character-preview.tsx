@@ -1,5 +1,6 @@
 import { CharacterCard } from "@/components/characters/character-card";
 import { CharacterProfile } from "@/components/characters/character-profile";
+import { AdminSection } from "@/components/admin/admin-section";
 import type { AdminCharacterPreview } from "@/server/characters/character-queries";
 
 export function CharacterPreview({
@@ -25,16 +26,14 @@ export function CharacterPreview({
   };
 
   return (
-    <section className="page-stack">
-      <p>Draft revision {character.draftRevision}</p>
+    <section className="admin-preview page-stack">
+      <p className="admin-helper-text">
+        Draft revision {character.draftRevision}
+      </p>
       <CharacterCard character={summary} />
       <CharacterProfile character={detail} />
 
-      <section
-        aria-labelledby="structured-package-heading"
-        className="page-stack"
-      >
-        <h2 id="structured-package-heading">Structured character package</h2>
+      <AdminSection title="Structured character package">
         <section>
           <h3>Example conversations</h3>
           {character.draft.exampleConversations.map((example, index) => (
@@ -67,7 +66,7 @@ export function CharacterPreview({
             ))}
           </ul>
         </section>
-      </section>
+      </AdminSection>
     </section>
   );
 }

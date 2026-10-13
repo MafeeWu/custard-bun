@@ -1,5 +1,4 @@
-import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { requireAdmin } from "@/server/admin/require-admin";
 import { getPublicConfig } from "@/server/config/public-config";
@@ -10,28 +9,6 @@ vi.mock("@/server/config/public-config", () => ({ getPublicConfig: vi.fn() }));
 vi.mock("@/components/brand/brand-mark", () => ({
   BrandMark: ({ branding }: { branding: { name: string } }) => (
     <span>{branding.name}</span>
-  ),
-}));
-vi.mock("@/components/layout/admin-shell", () => ({
-  AdminShell: ({
-    children,
-    navigationItems,
-  }: {
-    children: ReactNode;
-    navigationItems: Array<{ href: string; label: string }>;
-  }) => (
-    <div>
-      <nav aria-label="Administration">
-        <ul>
-          {navigationItems.map((item) => (
-            <li key={item.href}>
-              <a href={item.href}>{item.label}</a>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <main>{children}</main>
-    </div>
   ),
 }));
 
@@ -87,34 +64,35 @@ beforeEach(() => {
   });
 });
 
-test(
-  "includes the aggregate usage administration link",
-  async () => {
-    const Layout = (await import("./layout")).default;
-    render(await Layout({ children: <p>content</p> }));
+test("includes the aggregate usage administration link", async () => {
+  const Layout = (await import("./layout")).default;
+  render(await Layout({ children: <p>content</p> }));
 
-    expect(
-      screen.getByRole("navigation", { name: /administration/i }),
-    ).toBeVisible();
-    expect(screen.getByRole("link", { name: "Characters" })).toHaveAttribute(
-      "href",
-      "/admin/characters",
-    );
-    expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute(
-      "href",
-      "/admin/users",
-    );
-    expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute(
-      "href",
-      "/admin/usage",
-    );
-    expect(
-      screen.getByRole("link", { name: "Memory operations" }),
-    ).toHaveAttribute("href", "/admin/memory");
-    expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute(
-      "href",
-      "/admin/audit",
-    );
-  },
-  15_000,
-);
+  const desktopNavigation = document.querySelector(".shell-admin__sidebar");
+  expect(desktopNavigation).not.toBeNull();
+  expect(
+    within(desktopNavigation as HTMLElement).getByRole("navigation", {
+      name: /administration/i,
+    }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Open navigation" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Characters" })).toHaveAttribute(
+    "href",
+    "/admin/characters",
+  );
+  expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute(
+    "href",
+    "/admin/users",
+  );
+  expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute(
+    "href",
+    "/admin/usage",
+  );
+  expect(
+    screen.getByRole("link", { name: "Memory operations" }),
+  ).toHaveAttribute("href", "/admin/memory");
+  expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute(
+    "href",
+    "/admin/audit",
+  );
+}, 15_000);

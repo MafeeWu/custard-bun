@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { requireAdmin } from "@/server/admin/require-admin";
 import {
@@ -56,7 +56,8 @@ vi.mock("./actions", () => ({
   createCharacterAction: vi.fn(),
   saveCharacterDraftAction: editPageMocks.saveCharacterDraftAction,
   publishCharacterDraftAction: editPageMocks.publishCharacterDraftAction,
-  setDefaultCharacterVersionAction: editPageMocks.setDefaultCharacterVersionAction,
+  setDefaultCharacterVersionAction:
+    editPageMocks.setDefaultCharacterVersionAction,
   archiveCharacterAction: editPageMocks.archiveCharacterAction,
   restoreCharacterAction: editPageMocks.restoreCharacterAction,
 }));
@@ -103,14 +104,29 @@ test("renders character administration list state badges and links", async () =>
   expect(
     screen.getByRole("link", { name: "Create character" }),
   ).toHaveAttribute("href", "/admin/characters/new");
-  expect(screen.getByRole("link", { name: "Calm Guide" })).toHaveAttribute(
-    "href",
-    "/admin/characters/char-1",
-  );
-  expect(screen.getByText("active")).toBeVisible();
-  expect(screen.getByText("archived")).toBeVisible();
   expect(
-    screen.getByText("Draft r3 · base v2 · default v1 · latest v2"),
+    screen.getAllByRole("link", { name: "Calm Guide" })[0],
+  ).toHaveAttribute("href", "/admin/characters/char-1");
+  const table = screen.getByRole("table", { name: "Official characters" });
+  expect(
+    within(table).getByRole("columnheader", { name: "Character" }),
+  ).toBeVisible();
+  expect(
+    within(table).getByRole("columnheader", { name: "Slug" }),
+  ).toBeVisible();
+  expect(
+    within(table).getByRole("columnheader", { name: "Lifecycle" }),
+  ).toBeVisible();
+  expect(
+    within(table).getByRole("columnheader", { name: "Versions" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("list", { name: "Official characters mobile cards" }),
+  ).toBeInTheDocument();
+  expect(screen.getAllByText("active")[0]).toBeVisible();
+  expect(screen.getAllByText("archived")[0]).toBeVisible();
+  expect(
+    screen.getAllByText("Draft r3 · base v2 · default v1 · latest v2")[0],
   ).toBeVisible();
 });
 
@@ -183,10 +199,12 @@ test("edit page returns publish, default, archive, and restore action states to 
     message:
       "This draft changed in another session. Reload the page before editing again.",
   });
-  await expect(historyProps.setDefaultAction(state, formData)).resolves.toEqual({
-    status: "error",
-    message: "Default version could not be changed.",
-  });
+  await expect(historyProps.setDefaultAction(state, formData)).resolves.toEqual(
+    {
+      status: "error",
+      message: "Default version could not be changed.",
+    },
+  );
   await expect(historyProps.archiveAction(state, formData)).resolves.toEqual({
     status: "error",
     message: "Character could not be archived.",

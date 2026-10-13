@@ -1,7 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useActionState, useId, useState, type ChangeEvent } from "react";
+import { Button, LinkButton } from "@/components/ui/button";
+import { Field, Input, Textarea } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 import type { CharacterContent } from "@/server/characters/character-content";
 import type { AdminActionState } from "@/app/admin/characters/actions";
 
@@ -99,7 +101,7 @@ function ActionFeedback({
       )
     : [];
   return (
-    <div role={state.status === "error" ? "alert" : "status"}>
+    <StatusNotice tone={state.status === "error" ? "danger" : "success"}>
       {state.message ? <p>{state.message}</p> : null}
       {fieldMessages.length > 0 ? (
         <ul className="admin-field-errors">
@@ -108,7 +110,7 @@ function ActionFeedback({
           ))}
         </ul>
       ) : null}
-    </div>
+    </StatusNotice>
   );
 }
 
@@ -183,8 +185,47 @@ export function CharacterEditor({
     }));
   }
 
+  function inputField(
+    name: keyof typeof editor.fields,
+    label: string,
+    options: { type?: string; step?: string; required?: boolean } = {},
+  ) {
+    const id = `${formId}-${name}`;
+    return (
+      <>
+        <Field htmlFor={id} label={label}>
+          <Input
+            id={id}
+            name={name}
+            type={options.type}
+            step={options.step}
+            required={options.required}
+            {...field(name)}
+          />
+        </Field>
+        <FieldError messages={actionState.fieldErrors?.[name]} />
+      </>
+    );
+  }
+
+  function textareaField(
+    name: keyof typeof editor.fields,
+    label: string,
+    required = true,
+  ) {
+    const id = `${formId}-${name}`;
+    return (
+      <>
+        <Field htmlFor={id} label={label}>
+          <Textarea id={id} name={name} required={required} {...field(name)} />
+        </Field>
+        <FieldError messages={actionState.fieldErrors?.[name]} />
+      </>
+    );
+  }
+
   return (
-    <div className="page-stack">
+    <div className="admin-character-editor page-stack">
       <ActionFeedback state={actionState} />
       {draftRevision !== undefined &&
       editor.revision !== undefined &&
@@ -199,20 +240,11 @@ export function CharacterEditor({
       <form
         action={formAction}
         aria-label="Character editor"
-        className="page-stack"
+        className="admin-character-editor__form page-stack"
       >
-        {mode === "create" ? (
-          <>
-            <label htmlFor={`${formId}-slug`}>Slug</label>
-            <input
-              id={`${formId}-slug`}
-              name="slug"
-              {...field("slug")}
-              required
-            />
-            <FieldError messages={actionState.fieldErrors?.slug} />
-          </>
-        ) : null}
+        {mode === "create"
+          ? inputField("slug", "Slug", { required: true })
+          : null}
 
         {editor.revision === undefined ? null : (
           <input
@@ -223,123 +255,52 @@ export function CharacterEditor({
           />
         )}
 
-        <label htmlFor={`${formId}-displayName`}>Display name</label>
-        <input
-          id={`${formId}-displayName`}
-          name="displayName"
-          {...field("displayName")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.displayName} />
+        {inputField("displayName", "Display name", { required: true })}
+        {inputField("avatarPath", "Avatar path", { required: true })}
+        {textareaField("shortDescription", "Short description")}
+        {textareaField("longDescription", "Long description")}
+        {textareaField("personalityPrinciples", "Personality principles")}
+        {textareaField("speakingStyle", "Speaking style")}
+        {textareaField("responseRhythm", "Response rhythm")}
+        {textareaField("relationshipBoundaries", "Relationship boundaries")}
+        {textareaField("openingMessage", "Opening message")}
 
-        <label htmlFor={`${formId}-avatarPath`}>Avatar path</label>
-        <input
-          id={`${formId}-avatarPath`}
-          name="avatarPath"
-          {...field("avatarPath")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.avatarPath} />
-
-        <label htmlFor={`${formId}-shortDescription`}>Short description</label>
-        <textarea
-          id={`${formId}-shortDescription`}
-          name="shortDescription"
-          {...field("shortDescription")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.shortDescription} />
-
-        <label htmlFor={`${formId}-longDescription`}>Long description</label>
-        <textarea
-          id={`${formId}-longDescription`}
-          name="longDescription"
-          {...field("longDescription")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.longDescription} />
-
-        <label htmlFor={`${formId}-personalityPrinciples`}>
-          Personality principles
-        </label>
-        <textarea
-          id={`${formId}-personalityPrinciples`}
-          name="personalityPrinciples"
-          {...field("personalityPrinciples")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.personalityPrinciples} />
-
-        <label htmlFor={`${formId}-speakingStyle`}>Speaking style</label>
-        <textarea
-          id={`${formId}-speakingStyle`}
-          name="speakingStyle"
-          {...field("speakingStyle")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.speakingStyle} />
-
-        <label htmlFor={`${formId}-responseRhythm`}>Response rhythm</label>
-        <textarea
-          id={`${formId}-responseRhythm`}
-          name="responseRhythm"
-          {...field("responseRhythm")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.responseRhythm} />
-
-        <label htmlFor={`${formId}-relationshipBoundaries`}>
-          Relationship boundaries
-        </label>
-        <textarea
-          id={`${formId}-relationshipBoundaries`}
-          name="relationshipBoundaries"
-          {...field("relationshipBoundaries")}
-          required
-        />
-        <FieldError
-          messages={actionState.fieldErrors?.relationshipBoundaries}
-        />
-
-        <label htmlFor={`${formId}-openingMessage`}>Opening message</label>
-        <textarea
-          id={`${formId}-openingMessage`}
-          name="openingMessage"
-          {...field("openingMessage")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.openingMessage} />
-
-        <fieldset>
+        <fieldset className="admin-character-editor__fieldset">
           <legend>Example conversations</legend>
           {examples.map((example, index) => (
-            <div key={index}>
-              <label htmlFor={`${formId}-exampleUser-${index}`}>
-                Example user {index + 1}
-              </label>
-              <textarea
-                id={`${formId}-exampleUser-${index}`}
-                name="exampleUser"
-                value={example.user}
-                onChange={(event) =>
-                  changeExample(index, "user", event.currentTarget.value)
-                }
-              />
-              <label htmlFor={`${formId}-exampleAssistant-${index}`}>
-                Example assistant {index + 1}
-              </label>
-              <textarea
-                id={`${formId}-exampleAssistant-${index}`}
-                name="exampleAssistant"
-                value={example.assistant}
-                onChange={(event) =>
-                  changeExample(index, "assistant", event.currentTarget.value)
-                }
-              />
-              <button
+            <div className="admin-character-editor__example" key={index}>
+              <Field
+                htmlFor={`${formId}-exampleUser-${index}`}
+                label={`Example user ${index + 1}`}
+              >
+                <Textarea
+                  id={`${formId}-exampleUser-${index}`}
+                  name="exampleUser"
+                  value={example.user}
+                  onChange={(event) =>
+                    changeExample(index, "user", event.currentTarget.value)
+                  }
+                />
+              </Field>
+              <Field
+                htmlFor={`${formId}-exampleAssistant-${index}`}
+                label={`Example assistant ${index + 1}`}
+              >
+                <Textarea
+                  id={`${formId}-exampleAssistant-${index}`}
+                  name="exampleAssistant"
+                  value={example.assistant}
+                  onChange={(event) =>
+                    changeExample(index, "assistant", event.currentTarget.value)
+                  }
+                />
+              </Field>
+              <Button
                 type="button"
                 aria-label={`Remove example ${index + 1}`}
                 disabled={examples.length <= 1}
+                size="sm"
+                tone="quiet"
                 onClick={() =>
                   setEditor((current) =>
                     current.examples.length <= 1
@@ -354,12 +315,14 @@ export function CharacterEditor({
                 }
               >
                 Remove example {index + 1}
-              </button>
+              </Button>
             </div>
           ))}
-          <button
+          <Button
             type="button"
             disabled={examples.length >= 6}
+            size="sm"
+            tone="secondary"
             onClick={() =>
               setEditor((current) =>
                 current.examples.length >= 6
@@ -375,7 +338,7 @@ export function CharacterEditor({
             }
           >
             Add example conversation
-          </button>
+          </Button>
           <p aria-live="polite">
             {examples.length} of 6 example conversations.
           </p>
@@ -386,58 +349,39 @@ export function CharacterEditor({
           />
         </fieldset>
 
-        <label htmlFor={`${formId}-temperature`}>Temperature</label>
-        <input
-          id={`${formId}-temperature`}
-          name="temperature"
-          type="number"
-          step="0.01"
-          {...field("temperature")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.temperature} />
+        {inputField("temperature", "Temperature", {
+          type: "number",
+          step: "0.01",
+          required: true,
+        })}
+        {inputField("topP", "Top P", {
+          type: "number",
+          step: "0.01",
+          required: true,
+        })}
+        {inputField("maxOutputTokens", "Max output tokens", {
+          type: "number",
+          step: "1",
+          required: true,
+        })}
+        {textareaField("safetyAdditions", "Safety additions", false)}
 
-        <label htmlFor={`${formId}-topP`}>Top P</label>
-        <input
-          id={`${formId}-topP`}
-          name="topP"
-          type="number"
-          step="0.01"
-          {...field("topP")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.topP} />
-
-        <label htmlFor={`${formId}-maxOutputTokens`}>Max output tokens</label>
-        <input
-          id={`${formId}-maxOutputTokens`}
-          name="maxOutputTokens"
-          type="number"
-          step="1"
-          {...field("maxOutputTokens")}
-          required
-        />
-        <FieldError messages={actionState.fieldErrors?.maxOutputTokens} />
-
-        <label htmlFor={`${formId}-safetyAdditions`}>Safety additions</label>
-        <textarea
-          id={`${formId}-safetyAdditions`}
-          name="safetyAdditions"
-          {...field("safetyAdditions")}
-        />
-        <FieldError messages={actionState.fieldErrors?.safetyAdditions} />
-
-        <button type="submit" disabled={pending || publishPending}>
-          {mode === "create" ? "Create draft" : "Save draft"}
-        </button>
+        <div className="admin-character-editor__sticky-actions">
+          <Button type="submit" disabled={pending || publishPending}>
+            {mode === "create" ? "Create draft" : "Save draft"}
+          </Button>
+        </div>
       </form>
 
       {mode === "edit" && characterId && publishAction ? (
-        <div className="page-actions">
-          <Link href={`/admin/characters/${characterId}/preview`}>
+        <div className="admin-character-editor__publish page-actions">
+          <LinkButton
+            href={`/admin/characters/${characterId}/preview`}
+            tone="secondary"
+          >
             Preview persisted draft
-          </Link>
-          <form action={publishFormAction}>
+          </LinkButton>
+          <form action={publishFormAction} className="admin-inline-form">
             <ActionFeedback state={publishActionState} showFieldErrors />
             <input
               type="hidden"
@@ -445,9 +389,9 @@ export function CharacterEditor({
               value={editor.revision}
               readOnly
             />
-            <button type="submit" disabled={pending || publishPending}>
+            <Button type="submit" disabled={pending || publishPending}>
               Publish draft
-            </button>
+            </Button>
           </form>
         </div>
       ) : null}

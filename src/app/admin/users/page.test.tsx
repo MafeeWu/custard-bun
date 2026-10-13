@@ -82,6 +82,23 @@ test("renders a searchable paginated ordinary-user table with safe controls", as
   expect(screen.getByRole("searchbox", { name: "Search users" })).toHaveValue(
     "one",
   );
+  const table = screen.getByRole("table", { name: "Ordinary users" });
+  for (const header of [
+    "Name",
+    "Email",
+    "Created",
+    "Status",
+    "Current UTC-day usage",
+    "Quota override",
+    "Access",
+  ]) {
+    expect(
+      within(table).getByRole("columnheader", { name: header }),
+    ).toBeVisible();
+  }
+  expect(
+    screen.getByRole("list", { name: "Ordinary users mobile cards" }),
+  ).toBeInTheDocument();
   const rows = screen.getAllByRole("row");
   expect(within(rows[1]!).getByText("Ordinary One")).toBeVisible();
   expect(within(rows[1]!).getByText("Active")).toBeVisible();

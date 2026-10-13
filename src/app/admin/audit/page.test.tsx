@@ -30,7 +30,14 @@ test("renders safe audit event summaries without prompt or reason content", asyn
         action: "user.disable",
         targetType: "user",
         targetId: "user-1",
-        metadata: { previousState: "active", nextState: "disabled" },
+        metadata: {
+          previousState: "active",
+          nextState: "disabled",
+          reason: "Repeated abuse",
+          prompt: "full prompt",
+          memory: "memory content",
+          providerKey: "private-provider-key",
+        },
         operationId: "op-1",
         createdAt: new Date("2026-10-08T01:02:03Z"),
       },
@@ -48,13 +55,15 @@ test("renders safe audit event summaries without prompt or reason content", asyn
   expect(
     screen.getByRole("heading", { level: 1, name: "Admin audit log" }),
   ).toBeVisible();
-  expect(screen.getByText("user.disable")).toBeVisible();
-  expect(screen.getByText("user:user-1")).toBeVisible();
-  expect(screen.getByText("2026-10-08T01:02:03.000Z")).toBeVisible();
-  expect(screen.getByText(/previousState/)).toHaveTextContent("disabled");
-  expect(screen.getByText("op-1")).toBeVisible();
+  expect(screen.getAllByText("user.disable")[0]).toBeVisible();
+  expect(screen.getAllByText("user:user-1")[0]).toBeVisible();
+  expect(screen.getAllByText("2026-10-08T01:02:03.000Z")[0]).toBeVisible();
+  expect(screen.getAllByText(/previousState/)[0]).toHaveTextContent("disabled");
+  expect(screen.getAllByText("op-1")[0]).toBeVisible();
   expect(
-    screen.queryByText(/Repeated abuse|full prompt|ban reason/i),
+    screen.queryByText(
+      /Repeated abuse|full prompt|ban reason|memory content|private-provider-key/i,
+    ),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Next page" })).toHaveAttribute(
     "href",

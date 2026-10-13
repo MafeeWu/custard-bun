@@ -41,7 +41,13 @@ beforeEach(() => {
     latencyMs: { p50: 120, p95: 450 },
     modelIds: ["model-a"],
     backgroundWork: { inputTokens: 0, outputTokens: 0, estimatedRows: 0 },
-  });
+    userEmail: "private-user@example.com",
+    userId: "user-private-sentinel",
+    providerEndpoint: "https://provider-private.example/v1",
+    providerKey: "private-provider-key",
+    providerRequestId: "private-provider-request-id",
+    conversationContent: "PRIVATE CONVERSATION SENTINEL",
+  } as never);
   vi.mocked(getGlobalChatSettings).mockResolvedValue({
     revision: 3,
     userDailyRequestLimit: 100,
@@ -70,6 +76,9 @@ test("renders aggregate usage and settings without content or transcript links",
   expect(
     screen.queryByText(/conversation|transcript|message content/i),
   ).not.toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(
+    /private-user@example\.com|user-private-sentinel|PRIVATE CONVERSATION SENTINEL|provider-private|private-provider-key|private-provider-request-id/i,
+  );
   expect(
     screen.queryByRole("link", { name: /transcript|conversation/i }),
   ).not.toBeInTheDocument();

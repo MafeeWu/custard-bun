@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { CharacterEditor } from "@/components/admin/characters/character-editor";
 import { VersionHistory } from "@/components/admin/characters/version-history";
 import { requireAdmin } from "@/server/admin/require-admin";
@@ -58,8 +59,11 @@ export default async function EditCharacterPage({
   }
 
   return (
-    <section className="page-stack">
-      <h1>Edit {detail.draft.displayName}</h1>
+    <section className="admin-page">
+      <AdminPageHeader
+        title={`Edit ${detail.draft.displayName}`}
+        description="Update the persisted draft with optimistic revision protection."
+      />
       <CharacterEditor
         key={detail.id}
         mode="edit"

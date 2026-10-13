@@ -2,6 +2,9 @@
 
 import { useActionState, type ReactNode } from "react";
 import type { AdminActionState } from "@/app/admin/characters/actions";
+import { AdminSection } from "@/components/admin/admin-section";
+import { Button } from "@/components/ui/button";
+import { StatusNotice } from "@/components/ui/status-notice";
 import type { CharacterLifecycle } from "@/server/db/character-schema";
 
 type Action = (
@@ -30,7 +33,7 @@ function ActionFeedback({ state }: { state: AdminActionState }) {
       })),
   );
   return (
-    <div role={state.status === "error" ? "alert" : "status"}>
+    <StatusNotice tone={state.status === "error" ? "danger" : "success"}>
       {state.message ? <p>{state.message}</p> : null}
       {fieldMessages.length > 0 ? (
         <ul className="admin-field-errors">
@@ -39,7 +42,7 @@ function ActionFeedback({ state }: { state: AdminActionState }) {
           ))}
         </ul>
       ) : null}
-    </div>
+    </StatusNotice>
   );
 }
 
@@ -54,7 +57,7 @@ function StatefulActionForm({
 }) {
   const [state, formAction, pending] = useActionState(action, initialState);
   return (
-    <form action={formAction}>
+    <form action={formAction} className="admin-inline-form">
       <ActionFeedback state={state} />
       {children(pending)}
     </form>
@@ -85,12 +88,11 @@ export function VersionHistory({
   restoreActionState?: AdminActionState;
 }) {
   return (
-    <section className="page-stack" aria-labelledby="version-history-heading">
-      <h2 id="version-history-heading">Version history</h2>
+    <AdminSection title="Version history" className="admin-version-history">
       {versions.length === 0 ? <p>No published versions yet.</p> : null}
-      <ol>
+      <ol className="admin-version-history__list">
         {versions.map((version) => (
-          <li key={version.id}>
+          <li className="admin-version-history__item" key={version.id}>
             <h3>Version {version.versionNumber}</h3>
             <p>{version.displayName}</p>
             <p>Published {version.publishedAt.toISOString()}</p>
@@ -107,12 +109,15 @@ export function VersionHistory({
                     value={version.id}
                     readOnly
                   />
-                  <button
+                  <Button
                     type="submit"
-                    disabled={version.id === defaultVersionId || pending}
+                    disabled={version.id === defaultVersionId}
+                    pending={pending}
+                    size="sm"
+                    tone="secondary"
                   >
                     Set version {version.versionNumber} as default
-                  </button>
+                  </Button>
                 </>
               )}
             </StatefulActionForm>
@@ -121,7 +126,10 @@ export function VersionHistory({
       </ol>
 
       {lifecycle === "active" ? (
-        <fieldset aria-label="Archive character">
+        <fieldset
+          aria-label="Archive character"
+          className="admin-action-fieldset"
+        >
           <p>
             Archive removes this character from public selection without
             deleting history.
@@ -131,14 +139,17 @@ export function VersionHistory({
             initialState={archiveActionState}
           >
             {(pending) => (
-              <button type="submit" disabled={pending}>
+              <Button type="submit" pending={pending} size="sm" tone="danger">
                 Archive character
-              </button>
+              </Button>
             )}
           </StatefulActionForm>
         </fieldset>
       ) : (
-        <fieldset aria-label="Restore character">
+        <fieldset
+          aria-label="Restore character"
+          className="admin-action-fieldset"
+        >
           <p>
             Restore makes this character eligible for public selection again.
           </p>
@@ -147,13 +158,18 @@ export function VersionHistory({
             initialState={restoreActionState}
           >
             {(pending) => (
-              <button type="submit" disabled={pending}>
+              <Button
+                type="submit"
+                pending={pending}
+                size="sm"
+                tone="secondary"
+              >
                 Restore character
-              </button>
+              </Button>
             )}
           </StatefulActionForm>
         </fieldset>
       )}
-    </section>
+    </AdminSection>
   );
 }

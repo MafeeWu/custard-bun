@@ -11,6 +11,17 @@ vi.mock("next/headers", () => ({
 vi.mock("@/server/admin/require-admin", () => ({
   requireAdmin: vi.fn(),
 }));
+vi.mock("@/server/config/public-config", () => ({
+  getPublicConfig: async () => ({
+    branding: {
+      name: "Custard Bun",
+      description: "Private conversations with official characters.",
+      logoPath: "/logo.svg",
+      faviconPath: "/favicon.ico",
+      primaryColor: "#f59e0b",
+    },
+  }),
+}));
 
 test("renders the protected administration shell and overview", async () => {
   vi.mocked(requireAdmin).mockResolvedValue({

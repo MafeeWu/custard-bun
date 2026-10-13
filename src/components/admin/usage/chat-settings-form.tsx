@@ -1,6 +1,10 @@
 "use client";
 
 import { useActionState, useId } from "react";
+import { AdminSection } from "@/components/admin/admin-section";
+import { Button } from "@/components/ui/button";
+import { CheckboxField, Field, Input } from "@/components/ui/field";
+import { StatusNotice } from "@/components/ui/status-notice";
 import {
   resetGlobalChatSettingsAction,
   updateGlobalChatSettingsAction,
@@ -23,7 +27,9 @@ function valuesFrom(settings: GlobalChatSettings): GlobalSettingsFormValues {
 function Feedback({ state }: { state: UsageAdminActionState }) {
   if (!state.message) return null;
   return (
-    <p role={state.status === "error" ? "alert" : "status"}>{state.message}</p>
+    <StatusNotice tone={state.status === "error" ? "danger" : "success"}>
+      {state.message}
+    </StatusNotice>
   );
 }
 
@@ -58,11 +64,16 @@ export function ChatSettingsForm({
   ] as const;
 
   return (
-    <section aria-labelledby={`${formId}-heading`}>
-      <h2 id={`${formId}-heading`}>Global chat settings</h2>
-      <p>Changes apply to new generation admissions only.</p>
+    <AdminSection
+      title="Global chat settings"
+      description="Changes apply to new generation admissions only."
+    >
       <Feedback state={state} />
-      <form action={action} key={`update-${revisionKey}`}>
+      <form
+        action={action}
+        className="admin-settings-form"
+        key={`update-${revisionKey}`}
+      >
         <input type="hidden" name="intent" value="update" />
         <input
           type="hidden"
@@ -70,52 +81,47 @@ export function ChatSettingsForm({
           value={values.expectedRevision}
         />
         {fields.map(([name, label]) => (
-          <div key={name}>
-            <label htmlFor={`${formId}-${name}`}>{label}</label>
-            <input
+          <Field
+            error={state.fieldErrors?.[name]?.[0]}
+            htmlFor={`${formId}-${name}`}
+            key={name}
+            label={label}
+          >
+            <Input
               id={`${formId}-${name}`}
               name={name}
               type="number"
               min={1}
               step={1}
               defaultValue={values[name]}
-              aria-describedby={
-                state.fieldErrors?.[name]
-                  ? `${formId}-${name}-error`
-                  : undefined
-              }
             />
-            {state.fieldErrors?.[name]?.map((error) => (
-              <p id={`${formId}-${name}-error`} key={error}>
-                {error}
-              </p>
-            ))}
-          </div>
+          </Field>
         ))}
-        <button type="submit" disabled={pending}>
+        <Button type="submit" pending={pending}>
           Save chat settings
-        </button>
+        </Button>
       </form>
 
-      <form action={action} key={`reset-${revisionKey}`}>
+      <form
+        action={action}
+        className="admin-settings-form"
+        key={`reset-${revisionKey}`}
+      >
         <input type="hidden" name="intent" value="reset" />
         <input
           type="hidden"
           name="expectedRevision"
           value={values.expectedRevision}
         />
-        <label htmlFor={`${formId}-reset-confirm`}>
-          <input
-            id={`${formId}-reset-confirm`}
-            type="checkbox"
-            name="confirm"
-          />
-          Restore the stored deployment defaults.
-        </label>
-        <button type="submit" disabled={pending}>
+        <CheckboxField
+          id={`${formId}-reset-confirm`}
+          name="confirm"
+          label="Restore the stored deployment defaults."
+        />
+        <Button type="submit" pending={pending} tone="secondary">
           Reset to deployment defaults
-        </button>
+        </Button>
       </form>
-    </section>
+    </AdminSection>
   );
 }
